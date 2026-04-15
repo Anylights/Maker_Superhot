@@ -1,0 +1,21 @@
+# 引擎内部资源（不上传）
+engine-docs/
+examples/
+templates/
+urhox-libs/
+schemas/
+.emmylua/
+lua-tools/
+.claude/
+.tmp/
+dist/
+logs/
+.build/
+node_modules/
+prompts/
+
+# Agent 配置（含 token）
+.agent/
+
+# 项目构建产物
+*.meta

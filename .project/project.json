@@ -1,0 +1,33 @@
+{
+  "$schema": "../schemas/project.schema.json",
+  "project_id": "p_3wqd",
+  "author": {
+    "id": "540864398"
+  },
+  "entry": "main.lua",
+  "version": "1.0.21",
+  "taptap_publish": {
+    "title": "超级红温！",
+    "description": "2.5D多人平台竞速派对游戏，4名玩家在垂直迷宫中竞速冲顶！",
+    "category": "action",
+    "screen_orientation": "landscape",
+    "collection_type": "sce",
+    "trial_note": "2.5D多人平台竞速派对游戏",
+    "app_platforms": "1,2",
+    "app_id": 843392,
+    "miniapp_id": "tapmcfiyxumuqfxyrx",
+    "developer_id": 322883
+  },
+  "assets": {
+    "icon": "",
+    "screenshots": [],
+    "promotional_image": ""
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_3wqd_1776242474463.png",
+    "generated_at": "2026-04-15T08:41:14.610Z"
+  },
+  "metadata": {
+    "updated_at": "2026-04-15T08:41:14.611Z"
+  }
+}

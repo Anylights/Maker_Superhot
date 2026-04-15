@@ -92,7 +92,13 @@ function Player.Create(index, isHuman)
         -- 移动
         onGround = false,
         wasOnGround = false,   -- 上一帧是否在地面（用于着陆检测）
+        hitCeiling = false,    -- 本帧是否撞到天花板
         jumpCount = 0,
+
+        -- 土狼时间 & 跳跃缓冲
+        coyoteTimer = 0,       -- 离开地面后的计时（<= CoyoteTime 时仍可跳）
+        jumpBufferTimer = 0,   -- 按下跳跃后的计时（<= JumpBufferTime 时着地自动跳）
+        jumpHeld = false,      -- 跳跃键是否持续按住（用于可变跳跃高度）
 
         -- 冲刺
         dashTimer = 0,        -- >0 表示冲刺中
@@ -116,6 +122,12 @@ function Player.Create(index, isHuman)
         -- 比赛
         finished = false,      -- 是否已到达终点
         finishOrder = 0,       -- 到达终点的名次
+
+        -- 曲线跳跃状态
+        curveJumping = false,   -- 是否处于曲线跳跃中
+        jumpPhase = "none",     -- "rise" | "fall" | "none"
+        jumpElapsed = 0,        -- 当前阶段已经过时间
+        jumpStartY = 0,         -- 跳跃起始 Y 坐标
 
         -- 输入缓存（AI 或人类写入）
         inputMoveX = 0,
@@ -164,6 +176,7 @@ function PlayerCollision:HandleCollision(eventType, eventData)
 
     local contacts = eventData["Contacts"]:GetBuffer()
     local foundGround = false
+    local hitCeiling = false
 
     while not contacts.eof do
         local contactPosition = contacts:ReadVector3()
@@ -175,12 +188,17 @@ function PlayerCollision:HandleCollision(eventType, eventData)
         if contactNormal.y > 0.75 then
             foundGround = true
         end
+        -- 天花板检测：法线向下 < -0.75
+        if contactNormal.y < -0.75 then
+            hitCeiling = true
+        end
     end
 
     if foundGround then
         self.playerData.onGround = true
-        -- 注意：不在这里重置 jumpCount，改在 UpdateOne 中检测着陆转换时重置
-        -- 避免跳跃瞬间碰撞盒仍重叠地面导致 jumpCount 被错误清零
+    end
+    if hitCeiling then
+        self.playerData.hitCeiling = true
     end
 end
 
@@ -214,9 +232,43 @@ function Player.UpdateOne(p, dt)
         return
     end
 
-    -- 着陆检测：从空中→地面时重置跳跃计数
+    -- =====================
+    -- 土狼时间计时器
+    -- =====================
+    if p.onGround then
+        p.coyoteTimer = 0  -- 在地面上时重置
+    else
+        p.coyoteTimer = p.coyoteTimer + dt  -- 离开地面后递增
+    end
+
+    -- =====================
+    -- 跳跃缓冲计时器
+    -- =====================
+    if p.jumpBufferTimer > 0 then
+        p.jumpBufferTimer = p.jumpBufferTimer - dt
+    end
+    -- 新的跳跃输入 → 设置缓冲
+    if p.inputJump then
+        p.jumpBufferTimer = Config.JumpBufferTime
+        p.inputJump = false  -- 消费输入信号，后续由 buffer 驱动
+    end
+
+    -- =====================
+    -- 着陆检测
+    -- =====================
     if p.onGround and not p.wasOnGround then
+        -- 刚着陆
         p.jumpCount = 0
+        -- 曲线跳跃中落地 → 结束跳跃
+        if p.curveJumping then
+            p.curveJumping = false
+            p.jumpPhase = "none"
+        end
+        -- 着陆时检查跳跃缓冲：缓冲窗口内有按键 → 自动起跳
+        if p.jumpBufferTimer > 0 then
+            p.jumpBufferTimer = 0
+            Player.StartCurveJump(p)
+        end
     end
 
     -- 无敌计时
@@ -286,8 +338,49 @@ function Player.UpdateOne(p, dt)
 
     -- 保存本帧地面状态，下帧用于着陆检测
     p.wasOnGround = p.onGround
-    -- 重置帧输入
-    p.onGround = false  -- 每帧重置，碰撞回调会重新设置
+    -- 重置帧碰撞状态
+    p.onGround = false    -- 每帧重置，碰撞回调会重新设置
+    p.hitCeiling = false   -- 每帧重置天花板碰撞
+end
+
+--- 曲线跳跃：计算当前阶段的 Y 位移（相对于起跳点）
+--- 上升阶段：y(t) = H * (1 - (1-t)^e)，t = elapsed / riseTime
+--- 下落阶段：y(t) = H * (1 - t^e)，t = elapsed / fallTime
+---@param phase string "rise" | "fall"
+---@param elapsed number 当前阶段已过时间
+---@return number Y 位移（相对起跳点）
+local function CurveJumpY(phase, elapsed)
+    local H = Config.JumpHeight
+    if phase == "rise" then
+        local T = Config.JumpRiseTime
+        local e = Config.JumpRiseExponent
+        local t = math.min(elapsed / T, 1.0)
+        return H * (1.0 - (1.0 - t) ^ e)
+    else -- fall
+        local T = Config.JumpFallTime
+        local e = Config.JumpFallExponent
+        local t = math.min(elapsed / T, 1.0)
+        return H * (1.0 - t ^ e)
+    end
+end
+
+--- 启动曲线跳跃（提取为独立函数，UpdateOne 的 jumpBuffer 也会调用）
+---@param p table
+function Player.StartCurveJump(p)
+    p.curveJumping = true
+    p.jumpPhase = "rise"
+    p.jumpElapsed = 0
+    p.jumpStartY = p.node.position.y
+    p.jumpCount = p.jumpCount + 1
+    p.coyoteTimer = Config.CoyoteTime + 1  -- 跳跃后禁止再次土狼跳
+
+    -- 清零当前 Y 速度，由曲线接管
+    if p.body then
+        local vel = p.body.linearVelocity
+        p.body.linearVelocity = Vector3(vel.x, 0, 0)
+    end
+
+    SFX.Play("jump", 0.5)
 end
 
 --- 更新移动
@@ -300,24 +393,31 @@ function Player.UpdateMovement(p, dt)
     -- 冲刺中（不受重力影响，Y 速度锁定为 0）
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
+        -- 冲刺打断曲线跳跃
+        if p.curveJumping then
+            p.curveJumping = false
+            p.jumpPhase = "none"
+        end
         p.body.linearVelocity = Vector3(p.dashDir * Config.DashSpeed, 0, 0)
         return
     end
 
-    -- 水平移动
+    -- =====================
+    -- 水平移动（独立于跳跃）
+    -- =====================
     local moveX = p.inputMoveX
     local speed = Config.MoveSpeed
 
-    -- 空中控制减弱
-    if not p.onGround then
+    local finalVx
+    if p.onGround and not p.curveJumping then
+        -- 地面：直接设置速度
+        finalVx = moveX * speed
+    else
+        -- 空中控制（跳跃中 或 自由下落）
         speed = speed * Config.AirControlRatio
-        -- 如果当前已有较大水平速度，用混合方式
         local targetVx = moveX * speed
         local currentVx = vel.x
-        local blendedVx = currentVx + (targetVx - currentVx) * Config.AirControlRatio * 5 * dt
-        p.body.linearVelocity = Vector3(blendedVx, vel.y, 0)
-    else
-        p.body.linearVelocity = Vector3(moveX * speed, vel.y, 0)
+        finalVx = currentVx + (targetVx - currentVx) * Config.AirControlRatio * 5 * dt
     end
 
     -- 记录面朝方向
@@ -325,20 +425,123 @@ function Player.UpdateMovement(p, dt)
         p.lastFaceDir = moveX > 0 and 1 or -1
     end
 
-    -- 跳跃
-    if p.inputJump then
-        if p.jumpCount < Config.MaxJumps then
-            -- 跳跃时重置垂直速度（二段跳更可控）
-            local jumpVel = p.body.linearVelocity
-            p.body.linearVelocity = Vector3(jumpVel.x, 0, 0)
-            p.body:ApplyImpulse(Vector3(0, Config.JumpSpeed, 0))
-            p.jumpCount = p.jumpCount + 1
-            SFX.Play("jump", 0.5)
-        end
-        p.inputJump = false  -- 消耗跳跃输入
+    -- =====================
+    -- 天花板碰撞处理
+    -- =====================
+    if p.hitCeiling and p.curveJumping and p.jumpPhase == "rise" then
+        -- 撞到天花板 → 立刻切换到下落阶段
+        p.jumpPhase = "fall"
+        p.jumpElapsed = 0
+        -- 以当前实际位置作为顶点（不是理论顶点）
+        p.jumpStartY = p.node.position.y
+        -- 立刻给一个向下的小速度，避免卡在天花板
+        p.body.linearVelocity = Vector3(finalVx, -1.0, 0)
     end
 
-    -- 冲刺（仅在冷却完毕时触发，否则丢弃）
+    -- =====================
+    -- 可变跳跃高度（松开跳跃键 → 截断上升）
+    -- =====================
+    if p.curveJumping and p.jumpPhase == "rise" and not p.jumpHeld then
+        -- 松开了跳跃键 → 提前切换到下落阶段
+        -- 但要给一个最低上升时间（避免按键过短导致完全不跳）
+        local minRiseRatio = 0.25  -- 至少完成 25% 的上升
+        if p.jumpElapsed >= Config.JumpRiseTime * minRiseRatio then
+            p.jumpPhase = "fall"
+            p.jumpElapsed = 0
+            p.jumpStartY = p.node.position.y  -- 以当前位置为顶点
+        end
+    end
+
+    -- =====================
+    -- 曲线跳跃驱动 Y 轴
+    -- =====================
+    if p.curveJumping then
+        p.jumpElapsed = p.jumpElapsed + dt
+
+        if p.jumpPhase == "rise" then
+            local displacement = CurveJumpY("rise", p.jumpElapsed)
+            local targetY = p.jumpStartY + displacement
+
+            -- 用速度驱动（让物理引擎处理碰撞）
+            local currentY = p.node.position.y
+            local vy = (targetY - currentY) / dt
+
+            -- 检查是否上升阶段结束
+            if p.jumpElapsed >= Config.JumpRiseTime then
+                -- 切换到下落阶段
+                p.jumpPhase = "fall"
+                p.jumpElapsed = 0
+                p.jumpStartY = currentY + (targetY - currentY)  -- 实际顶点 Y
+            end
+
+            p.body.linearVelocity = Vector3(finalVx, vy, 0)
+
+        elseif p.jumpPhase == "fall" then
+            -- 计算当前下落进度（归一化 0~1）
+            local T_fall = Config.JumpFallTime
+            local fallProgress = math.min(p.jumpElapsed / T_fall, 1.0)
+
+            -- =====================
+            -- 顶点滞空（Apex Hang Time）
+            -- 在下落初期（刚过顶点），减缓时间流速 → 滞空感
+            -- =====================
+            local effectiveDt = dt
+            if fallProgress < Config.ApexHangThreshold then
+                effectiveDt = dt * Config.ApexHangGravityMul
+                -- 减慢 jumpElapsed 增长（上面已经 += dt，需要补偿）
+                p.jumpElapsed = p.jumpElapsed - dt + effectiveDt
+            end
+
+            local displacement = CurveJumpY("fall", p.jumpElapsed)
+            local currentHeight = displacement  -- CurveJumpY("fall") 返回 H*(1-t^e)，从 H 递减到 0
+            local targetY = p.jumpStartY - (Config.JumpHeight - currentHeight)
+
+            local currentY = p.node.position.y
+            local vy = (targetY - currentY) / dt
+
+            -- 下落阶段结束 或 落地
+            if p.jumpElapsed >= T_fall or p.onGround then
+                p.curveJumping = false
+                p.jumpPhase = "none"
+                -- 落地后恢复物理控制，清零 Y 速度
+                p.body.linearVelocity = Vector3(finalVx, 0, 0)
+                return
+            end
+
+            p.body.linearVelocity = Vector3(finalVx, vy, 0)
+        end
+    else
+        -- 非跳跃中：正常物理 Y（重力自然下落）
+        p.body.linearVelocity = Vector3(finalVx, vel.y, 0)
+    end
+
+    -- =====================
+    -- 跳跃输入（土狼时间 + 缓冲联合判定）
+    -- =====================
+    if p.jumpBufferTimer > 0 and not p.curveJumping then
+        -- 判断是否可以跳跃
+        local canJump = false
+
+        if p.onGround then
+            -- 在地面上
+            canJump = (p.jumpCount < Config.MaxJumps)
+        elseif p.coyoteTimer <= Config.CoyoteTime then
+            -- 土狼时间窗口内（刚离开地面不久）
+            canJump = (p.jumpCount < Config.MaxJumps)
+        elseif p.jumpCount > 0 and p.jumpCount < Config.MaxJumps then
+            -- 多段跳（空中二段跳等）
+            canJump = true
+        end
+
+        if canJump then
+            p.jumpBufferTimer = 0
+            Player.StartCurveJump(p)
+        end
+    end
+
+    -- =====================
+    -- 冲刺
+    -- =====================
     if p.inputDash then
         if p.dashCooldown <= 0 then
             p.dashTimer = Config.DashDuration
@@ -346,7 +549,7 @@ function Player.UpdateMovement(p, dt)
             p.dashCooldown = Config.DashCooldown
             SFX.Play("dash", 0.6)
         end
-        p.inputDash = false  -- 无论是否触发都清除，防止信号锁存
+        p.inputDash = false
     end
 end
 
@@ -599,6 +802,10 @@ function Player.Respawn(p)
     p.wasOnGround = false
     p.dashTimer = 0
     p.dashCooldown = 0
+    p.curveJumping = false
+    p.jumpPhase = "none"
+    p.jumpElapsed = 0
+    p.jumpStartY = 0
 
     -- 回到起点
     local sx, sy = MapData.GetSpawnPosition(p.index)
@@ -630,6 +837,10 @@ function Player.ResetAll()
         p.wasOnGround = false
         p.dashTimer = 0
         p.dashCooldown = 0
+        p.curveJumping = false
+        p.jumpPhase = "none"
+        p.jumpElapsed = 0
+        p.jumpStartY = 0
         p.inputMoveX = 0
         p.inputJump = false
         p.inputDash = false

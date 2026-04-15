@@ -303,6 +303,7 @@ function HandlePlayerInput()
             if input:GetKeyPress(KEY_SPACE) then
                 p.inputJump = true
             end
+            p.jumpHeld = input:GetKeyDown(KEY_SPACE)
 
             -- 冲刺
             if input:GetKeyPress(KEY_SHIFT) then

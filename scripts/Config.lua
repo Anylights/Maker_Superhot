@@ -44,12 +44,28 @@ Config.BlockColors = {
 
 -- 移动系统
 Config.MoveSpeed       = 8.0     -- 水平移动速度 m/s
-Config.JumpSpeed       = 14.0    -- 跳跃初速度 m/s
 Config.MaxJumps        = 1       -- 最大跳跃次数（仅一段跳）
 Config.DashSpeed       = 25.0    -- 冲刺速度 m/s（3x 移动速度，冲刺感更强）
 Config.DashDuration    = 0.22    -- 冲刺持续时间（秒）：覆盖约 5.5m
 Config.DashCooldown    = 2.0     -- 冲刺冷却（秒）
 Config.AirControlRatio = 0.7     -- 空中控制系数
+
+-- 曲线跳跃系统（替代物理跳跃）
+-- 横轴 = 时间，纵轴 = Y 位移，用幂次曲线控制形状
+-- 上升：y(t) = H * (1 - (1-t)^e_rise)，t ∈ [0,1] 映射到 [0, RiseTime]
+-- 下落：y(t) = H * (1 - t^e_fall)，t ∈ [0,1] 映射到 [0, FallTime]
+Config.JumpHeight        = 3.5   -- 跳跃最大高度（米）
+Config.JumpRiseTime      = 0.22  -- 上升持续时间（秒）：越小越快到顶
+Config.JumpFallTime      = 0.18  -- 下落持续时间（秒）：越小落得越快
+Config.JumpRiseExponent  = 2.0   -- 上升曲线指数：>1 前快后慢，=1 线性
+Config.JumpFallExponent  = 2.5   -- 下落曲线指数：>1 先慢后快（重力感）
+
+-- 跳跃手感增强（参考 Celeste / Hollow Knight 设计）
+Config.CoyoteTime        = 0.10  -- 土狼时间：走出平台后仍可跳跃的窗口（秒）
+Config.JumpBufferTime    = 0.10  -- 跳跃缓冲：落地前提前按跳跃的有效窗口（秒）
+Config.JumpCutMultiplier = 0.4   -- 可变跳跃高度：松开跳跃键时 Y 速度乘以此系数（<1 = 短按跳得低）
+Config.ApexHangThreshold = 0.15  -- 顶点滞空：顶点附近速度低于此比例时触发减速
+Config.ApexHangGravityMul = 0.3  -- 顶点滞空时重力/下落速度的缩放系数（<1 = 顶点悬浮更久）
 
 -- 能量系统
 Config.EnergyChargeTime   = 16.0   -- 自动充满时间（秒）

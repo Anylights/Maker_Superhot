@@ -90,6 +90,9 @@ function HandleNanoVGRender(eventType, eventData)
         return
     end
 
+    -- 温暖渐变背景（所有游戏状态共用）
+    HUD.DrawBackground()
+
     -- 世界空间指示器（在 HUD 元素下面绘制）
     if state == "racing" then
         HUD.DrawWorldIndicators()
@@ -119,6 +122,44 @@ end
 
 function HandleScreenMode_HUD(eventType, eventData)
     HUD.RefreshResolution()
+end
+
+-- ============================================================================
+-- 渐变背景
+-- ============================================================================
+
+--- 绘制半透明山丘剪影（叠加在 3D 渐变背景之上）
+--- 注意：不画不透明填充！渐变由 3D 背景面片提供，NanoVG 只叠加装饰
+function HUD.DrawBackground()
+    -- 简约山丘剪影（远景层，半透明）
+    local t = (os.clock() or 0) * 0.02  -- 极慢平移视差
+    -- 远山（浅色）
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, 0, logH_)
+    local hillY1 = logH_ * 0.72
+    for x = 0, logW_, 4 do
+        local y = hillY1 + math.sin((x + t * 30) * 0.008) * logH_ * 0.06
+                        + math.sin((x + t * 50) * 0.015) * logH_ * 0.03
+        nvgLineTo(vg_, x, y)
+    end
+    nvgLineTo(vg_, logW_, logH_)
+    nvgClosePath(vg_)
+    nvgFillColor(vg_, nvgRGBA(180, 140, 110, 35))
+    nvgFill(vg_)
+
+    -- 近山（深色）
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, 0, logH_)
+    local hillY2 = logH_ * 0.82
+    for x = 0, logW_, 4 do
+        local y = hillY2 + math.sin((x + t * 60) * 0.012) * logH_ * 0.04
+                        + math.sin((x + t * 80) * 0.025) * logH_ * 0.02
+        nvgLineTo(vg_, x, y)
+    end
+    nvgLineTo(vg_, logW_, logH_)
+    nvgClosePath(vg_)
+    nvgFillColor(vg_, nvgRGBA(140, 100, 80, 45))
+    nvgFill(vg_)
 end
 
 -- ============================================================================
@@ -186,24 +227,36 @@ function HUD.DrawWorldIndicators()
                 end
             end
 
-            -- ----- 爆炸前摇警告区域 -----
-            if p.exploding then
+            -- ----- 蓄力警告区域（大小随 chargeProgress 动态变化，颜色跟随玩家） -----
+            if p.charging then
                 local sx, sy = Camera.WorldToScreen(pos.x, pos.y, logW_, logH_)
-                local worldRadius = Config.ExplosionRadius * Config.BlockSize
-                local screenRadius = Camera.WorldSizeToScreen(worldRadius, logH_)
+                local maxWorldRadius = Config.ExplosionRadius * Config.BlockSize
+                local currentWorldRadius = maxWorldRadius * p.chargeProgress
+                local screenRadius = Camera.WorldSizeToScreen(currentWorldRadius, logH_)
 
-                -- 闪烁 alpha
-                local pulse = math.abs(math.sin(os.clock() * 8)) * 0.4 + 0.2
+                -- 玩家颜色
+                local pc = Config.PlayerColors[p.index]
+                local pr = math.floor(pc.r * 255)
+                local pg = math.floor(pc.g * 255)
+                local pb = math.floor(pc.b * 255)
 
-                -- 半透明红色填充
+                -- 闪烁频率随蓄力进度加快
+                local freq = 4 + p.chargeProgress * 12
+                local pulse = math.abs(math.sin(os.clock() * freq)) * 0.4 + 0.2
+
+                -- 半透明玩家色填充（30%~50%不透明度，随脉冲闪烁）
+                local fillAlpha = math.floor(52 + pulse * 127)  -- 77~128 (≈30%~50%)
                 nvgBeginPath(vg_)
                 nvgCircle(vg_, sx, sy, screenRadius)
-                nvgFillColor(vg_, nvgRGBA(255, 40, 30, math.floor(pulse * 80)))
+                nvgFillColor(vg_, nvgRGBA(pr, pg, pb, fillAlpha))
                 nvgFill(vg_)
 
-                -- 红色虚线描边
-                drawDashedCircle(sx, sy, screenRadius, 255, 60, 40,
-                    math.floor(pulse * 255 + 80), 2.0)
+                -- 玩家色虚线描边
+                local strokeAlpha = math.floor(pulse * 200 + 55 + p.chargeProgress * 80)
+                drawDashedCircle(sx, sy, screenRadius, pr, pg, pb,
+                    math.min(255, strokeAlpha), 2.0)
+
+
             end
         end
     end
@@ -501,90 +554,70 @@ end
 -- HUD 组件
 -- ============================================================================
 
---- 绘制玩家能量条（左上角）
+--- 绘制玩家能量条（角色头顶，世界空间投影）
 function HUD.DrawEnergyBars()
     if playerModule_ == nil then return end
 
-    local barW = 120
-    local barH = 14
-    local gap = 6
-    local startX = 16
-    local startY = 16
+    for _, p in ipairs(playerModule_.list) do
+        if not p.alive or not p.node then goto continueBar end
 
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 13)
-
-    for i, p in ipairs(playerModule_.list) do
-        local x = startX
-        local y = startY + (i - 1) * (barH + gap)
-
-        local color = Config.PlayerColors[i]
+        local pos = p.node.position
+        local color = Config.PlayerColors[p.index]
         local r = math.floor(color.r * 255)
         local g = math.floor(color.g * 255)
         local b = math.floor(color.b * 255)
 
-        -- 玩家标签
-        nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-        nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-        nvgText(vg_, x, y + barH * 0.5, "P" .. i)
+        -- 世界坐标转屏幕坐标（角色头顶上方）
+        local headY = pos.y + 0.75
+        local sx, sy = Camera.WorldToScreen(pos.x, headY, logW_, logH_)
 
-        local bx = x + 26
-        -- 背景
+        -- 进度条尺寸基于世界空间，自适应缩放
+        local barWorldW = 1.1  -- 世界单位宽度（略大于1个方块）
+        local barW = Camera.WorldSizeToScreen(barWorldW, logH_)
+        if barW < 24 then barW = 24 end
+        local barH = math.max(5, math.min(10, barW * 0.14))
+        local cornerR = barH * 0.4
+        local bx = sx - barW * 0.5
+        local by = sy - barH - 2
+
+        -- 背景（深色半透明）
         nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, bx, y, barW, barH, 3)
-        nvgFillColor(vg_, nvgRGBA(40, 40, 50, 180))
+        nvgRoundedRect(vg_, bx, by, barW, barH, cornerR)
+        nvgFillColor(vg_, nvgRGBA(30, 20, 15, 180))
         nvgFill(vg_)
 
         -- 能量填充
         local fillW = barW * math.min(1, p.energy)
-        if fillW > 1 then
+        if fillW > 0.5 then
             nvgBeginPath(vg_)
-            nvgRoundedRect(vg_, bx, y, fillW, barH, 3)
-            -- 充满时高亮
+            nvgRoundedRect(vg_, bx, by, fillW, barH, cornerR)
             if p.energy >= 1.0 then
-                -- 充满闪烁
-                local pulse = math.abs(math.sin(os.clock() * 4)) * 80 + 175
-                nvgFillColor(vg_, nvgRGBA(255, 200, 50, math.floor(pulse)))
+                -- 充满闪烁（危险红）
+                local pulse = math.abs(math.sin(os.clock() * 4)) * 55 + 200
+                nvgFillColor(vg_, nvgRGBA(255, 40, 30, math.floor(pulse)))
             else
-                nvgFillColor(vg_, nvgRGBA(50, 200, 240, 220))
+                nvgFillColor(vg_, nvgRGBA(180, 220, 255, 210))
             end
             nvgFill(vg_)
         end
 
-        -- 百分比文字
-        local pct = math.floor(p.energy * 100)
-        nvgFillColor(vg_, nvgRGBA(255, 255, 255, 200))
-        nvgFontSize(vg_, 11)
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgText(vg_, bx + barW * 0.5, y + barH * 0.5, pct .. "%")
-
-        -- 爆炸前摇指示
-        if p.exploding then
-            nvgFillColor(vg_, nvgRGBA(255, 80, 30, 220))
-            nvgFontSize(vg_, 12)
-            nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-            nvgText(vg_, bx + barW + 6, y + barH * 0.5, "BOOM!")
-        end
-
-        -- 死亡状态
-        if not p.alive then
-            nvgBeginPath(vg_)
-            nvgRoundedRect(vg_, bx, y, barW, barH, 3)
-            nvgFillColor(vg_, nvgRGBA(0, 0, 0, 160))
-            nvgFill(vg_)
-            nvgFillColor(vg_, nvgRGBA(255, 60, 60, 255))
-            nvgFontSize(vg_, 11)
-            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-            nvgText(vg_, bx + barW * 0.5, y + barH * 0.5, "DEAD")
-        end
+        -- 边框
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, bx, by, barW, barH, cornerR)
+        nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 60))
+        nvgStrokeWidth(vg_, 1.0)
+        nvgStroke(vg_)
 
         -- 已完成标记
         if p.finished then
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, math.max(10, barH * 2.5))
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
             nvgFillColor(vg_, nvgRGBA(50, 255, 80, 255))
-            nvgFontSize(vg_, 12)
-            nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-            nvgText(vg_, bx + barW + 6, y + barH * 0.5, "#" .. p.finishOrder)
+            nvgText(vg_, sx, by - 2, "#" .. p.finishOrder)
         end
+
+        ::continueBar::
     end
 end
 
@@ -655,7 +688,7 @@ function HUD.DrawRoundTimer()
         local pulse = math.abs(math.sin(os.clock() * 3)) * 100 + 50
         nvgFillColor(vg_, nvgRGBA(180, 30, 30, math.floor(pulse) + 100))
     else
-        nvgFillColor(vg_, nvgRGBA(30, 30, 40, 200))
+        nvgFillColor(vg_, nvgRGBA(50, 38, 30, 210))
     end
     nvgFill(vg_)
 
@@ -678,7 +711,7 @@ function HUD.DrawRoundInfo()
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 12)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-    nvgFillColor(vg_, nvgRGBA(200, 200, 210, 180))
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
 
     local roundText = "ROUND " .. gameManager_.round
     nvgText(vg_, logW_ * 0.5, 46, roundText)
@@ -692,10 +725,10 @@ end
 function HUD.DrawCountdown()
     if gameManager_ == nil then return end
 
-    -- 半透明背景
+    -- 半透明暖色背景
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 100))
+    nvgFillColor(vg_, nvgRGBA(40, 25, 15, 100))
     nvgFill(vg_)
 
     local num = gameManager_.GetCountdownNumber()
@@ -720,7 +753,7 @@ function HUD.DrawCountdown()
 
     -- 提示
     nvgFontSize(vg_, 18)
-    nvgFillColor(vg_, nvgRGBA(220, 220, 230, 200))
+    nvgFillColor(vg_, nvgRGBA(220, 200, 170, 200))
     nvgText(vg_, logW_ * 0.5, logH_ * 0.5 + 80, "Get Ready!")
 end
 
@@ -730,7 +763,7 @@ function HUD.DrawRoundEnd()
 
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 140))
+    nvgFillColor(vg_, nvgRGBA(40, 25, 15, 140))
     nvgFill(vg_)
 
     nvgFontFace(vg_, "bold")
@@ -768,7 +801,7 @@ function HUD.DrawScoreScreen()
 
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillColor(vg_, nvgRGBA(15, 15, 25, 210))
+    nvgFillColor(vg_, nvgRGBA(35, 22, 15, 215))
     nvgFill(vg_)
 
     -- 标题
@@ -811,11 +844,11 @@ function HUD.DrawScoreScreen()
         nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
         nvgText(vg_, labelX, y + barH * 0.5, "P" .. idx)
 
-        -- 背景条
+        -- 背景条（暖棕）
         local bx = logW_ * 0.5 - barMaxW * 0.5
         nvgBeginPath(vg_)
         nvgRoundedRect(vg_, bx, y, barMaxW, barH, 4)
-        nvgFillColor(vg_, nvgRGBA(40, 40, 50, 180))
+        nvgFillColor(vg_, nvgRGBA(55, 40, 30, 190))
         nvgFill(vg_)
 
         -- 填充条
@@ -836,7 +869,7 @@ function HUD.DrawScoreScreen()
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 14)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(vg_, nvgRGBA(180, 180, 190, 180))
+    nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
     nvgText(vg_, logW_ * 0.5, logH_ - 30, "Next round starting soon...")
 end
 
@@ -846,7 +879,7 @@ function HUD.DrawMatchEnd()
 
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillColor(vg_, nvgRGBA(10, 10, 20, 220))
+    nvgFillColor(vg_, nvgRGBA(30, 18, 10, 225))
     nvgFill(vg_)
 
     local winner = gameManager_.GetWinner()
@@ -887,15 +920,15 @@ function HUD.DrawMatchEnd()
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 16)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(vg_, nvgRGBA(180, 180, 190, 180))
+    nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
     nvgText(vg_, logW_ * 0.5, logH_ - 30, "New match starting soon...")
 end
 
 --- 主菜单界面
 function HUD.DrawMenu()
-    -- 全屏背景渐变（深蓝到深紫）
+    -- 全屏背景渐变（温暖深棕到暖橙）
     local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(15, 10, 35, 255), nvgRGBA(35, 15, 25, 255))
+        nvgRGBA(45, 25, 15, 255), nvgRGBA(60, 30, 20, 255))
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
     nvgFillPaint(vg_, bgPaint)
@@ -952,14 +985,14 @@ function HUD.DrawMenu()
     local panelX = cx - panelW * 0.5
     local panelY = cy + 55
 
-    -- 面板背景
+    -- 面板背景（暖棕半透明）
     nvgBeginPath(vg_)
     nvgRoundedRect(vg_, panelX, panelY, panelW, panelH, 10)
-    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
+    nvgFillColor(vg_, nvgRGBA(30, 18, 10, 140))
     nvgFill(vg_)
 
-    -- 面板边框
-    nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 40))
+    -- 面板边框（暖色）
+    nvgStrokeColor(vg_, nvgRGBA(220, 180, 130, 50))
     nvgStrokeWidth(vg_, 1)
     nvgStroke(vg_)
 
@@ -972,12 +1005,12 @@ function HUD.DrawMenu()
     -- 操作说明内容
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 14)
-    nvgFillColor(vg_, nvgRGBA(210, 210, 220, 220))
+    nvgFillColor(vg_, nvgRGBA(220, 200, 180, 220))
     local instructions = {
         "A / D  或  ← / →    移动",
         "空格                  跳跃",
         "Shift                 冲刺（无视重力！）",
-        "E                     爆炸（消耗能量）",
+        "鼠标左键（按住蓄力）  爆炸（消耗能量）",
         "P                     调参面板",
     }
     for i, line in ipairs(instructions) do
@@ -1004,7 +1037,7 @@ function HUD.DrawMenu()
         nvgFill(vg_)
 
         -- 玩家标签
-        nvgFillColor(vg_, nvgRGBA(200, 200, 210, 200))
+        nvgFillColor(vg_, nvgRGBA(210, 190, 170, 200))
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
         local label = i == 1 and "P1 你" or ("P" .. i .. " AI")
         nvgText(vg_, dx, dotY + 12, label)
@@ -1016,7 +1049,7 @@ function HUD.DrawControls()
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 12)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(vg_, nvgRGBA(180, 180, 190, 140))
+    nvgFillColor(vg_, nvgRGBA(160, 140, 120, 140))
     nvgText(vg_, logW_ * 0.5, logH_ - 8, "A/D: Move  SPACE: Jump  SHIFT: Dash  E: Explode  TAB: Debug")
 end
 

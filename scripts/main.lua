@@ -19,12 +19,20 @@ local SFX = require("SFX")
 -- 调参面板（仅客户端加载，服务端跳过）
 ---@type table|nil
 local TuningPanel = nil
+---@type table|nil
+local ExplosionTuningPanel = nil
 if not IsServerMode or not IsServerMode() then
     local ok, mod = pcall(require, "TuningPanel")
     if ok then
         TuningPanel = mod
     else
         print("[Main] TuningPanel load skipped: " .. tostring(mod))
+    end
+    local ok2, mod2 = pcall(require, "ExplosionTuningPanel")
+    if ok2 then
+        ExplosionTuningPanel = mod2
+    else
+        print("[Main] ExplosionTuningPanel load skipped: " .. tostring(mod2))
     end
 end
 
@@ -78,8 +86,8 @@ function Start()
     renderer:SetViewport(0, viewport)
     renderer.hdrRendering = true
 
-    -- 设置默认背景色（深色）
-    renderer.defaultZone.fogColor = Color(0.12, 0.12, 0.18)
+    -- 设置默认背景色（暖桃色，3D 清屏色）
+    renderer.defaultZone.fogColor = Color(0.95, 0.82, 0.68)
 
     -- 创建游戏内容
     CreateGameContent()
@@ -90,6 +98,9 @@ function Start()
     -- 初始化调参面板（加载存档并应用到 Config）
     if TuningPanel then
         TuningPanel.Init(scene_)
+    end
+    if ExplosionTuningPanel then
+        ExplosionTuningPanel.Init(scene_)
     end
 
     -- 订阅事件
@@ -102,6 +113,9 @@ end
 function Stop()
     if TuningPanel then
         TuningPanel.Shutdown()
+    end
+    if ExplosionTuningPanel then
+        ExplosionTuningPanel.Shutdown()
     end
     print("[Main] Game stopped")
 end
@@ -138,8 +152,8 @@ function CreateScene()
             end
         end
         if zoneComp then
-            zoneComp.fogColor = Color(0.12, 0.12, 0.18)
-            print("[Main] Zone fogColor overridden to dark")
+            zoneComp.fogColor = Color(0.95, 0.82, 0.68)
+            print("[Main] Zone fogColor overridden to warm peach")
         end
     else
         CreateFallbackLighting()
@@ -165,8 +179,8 @@ function CreateFallbackLighting()
     local zoneNode = scene_:CreateChild("Zone")
     local zone = zoneNode:CreateComponent("Zone")
     zone.boundingBox = BoundingBox(-200.0, 200.0)
-    zone.ambientColor = Color(0.35, 0.35, 0.4)
-    zone.fogColor = Color(0.12, 0.12, 0.18)
+    zone.ambientColor = Color(0.40, 0.35, 0.30)
+    zone.fogColor = Color(0.95, 0.82, 0.68)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
 
@@ -184,7 +198,62 @@ end
 -- 游戏内容
 -- ============================================================================
 
+--- 创建 3D 渐变背景平面（位于所有游戏元素后方）
+function CreateBackgroundPlane()
+    local topColor = Config.BgColorTop
+    local botColor = Config.BgColorBot
+    local size = 200  -- 足够大覆盖正交相机视野
+
+    -- 用多条水平带模拟渐变（8 条）
+    local strips = 8
+    local bgNode = scene_:CreateChild("BackgroundGradient")
+    bgNode.position = Vector3(0, 0, 5)  -- Z=+5，在游戏元素（Z=0）后面
+
+    local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
+
+    for i = 0, strips - 1 do
+        local t0 = i / strips
+        local t1 = (i + 1) / strips
+
+        -- 插值颜色（从顶到底）
+        local r0 = topColor[1] + (botColor[1] - topColor[1]) * t0
+        local g0 = topColor[2] + (botColor[2] - topColor[2]) * t0
+        local b0 = topColor[3] + (botColor[3] - topColor[3]) * t0
+        local r1 = topColor[1] + (botColor[1] - topColor[1]) * t1
+        local g1 = topColor[2] + (botColor[2] - topColor[2]) * t1
+        local b1 = topColor[3] + (botColor[3] - topColor[3]) * t1
+
+        -- 每条带取中间色作为材质颜色
+        local midR = (r0 + r1) * 0.5
+        local midG = (g0 + g1) * 0.5
+        local midB = (b0 + b1) * 0.5
+
+        local stripNode = bgNode:CreateChild("Strip" .. i)
+        local yTop = size * (1 - t0 * 2)   -- +size → -size（从上到下）
+        local yBot = size * (1 - t1 * 2)
+        stripNode.position = Vector3(0, (yTop + yBot) * 0.5, 0)
+        stripNode.scale = Vector3(size * 2, yTop - yBot, 0.1)
+
+        local model = stripNode:CreateComponent("StaticModel")
+        model.model = cache:GetResource("Model", "Models/Box.mdl")
+        model.castShadows = false
+
+        local mat = Material:new()
+        mat:SetTechnique(0, pbrTech)
+        mat:SetShaderParameter("MatDiffColor", Variant(Color(midR, midG, midB, 1.0)))
+        mat:SetShaderParameter("MatEmissiveColor", Variant(Color(midR * 0.3, midG * 0.3, midB * 0.3)))
+        mat:SetShaderParameter("Metallic", Variant(0.0))
+        mat:SetShaderParameter("Roughness", Variant(1.0))
+        model:SetMaterial(mat)
+    end
+
+    print("[Main] Background gradient plane created (" .. strips .. " strips)")
+end
+
 function CreateGameContent()
+    -- 创建渐变背景平面
+    CreateBackgroundPlane()
+
     -- 构建地图
     Map.Build()
 
@@ -229,13 +298,16 @@ function HandleUpdate(eventType, eventData)
         return  -- 菜单状态不处理其他逻辑
     end
 
-    -- 调参面板切换（P 键）
+    -- 调参面板切换（P 键 = 手感调参，O 键 = 爆炸调参）
     if TuningPanel and input:GetKeyPress(KEY_P) then
         TuningPanel.Toggle()
     end
+    if ExplosionTuningPanel and input:GetKeyPress(KEY_O) then
+        ExplosionTuningPanel.Toggle()
+    end
 
     -- 调参面板打开时暂停游戏计时（状态机不推进）
-    local tuningOpen = TuningPanel and TuningPanel.IsVisible()
+    local tuningOpen = (TuningPanel and TuningPanel.IsVisible()) or (ExplosionTuningPanel and ExplosionTuningPanel.IsVisible())
     if not tuningOpen then
         GameManager.Update(dt)
     end
@@ -253,7 +325,8 @@ function HandleUpdate(eventType, eventData)
                 p.inputMoveX = 0
                 p.inputJump = false
                 p.inputDash = false
-                p.inputExplode = false
+                p.inputCharging = false
+                p.inputExplodeRelease = false
             end
         end
     end
@@ -301,7 +374,7 @@ end
 --- 处理人类玩家输入（P1）
 function HandlePlayerInput()
     -- 调参面板打开且鼠标在面板上时，不处理游戏输入
-    if TuningPanel and TuningPanel.IsPointerOver() then
+    if (TuningPanel and TuningPanel.IsPointerOver()) or (ExplosionTuningPanel and ExplosionTuningPanel.IsPointerOver()) then
         return
     end
 
@@ -326,10 +399,16 @@ function HandlePlayerInput()
                 p.inputDash = true
             end
 
-            -- 爆炸
-            if input:GetKeyPress(KEY_E) then
-                p.inputExplode = true
+            -- 爆炸蓄力（鼠标左键按住蓄力，松开触发）
+            local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
+            if leftDown then
+                p.inputCharging = true
             end
+            if p.wasChargingInput and not leftDown then
+                -- 上帧按住 + 本帧松开 = 释放爆炸
+                p.inputExplodeRelease = true
+            end
+            p.wasChargingInput = leftDown
         end
     end
 end

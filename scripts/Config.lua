@@ -10,19 +10,27 @@ Config.Title = "超级红温！"
 -- 方块/网格尺寸（米）
 Config.BlockSize = 1.0
 
--- 玩家颜色（4 名玩家）
+-- 玩家颜色（4 名玩家）— 高饱和鲜艳
 Config.PlayerColors = {
-    Color(0.90, 0.25, 0.20, 1.0),  -- 红
-    Color(0.20, 0.55, 0.90, 1.0),  -- 蓝
-    Color(0.25, 0.80, 0.35, 1.0),  -- 绿
-    Color(0.95, 0.75, 0.15, 1.0),  -- 黄
+    Color(0.95, 0.22, 0.18, 1.0),  -- 番茄红
+    Color(0.20, 0.48, 0.95, 1.0),  -- 宝蓝
+    Color(0.18, 0.85, 0.35, 1.0),  -- 翠绿
+    Color(0.98, 0.78, 0.12, 1.0),  -- 鲜黄
 }
 
 Config.PlayerEmissive = {
-    Color(0.15, 0.03, 0.02),
-    Color(0.02, 0.08, 0.15),
-    Color(0.03, 0.12, 0.04),
-    Color(0.15, 0.12, 0.02),
+    Color(0.12, 0.02, 0.01),
+    Color(0.01, 0.05, 0.12),
+    Color(0.02, 0.10, 0.03),
+    Color(0.12, 0.10, 0.01),
+}
+
+-- 玩家描边颜色（深色，每色独立）
+Config.PlayerOutlineColors = {
+    Color(0.45, 0.08, 0.06, 1.0),  -- 深红
+    Color(0.06, 0.15, 0.50, 1.0),  -- 深蓝
+    Color(0.06, 0.35, 0.10, 1.0),  -- 深绿
+    Color(0.50, 0.35, 0.03, 1.0),  -- 深黄
 }
 
 -- 方块类型
@@ -33,14 +41,31 @@ Config.BLOCK_ENERGY_PAD = 3  -- 能量托台（亮色）
 Config.BLOCK_SPAWN      = 4  -- 起点
 Config.BLOCK_FINISH     = 5  -- 终点
 
--- 方块颜色
+-- 方块颜色（温暖色调）
 Config.BlockColors = {
-    [1] = Color(0.85, 0.85, 0.88, 1.0),   -- 普通：浅灰白
-    [2] = Color(0.25, 0.25, 0.30, 1.0),   -- 安全：深灰
-    [3] = Color(0.40, 0.85, 0.95, 1.0),   -- 能量托台：亮青
-    [4] = Color(0.30, 0.90, 0.40, 1.0),   -- 起点：绿色
-    [5] = Color(1.00, 0.85, 0.20, 1.0),   -- 终点：金色
+    [1] = Color(0.92, 0.88, 0.82, 1.0),   -- 普通：奶白
+    [2] = Color(0.30, 0.25, 0.22, 1.0),   -- 安全：巧克力灰
+    [3] = Color(0.35, 0.85, 0.80, 1.0),   -- 能量托台：薄荷绿
+    [4] = Color(0.45, 0.88, 0.40, 1.0),   -- 起点：暖绿
+    [5] = Color(1.00, 0.75, 0.15, 1.0),   -- 终点：橙金
 }
+
+-- 方块描边颜色（统一深棕）
+Config.BlockOutlineColor = Color(0.20, 0.16, 0.13, 1.0)
+
+-- 橡皮质感 PBR 参数
+Config.RubberMetallic  = 0.02
+Config.RubberRoughness = 0.65
+
+-- 背景渐变色（NanoVG 绘制）
+Config.BgColorTop = { 0.98, 0.85, 0.70 }  -- 温暖桃色
+Config.BgColorBot = { 0.88, 0.65, 0.60 }  -- 淡玫瑰
+
+-- 拾取物颜色
+Config.PickupSmallColor   = Color(0.30, 0.90, 0.85, 1.0)  -- 薄荷
+Config.PickupSmallOutline = Color(0.08, 0.40, 0.38, 1.0)
+Config.PickupLargeColor   = Color(1.00, 0.80, 0.15, 1.0)  -- 金
+Config.PickupLargeOutline = Color(0.50, 0.35, 0.03, 1.0)
 
 -- 移动系统
 Config.MoveSpeed       = 8.0     -- 水平移动速度 m/s
@@ -67,10 +92,10 @@ Config.LargeEnergyAmount  = 0.40   -- 大能量块增加量
 Config.PickupRespawnTime  = 8.0    -- 道具刷新时间（秒）
 
 -- 爆炸系统
-Config.ExplosionRadius    = 7      -- 爆炸半径（格）
-Config.ExplosionWindup    = 0.35   -- 爆炸前摇（秒）
-Config.ExplosionRecovery  = 0.20   -- 爆炸后摇（秒）
-Config.PlatformRespawnTime = 3.5   -- 平台重生时间（秒）
+Config.ExplosionRadius     = 7      -- 爆炸最大半径（格）
+Config.ExplosionChargeTime = 2.5    -- 蓄力到最大范围的时间（秒）
+Config.ExplosionRecovery   = 0.20   -- 爆炸后摇（秒）
+Config.PlatformRespawnTime = 6.0    -- 平台重生时间（秒）
 
 -- 死亡与重生
 Config.RespawnDelay       = 1.5    -- 复活等待（秒）

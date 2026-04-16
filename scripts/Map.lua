@@ -32,6 +32,9 @@ local debris_ = {}
 -- 重生缩放动画列表：{ node, timer, duration }
 local respawnAnims_ = {}
 
+-- 描边材质缓存
+local outlineMat_ = nil
+
 -- ============================================================================
 -- 圆角矩形生成（CustomGeometry）
 -- ============================================================================
@@ -175,6 +178,13 @@ function Map.Init(scene)
         materialCache_[blockType] = Map.CreateBlockMaterial(color, blockType)
     end
 
+    -- 创建描边材质（深棕色，哑光）
+    outlineMat_ = Material:new()
+    outlineMat_:SetTechnique(0, pbrTechnique_)
+    outlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.BlockOutlineColor))
+    outlineMat_:SetShaderParameter("Metallic", Variant(0.0))
+    outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
+
     print("[Map] Initialized")
 end
 
@@ -186,8 +196,8 @@ function Map.CreateBlockMaterial(color, blockType)
     local mat = Material:new()
     mat:SetTechnique(0, pbrTechnique_)
     mat:SetShaderParameter("MatDiffColor", Variant(color))
-    mat:SetShaderParameter("Metallic", Variant(0.05))
-    mat:SetShaderParameter("Roughness", Variant(0.65))
+    mat:SetShaderParameter("Metallic", Variant(Config.RubberMetallic))
+    mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
 
     -- 特殊方块的自发光
     if blockType == Config.BLOCK_ENERGY_PAD then
@@ -258,6 +268,17 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local mat = materialCache_[blockType]
     if mat then
         geom:SetMaterial(mat)
+    end
+
+    -- 描边子节点（在方块后面 Z+0.1，略大）
+    local outlineNode = node:CreateChild("Outline")
+    outlineNode.position = Vector3(0, 0, 0.1)
+    outlineNode.scale = Vector3(1.12, 1.12, 1.0)
+    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+    buildRoundedBox(outlineGeom, bs, 0.1)
+    outlineGeom.castShadows = false
+    if outlineMat_ then
+        outlineGeom:SetMaterial(outlineMat_)
     end
 
     -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）

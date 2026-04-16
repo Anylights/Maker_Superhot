@@ -53,7 +53,10 @@ function AIController.Register(playerData)
         moveDir = 1,          -- 1=右 -1=左
         wantJump = false,
         wantDash = false,
-        wantExplode = false,
+        -- 蓄力爆炸状态
+        isCharging = false,        -- AI 是否在蓄力中
+        chargeHoldTime = 0,        -- AI 计划蓄力持续时间（秒）
+        chargeElapsed = 0,         -- AI 已蓄力时间（秒）
         stuckTimer = 0,
         lastX = 0,
         lastY = 0,
@@ -117,9 +120,19 @@ function AIController.UpdateOne(p, dt)
         state.wantDash = false
     end
 
-    if state.wantExplode then
-        p.inputExplode = true
-        state.wantExplode = false
+    -- 蓄力爆炸：AI 持续按住右键，到达目标时间后松开
+    if state.isCharging then
+        state.chargeElapsed = state.chargeElapsed + dt
+        if state.chargeElapsed >= state.chargeHoldTime then
+            -- 蓄力到目标时间 → 松开触发爆炸
+            p.inputExplodeRelease = true
+            p.inputCharging = false
+            state.isCharging = false
+            state.chargeElapsed = 0
+        else
+            -- 继续按住
+            p.inputCharging = true
+        end
     end
 end
 
@@ -208,8 +221,8 @@ function AIController.Think(p, state)
         end
     end
 
-    -- 爆炸决策：能量满且附近有其他玩家
-    if p.energy >= 1.0 then
+    -- 爆炸决策：能量满且附近有其他玩家 → 开始蓄力
+    if p.energy >= 1.0 and not state.isCharging then
         local shouldExplode = false
 
         for _, other in ipairs(playerModule_.list) do
@@ -228,9 +241,12 @@ function AIController.Think(p, state)
             end
         end
 
-        -- 随机性：不是每次满能量都立刻炸
+        -- 随机性：不是每次满能量都立刻开始蓄力
         if shouldExplode and math.random() > 0.3 then
-            state.wantExplode = true
+            -- AI 随机蓄力 0.8~1.5 秒（不总是蓄满）
+            state.isCharging = true
+            state.chargeHoldTime = 0.8 + math.random() * 0.7
+            state.chargeElapsed = 0
         end
     end
 

@@ -60,11 +60,53 @@ function Player.Create(index, isHuman)
     mat:SetTechnique(0, pbrTechnique_)
     mat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerColors[index]))
     mat:SetShaderParameter("MatEmissiveColor", Variant(Config.PlayerEmissive[index]))
-    mat:SetShaderParameter("Metallic", Variant(0.1))
-    mat:SetShaderParameter("Roughness", Variant(0.5))
+    mat:SetShaderParameter("Metallic", Variant(Config.RubberMetallic))
+    mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
     geom:SetMaterial(mat)
 
-    -- 将 visualNode 引用保存，后面 p 表中会用到
+    -- 描边子节点（在角色后面 Z+0.1，略大）
+    local outlineNode = visualNode:CreateChild("Outline")
+    outlineNode.position = Vector3(0, 0, 0.1)
+    outlineNode.scale = Vector3(1.15, 1.15, 1.0)
+    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+    mapModule_.BuildRoundedBox(outlineGeom, Config.BlockSize, 0.1)
+    outlineGeom.castShadows = false
+    local outlineMat = Material:new()
+    outlineMat:SetTechnique(0, pbrTechnique_)
+    outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[index]))
+    outlineMat:SetShaderParameter("Metallic", Variant(0.0))
+    outlineMat:SetShaderParameter("Roughness", Variant(1.0))
+    outlineGeom:SetMaterial(outlineMat)
+
+    -- 眼睛（两个扁圆片，无光照纯色，颜色与描边相同）
+    local sphereModel = cache:GetResource("Model", "Models/Sphere.mdl")
+    local unlitTechnique = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
+    local eyeMat = Material:new()
+    eyeMat:SetTechnique(0, unlitTechnique)
+    eyeMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[index]))
+
+    -- 眼睛基础参数（记录到 p 数据表用于动画）
+    local eyeBaseX = 0.16        -- 眼睛到中心的水平距离
+    local eyeBaseY = 0.06        -- 眼睛垂直偏移
+    local eyeBaseZ = -0.48       -- 前表面
+    local eyeRadius = 0.22       -- 眼睛半径（直径≈0.44，占体宽~44%）
+
+    local eyeL = visualNode:CreateChild("EyeL")
+    eyeL.position = Vector3(-eyeBaseX, eyeBaseY, eyeBaseZ)
+    eyeL.scale = Vector3(eyeRadius, eyeRadius, eyeRadius * 0.35)
+    local eyeLModel = eyeL:CreateComponent("StaticModel")
+    eyeLModel.model = sphereModel
+    eyeLModel.castShadows = false
+    eyeLModel:SetMaterial(eyeMat)
+
+    local eyeR = visualNode:CreateChild("EyeR")
+    eyeR.position = Vector3(eyeBaseX, eyeBaseY, eyeBaseZ)
+    eyeR.scale = Vector3(eyeRadius, eyeRadius, eyeRadius * 0.35)
+    local eyeRModel = eyeR:CreateComponent("StaticModel")
+    eyeRModel.model = sphereModel
+    eyeRModel.castShadows = false
+    eyeRModel:SetMaterial(eyeMat)
+
     -- 动态刚体
     local body = node:CreateComponent("RigidBody")
     body.mass = 1.0
@@ -90,6 +132,7 @@ function Player.Create(index, isHuman)
         visualNode = visualNode,
         body = body,
         material = mat,
+        outlineMat = outlineMat,
         isHuman = isHuman,
 
         -- 移动
@@ -113,10 +156,11 @@ function Player.Create(index, isHuman)
         -- 能量
         energy = 0,
 
-        -- 爆炸
-        exploding = false,     -- 是否在爆炸前摇中
-        explodeTimer = 0,
-        explodeRecovery = 0,   -- 爆炸后摇
+        -- 爆炸（蓄力机制）
+        charging = false,       -- 是否在蓄力中
+        chargeTimer = 0,        -- 蓄力计时（0→ChargeTime）
+        chargeProgress = 0,     -- 蓄力进度（0→1）
+        explodeRecovery = 0,    -- 爆炸后摇
 
         -- 生命状态
         alive = true,
@@ -131,7 +175,9 @@ function Player.Create(index, isHuman)
         inputMoveX = 0,
         inputJump = false,
         inputDash = false,
-        inputExplode = false,
+        inputCharging = false,       -- 右键按住中
+        inputExplodeRelease = false, -- 右键松开（触发爆炸）
+        wasChargingInput = false,    -- 上帧右键状态（用于松开检测）
 
         -- 视觉动效（squash & stretch）
         squashScaleX = 1.0,    -- 当前形变 X 比例
@@ -139,6 +185,19 @@ function Player.Create(index, isHuman)
         squashVelX = 0,        -- 弹簧速度 X
         squashVelY = 0,        -- 弹簧速度 Y
         dashRoll = 0,          -- 冲刺旋转角度（度）
+
+        -- 眼睛动画参数
+        eyeOffsetX = 0,        -- 当前眼球水平偏移量
+        eyeOffsetY = 0,        -- 当前眼球垂直偏移量
+        eyeBaseX = eyeBaseX,   -- 眼睛基础水平距离
+        eyeBaseY = eyeBaseY,   -- 眼睛基础垂直偏移
+        eyeBaseZ = eyeBaseZ,   -- 眼睛基础Z
+        eyeRadius = eyeRadius, -- 眼睛基础半径
+        blinkTimer = 0,        -- 眨眼计时器
+        blinkInterval = 3.0 + math.random() * 3.0,  -- 下次眨眼间隔（3~6秒随机）
+        blinkPhase = 0,        -- 眨眼阶段进度 0~1
+        isBlinking = false,    -- 是否在眨眼中
+        idleTimer = 0,         -- 静止计时器
     }
 
     -- 注册碰撞回调
@@ -311,15 +370,23 @@ function Player.UpdateOne(p, dt)
         return  -- 后摇期间不能移动
     end
 
-    -- 爆炸前摇
-    if p.exploding then
-        p.explodeTimer = p.explodeTimer - dt
-        -- 红色闪烁效果
+    -- 蓄力中
+    if p.charging then
+        -- 持续蓄力：计时递增
+        p.chargeTimer = math.min(p.chargeTimer + dt, Config.ExplosionChargeTime)
+        p.chargeProgress = p.chargeTimer / Config.ExplosionChargeTime
+        -- 视觉效果
         Player.UpdateExplodeVisual(p)
-        if p.explodeTimer <= 0 then
-            Player.DoExplode(p)
+        -- 松开右键 → 触发爆炸
+        if p.inputExplodeRelease then
+            Player.DoExplode(p, p.chargeProgress)
+            p.inputExplodeRelease = false
+            p.inputCharging = false
         end
-        return  -- 前摇期间不能移动
+        -- 仍在按住 → 继续蓄力，不能移动
+        p.inputCharging = false
+        p.inputExplodeRelease = false
+        return  -- 蓄力期间不能移动
     end
 
     -- 冲刺冷却
@@ -333,13 +400,14 @@ function Player.UpdateOne(p, dt)
     -- 能量自动充能
     Player.UpdateEnergy(p, dt)
 
-    -- 处理爆炸输入（仅在当前帧能量足够时触发，否则丢弃）
-    if p.inputExplode then
+    -- 处理蓄力输入（右键按住开始蓄力）
+    if p.inputCharging and not p.charging then
         if p.energy >= 1.0 then
-            Player.StartExplode(p)
+            Player.StartCharging(p)
         end
-        p.inputExplode = false  -- 无论是否触发都清除，防止信号锁存
     end
+    p.inputCharging = false
+    p.inputExplodeRelease = false
 
     -- 死亡区域检测
     if p.node and p.node.position.y < Config.DeathY then
@@ -599,6 +667,125 @@ function Player.UpdateVisualEffects(p, dt)
     else
         p.visualNode.rotation = Quaternion.IDENTITY
     end
+
+    -- =====================
+    -- 眼睛动画
+    -- =====================
+    Player.UpdateEyes(p, dt)
+end
+
+--- 更新眼睛动画：方向偏移 + 挤压表情 + 眨眼
+---@param p table
+---@param dt number
+function Player.UpdateEyes(p, dt)
+    if not p.visualNode then return end
+
+    local eyeL = p.visualNode:GetChild("EyeL")
+    local eyeR = p.visualNode:GetChild("EyeR")
+    if eyeL == nil or eyeR == nil then return end
+
+    local bx = p.eyeBaseX
+    local by = p.eyeBaseY
+    local bz = p.eyeBaseZ
+    local r  = p.eyeRadius
+
+    -- =====================
+    -- 1) 水平偏移：跟随移动方向
+    -- =====================
+    local targetOffsetX = p.inputMoveX * 0.13
+    p.eyeOffsetX = p.eyeOffsetX + (targetOffsetX - p.eyeOffsetX) * math.min(1.0, dt * 10)
+
+    -- =====================
+    -- 2) 垂直偏移：跟随跳跃/下落
+    -- =====================
+    local targetOffsetY = 0
+    if p.body then
+        local vy = p.body.linearVelocity.y
+        if vy > 2.0 then
+            -- 上升：眼睛看上方
+            targetOffsetY = math.min(vy / 15.0, 1.0) * 0.10
+        elseif vy < -2.0 then
+            -- 下落：眼睛看下方
+            targetOffsetY = math.max(vy / 15.0, -1.0) * 0.10
+        end
+    end
+    p.eyeOffsetY = p.eyeOffsetY + (targetOffsetY - p.eyeOffsetY) * math.min(1.0, dt * 8)
+
+    -- =====================
+    -- 3) 挤压检测：纵向 OR 横向挤压都触发 >_<
+    -- =====================
+    local isSquished = (p.squashScaleY < 0.93) or (p.squashScaleX < 0.93)
+
+    if isSquished then
+        -- >_< 表情：眼睛变成扁线 + 向内倾斜
+        local minSquash = math.min(p.squashScaleX, p.squashScaleY)
+        local squishFactor = math.max(0.15, (minSquash - 0.5) / (0.93 - 0.5))
+        local flatY = r * 0.22 * squishFactor
+        local flatX = r * 1.3
+
+        eyeL.scale = Vector3(flatX, flatY, r * 0.35)
+        eyeR.scale = Vector3(flatX, flatY, r * 0.35)
+
+        eyeL.rotation = Quaternion(-25, Vector3.FORWARD)
+        eyeR.rotation = Quaternion(25, Vector3.FORWARD)
+
+        -- 挤压时不偏移、不眨眼
+        eyeL.position = Vector3(-bx, by, bz)
+        eyeR.position = Vector3(bx, by, bz)
+        return
+    end
+
+    -- =====================
+    -- 4) 眨眼动画（仅在静止时触发）
+    -- =====================
+    local isIdle = (p.inputMoveX == 0 and p.onGround)
+    if isIdle then
+        p.idleTimer = p.idleTimer + dt
+    else
+        p.idleTimer = 0
+        p.isBlinking = false
+        p.blinkPhase = 0
+    end
+
+    -- 静止超过 1 秒后才开始眨眼计时
+    local blinkScaleY = 1.0
+    if p.idleTimer > 1.0 then
+        p.blinkTimer = p.blinkTimer + dt
+        if not p.isBlinking and p.blinkTimer >= p.blinkInterval then
+            -- 开始眨眼
+            p.isBlinking = true
+            p.blinkPhase = 0
+            p.blinkTimer = 0
+            p.blinkInterval = 2.5 + math.random() * 3.5
+        end
+        if p.isBlinking then
+            p.blinkPhase = p.blinkPhase + dt * 8.0  -- 眨眼速度
+            if p.blinkPhase >= 1.0 then
+                -- 眨眼结束
+                p.isBlinking = false
+                p.blinkPhase = 0
+            else
+                -- 眨眼曲线：0→1→0 正弦，中间完全闭眼
+                blinkScaleY = 1.0 - math.sin(p.blinkPhase * math.pi) * 0.92
+            end
+        end
+    else
+        p.blinkTimer = 0
+    end
+
+    -- =====================
+    -- 5) 应用正常表情
+    -- =====================
+    eyeL.rotation = Quaternion.IDENTITY
+    eyeR.rotation = Quaternion.IDENTITY
+
+    local scaleY = r * blinkScaleY
+    eyeL.scale = Vector3(r, scaleY, r * 0.35)
+    eyeR.scale = Vector3(r, scaleY, r * 0.35)
+
+    local posY = by + p.eyeOffsetY
+    eyeL.position = Vector3(-bx + p.eyeOffsetX, posY, bz)
+    eyeR.position = Vector3(bx + p.eyeOffsetX, posY, bz)
 end
 
 --- 更新能量
@@ -617,30 +804,52 @@ end
 -- 爆炸前摇视觉效果
 -- ============================================================================
 
---- 爆炸前摇红色闪烁 + 缩放脉冲
+--- 蓄力中"红温"闪烁 + 缩放脉冲
+--- 不停在高饱和度/高明度的危险红色和原色之间快速切换
 ---@param p table
 function Player.UpdateExplodeVisual(p)
     if not p.material then return end
-    -- 快速闪烁：原始颜色 ↔ 红色，频率随前摇剩余时间加快
-    local progress = (Config.ExplosionWindup - p.explodeTimer) / Config.ExplosionWindup  -- 0→1
-    local freq = 6 + progress * 14  -- 6→20 Hz
-    local flash = math.sin(p.explodeTimer * freq * math.pi * 2)
-    if flash > 0 then
-        -- 红色
-        p.material:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.15, 0.1, 1.0)))
-        p.material:SetShaderParameter("MatEmissiveColor", Variant(Color(0.8, 0.05, 0.02)))
+    local progress = p.chargeProgress  -- 0→1
+
+    -- 用 chargeTimer 驱动闪烁，频率随蓄力进度加快：3→8 Hz
+    local freq = 3 + progress * 5
+    local phase = p.chargeTimer * freq
+    -- 用 floor 取整实现硬切换（而非 sin 的平滑过渡，确保闪烁清晰可见）
+    local isRed = (math.floor(phase * 2) % 2 == 0)
+
+    -- "红温"强度随蓄力进度增大（刚开始微红，蓄满时全红）
+    local intensity = 0.3 + progress * 0.7  -- 0.3→1.0
+
+    if isRed then
+        -- 红温状态：高饱和度、高明度的危险红
+        local r = 1.0
+        local g = 0.05 * (1.0 - intensity)
+        local b = 0.02 * (1.0 - intensity)
+        p.material:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
+        -- 强烈红色自发光（"红得发光"）
+        local emR = 0.8 + intensity * 0.2   -- 0.8→1.0
+        local emG = 0.05 * (1.0 - intensity)
+        p.material:SetShaderParameter("MatEmissiveColor", Variant(Color(emR, emG, 0.0)))
+        -- 描边也变红
+        if p.outlineMat then
+            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0 * intensity, 0.02, 0.01, 1.0)))
+        end
     else
-        -- 恢复原色
+        -- 短暂恢复原色（形成闪烁对比）
         local c = Config.PlayerColors[p.index]
         local e = Config.PlayerEmissive[p.index]
         p.material:SetShaderParameter("MatDiffColor", Variant(c))
         p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
+        if p.outlineMat then
+            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[p.index]))
+        end
     end
 
-    -- 缩放脉冲：与闪烁同步，幅度随进度增大（0.03→0.12）
+    -- 缩放脉冲：幅度随蓄力进度增大
     if p.visualNode then
-        local pulseAmp = 0.03 + progress * 0.09  -- 幅度从 3% 到 12%
-        local pulseScale = 1.0 + math.abs(flash) * pulseAmp
+        local pulseAmp = 0.03 + progress * 0.09
+        local pulseT = math.sin(p.chargeTimer * freq * math.pi * 2)
+        local pulseScale = 1.0 + math.abs(pulseT) * pulseAmp
         local baseScale = 0.9
         p.visualNode.scale = Vector3(
             baseScale * pulseScale,
@@ -658,46 +867,56 @@ function Player.RestoreMaterial(p)
     local e = Config.PlayerEmissive[p.index]
     p.material:SetShaderParameter("MatDiffColor", Variant(c))
     p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
+    -- 恢复描边颜色
+    if p.outlineMat then
+        p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[p.index]))
+    end
 end
 
 -- ============================================================================
 -- 爆炸
 -- ============================================================================
 
---- 开始爆炸前摇
+--- 开始蓄力
 ---@param p table
-function Player.StartExplode(p)
-    if p.exploding then return end
-    p.exploding = true
-    p.explodeTimer = Config.ExplosionWindup
-    p.inputExplode = false
-    print("[Player] Player " .. p.index .. " charging explosion!")
+function Player.StartCharging(p)
+    if p.charging then return end
+    p.charging = true
+    p.chargeTimer = 0
+    p.chargeProgress = 0
+    print("[Player] Player " .. p.index .. " started charging explosion!")
 end
 
---- 执行爆炸
+--- 执行爆炸（蓄力释放）
 ---@param p table
-function Player.DoExplode(p)
-    p.exploding = false
+---@param progress number 蓄力进度 0→1，决定爆炸半径
+function Player.DoExplode(p, progress)
+    p.charging = false
+    p.chargeTimer = 0
+    p.chargeProgress = 0
     p.energy = 0
     p.explodeRecovery = Config.ExplosionRecovery
     Player.RestoreMaterial(p)
 
     if p.node == nil then return end
 
+    -- 根据蓄力进度计算实际爆炸半径（最少 1 格）
+    local actualRadius = math.max(1, math.floor(Config.ExplosionRadius * progress))
+
     local pos = p.node.position
     local centerGX, centerGY = mapModule_.WorldToGrid(pos.x, pos.y)
 
     -- 破坏地图方块
-    local destroyed = mapModule_.Explode(centerGX, centerGY, Config.ExplosionRadius)
+    local destroyed = mapModule_.Explode(centerGX, centerGY, actualRadius)
 
-    -- 检测范围内其他玩家
-    local radius = Config.ExplosionRadius * Config.BlockSize
+    -- 检测范围内其他玩家（杀伤范围同比缩放）
+    local killRadius = actualRadius * Config.BlockSize
     for _, other in ipairs(Player.list) do
         if other.index ~= p.index and other.alive and other.invincibleTimer <= 0 then
             if other.node then
                 local diff = other.node.position - pos
                 local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
-                if dist <= radius then
+                if dist <= killRadius then
                     Player.Kill(other, "explosion")
                     print("[Player] Player " .. p.index .. " killed Player " .. other.index .. "!")
                 end
@@ -711,7 +930,7 @@ function Player.DoExplode(p)
     -- 爆炸音效
     SFX.Play("explosion", 0.8)
 
-    print("[Player] Player " .. p.index .. " exploded! Destroyed " .. destroyed .. " blocks")
+    print("[Player] Player " .. p.index .. " exploded! Radius=" .. actualRadius .. " Destroyed=" .. destroyed .. " blocks")
 end
 
 --- 生成爆炸粒子特效
@@ -856,9 +1075,10 @@ function Player.Kill(p, reason)
         -- 3) 禁用整个玩家节点（统一用属性赋值风格）
         p.node.enabled = false
 
-        -- 爆炸死亡：喷溅特效（用保存的死亡位置）
+        -- 爆炸死亡：喷溅特效 + 哭脸形象（用保存的死亡位置）
         if reason == "explosion" then
             Player.SpawnSplatFX(deathPos, p.index)
+            Player.SpawnDeathFace(p, deathPos)
         end
     end
 
@@ -932,14 +1152,66 @@ function Player.SpawnSplatFX(pos, playerIndex)
     emitter.autoRemoveMode = REMOVE_NODE
 end
 
+--- 在死亡位置生成哭脸贴图（替代角色形象，直到重生时移除）
+---@param p table 玩家数据
+---@param pos Vector3 死亡位置
+function Player.SpawnDeathFace(p, pos)
+    if scene_ == nil then return end
+
+    -- 移除之前可能残留的哭脸
+    Player.RemoveDeathFace(p)
+
+    -- 与角色完全重合：角色 visualNode 的 scale 是 0.9，BlockSize 是 1.0
+    -- 角色实际视觉尺寸 = BlockSize * 0.9 = 0.9 x 0.9
+    local charSize = Config.BlockSize * 0.9
+
+    local fxNode = scene_:CreateChild("DeathFace_" .. p.index)
+    -- 位置与角色节点位置完全一致（角色的 node.position 就是中心点）
+    fxNode.position = Vector3(pos.x, pos.y, 0)
+
+    -- 用平面模型贴图，面朝摄像机（摄像机在 Z=-40 看向 +Z）
+    -- Plane 默认在 XZ 平面，法线 +Y；左手坐标系绕 X 轴旋转 -90° 使法线指向 -Z（面向摄像机）
+    local planeNode = fxNode:CreateChild("FacePlane")
+    planeNode.position = Vector3(0, 0, -0.5)  -- 角色正面 z 偏移
+    planeNode.scale = Vector3(charSize, 1.0, charSize) -- Plane 默认 1x1，缩放到角色大小
+    planeNode.rotation = Quaternion(-90, Vector3.RIGHT) -- 法线从 +Y 转到 -Z，面向摄像机
+
+    local planeModel = planeNode:CreateComponent("StaticModel")
+    planeModel.model = cache:GetResource("Model", "Models/Plane.mdl")
+    planeModel.castShadows = false
+
+    local faceMat = Material:new()
+    local alphaTexTech = cache:GetResource("Technique", "Techniques/DiffAlpha.xml")
+    faceMat:SetTechnique(0, alphaTexTech)
+    local faceTex = cache:GetResource("Texture2D", "image/Group 4.png")
+    faceMat:SetTexture(TU_DIFFUSE, faceTex)
+    faceMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1)))
+    planeModel:SetMaterial(faceMat)
+
+    print("[Player] SpawnDeathFace for player " .. p.index .. " at (" .. pos.x .. ", " .. pos.y .. ")")
+
+    p.deathFaceNode = fxNode
+end
+
+--- 移除哭脸贴图
+---@param p table 玩家数据
+function Player.RemoveDeathFace(p)
+    if p.deathFaceNode then
+        p.deathFaceNode:Remove()
+        p.deathFaceNode = nil
+    end
+end
+
 --- 重生玩家
 ---@param p table
 function Player.Respawn(p)
+    Player.RemoveDeathFace(p)
     p.alive = true
     p.invincibleTimer = Config.InvincibleDuration
     p.energy = 0
-    p.exploding = false
-    p.explodeTimer = 0
+    p.charging = false
+    p.chargeTimer = 0
+    p.chargeProgress = 0
     p.explodeRecovery = 0
     Player.RestoreMaterial(p)
     p.jumpCount = 0
@@ -977,12 +1249,14 @@ end
 --- 重置所有玩家（新回合）
 function Player.ResetAll()
     for _, p in ipairs(Player.list) do
+        Player.RemoveDeathFace(p)
         p.alive = true
         p.finished = false
         p.finishOrder = 0
         p.energy = 0
-        p.exploding = false
-        p.explodeTimer = 0
+        p.charging = false
+        p.chargeTimer = 0
+        p.chargeProgress = 0
         p.explodeRecovery = 0
         Player.RestoreMaterial(p)
         p.invincibleTimer = 0
@@ -994,7 +1268,9 @@ function Player.ResetAll()
         p.inputMoveX = 0
         p.inputJump = false
         p.inputDash = false
-        p.inputExplode = false
+        p.inputCharging = false
+        p.inputExplodeRelease = false
+        p.wasChargingInput = false
 
         -- 重置视觉动效
         p.squashScaleX = 1.0

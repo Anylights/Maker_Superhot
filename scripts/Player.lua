@@ -842,11 +842,21 @@ function Player.Kill(p, reason)
     -- 隐藏玩家节点 + 停止物理
     if p.node then
         local deathPos = p.node.position
-        p.node:SetEnabled(false)
+
+        -- 1) 先停止物理（必须在禁用节点之前，否则访问已禁用组件可能无效）
         if p.body then
             p.body.linearVelocity = Vector3.ZERO
         end
-        -- 爆炸死亡：喷溅特效
+
+        -- 2) 显式隐藏视觉子节点（双重保险）
+        if p.visualNode then
+            p.visualNode.enabled = false
+        end
+
+        -- 3) 禁用整个玩家节点（统一用属性赋值风格）
+        p.node.enabled = false
+
+        -- 爆炸死亡：喷溅特效（用保存的死亡位置）
         if reason == "explosion" then
             Player.SpawnSplatFX(deathPos, p.index)
         end
@@ -954,7 +964,7 @@ function Player.Respawn(p)
     -- 回到起点
     local sx, sy = MapData.GetSpawnPosition(p.index)
     if p.node then
-        p.node:SetEnabled(true)
+        p.node.enabled = true
         p.node.position = Vector3(sx, sy, 0)
     end
     if p.body then
@@ -1002,7 +1012,7 @@ function Player.ResetAll()
 
         local sx, sy = MapData.GetSpawnPosition(p.index)
         if p.node then
-            p.node:SetEnabled(true)
+            p.node.enabled = true
             p.node.position = Vector3(sx, sy, 0)
         end
         if p.body then

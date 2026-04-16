@@ -30,22 +30,17 @@ local lastSaveTime_ = 0                -- 保存状态显示计时
 -- 参数定义表
 local PARAMS = {
     { key = "MoveSpeed",        label = "移动速度",       min = 2,    max = 25,   step = 0.5,  format = "%.1f" },
-    { key = "JumpHeight",       label = "跳跃高度(m)",    min = 1.0,  max = 8.0,  step = 0.1,  format = "%.1f" },
-    { key = "JumpRiseTime",     label = "上升时间(s)",     min = 0.05, max = 0.6,  step = 0.01, format = "%.2f" },
-    { key = "JumpFallTime",     label = "下落时间(s)",     min = 0.05, max = 0.6,  step = 0.01, format = "%.2f" },
-    { key = "JumpRiseExponent", label = "上升曲线指数",    min = 1.0,  max = 5.0,  step = 0.1,  format = "%.1f" },
-    { key = "JumpFallExponent", label = "下落曲线指数",    min = 1.0,  max = 5.0,  step = 0.1,  format = "%.1f" },
+    { key = "JumpSpeed",        label = "跳跃初速度",     min = 5,    max = 25,   step = 0.5,  format = "%.1f" },
+    { key = "FallGravityMul",   label = "下落重力倍率",    min = 1.0,  max = 5.0,  step = 0.1,  format = "%.1f" },
+    { key = "MaxFallSpeed",     label = "最大下落速度",    min = 10,   max = 50,   step = 1,    format = "%.0f" },
     { key = "MaxJumps",         label = "最大跳跃次数",    min = 1,    max = 5,    step = 1,    format = "%d"   },
     { key = "AirControlRatio",  label = "空中控制系数",    min = 0.1,  max = 1.0,  step = 0.05, format = "%.2f" },
     { key = "CoyoteTime",       label = "土狼时间(s)",     min = 0,    max = 0.3,  step = 0.01, format = "%.2f" },
     { key = "JumpBufferTime",   label = "跳跃缓冲(s)",    min = 0,    max = 0.3,  step = 0.01, format = "%.2f" },
-    { key = "JumpCutMultiplier",label = "松键速度衰减",    min = 0.1,  max = 1.0,  step = 0.05, format = "%.2f" },
-    { key = "ApexHangThreshold",label = "顶点滞空区间",    min = 0,    max = 0.5,  step = 0.01, format = "%.2f" },
-    { key = "ApexHangGravityMul",label = "滞空重力系数",   min = 0.05, max = 1.0,  step = 0.05, format = "%.2f" },
     { key = "DashSpeed",        label = "冲刺速度",       min = 5,    max = 35,   step = 1,    format = "%.1f" },
     { key = "DashDuration",     label = "冲刺时长(s)",    min = 0.05, max = 0.5,  step = 0.01, format = "%.2f" },
     { key = "DashCooldown",     label = "冲刺冷却(s)",    min = 0.5,  max = 5.0,  step = 0.1,  format = "%.1f" },
-    { key = "GravityY",         label = "重力加速度",      min = -30,  max = -3,   step = 0.5,  format = "%.1f" },
+    { key = "GravityY",         label = "重力加速度",      min = -50,  max = -5,   step = 0.5,  format = "%.1f" },
     { key = "Friction",         label = "摩擦力",         min = 0,    max = 2.0,  step = 0.05, format = "%.2f" },
     { key = "LinearDamping",    label = "线性阻尼",       min = 0,    max = 1.0,  step = 0.01, format = "%.2f" },
     { key = "Mass",             label = "玩家质量",        min = 0.2,  max = 5.0,  step = 0.1,  format = "%.1f" },
@@ -58,18 +53,13 @@ local PARAMS = {
 local function GetDefaults()
     return {
         MoveSpeed        = Config.MoveSpeed,        -- 8.0
-        JumpHeight       = Config.JumpHeight,       -- 3.5
-        JumpRiseTime     = Config.JumpRiseTime,     -- 0.22
-        JumpFallTime     = Config.JumpFallTime,     -- 0.18
-        JumpRiseExponent = Config.JumpRiseExponent, -- 2.0
-        JumpFallExponent = Config.JumpFallExponent, -- 2.5
+        JumpSpeed        = Config.JumpSpeed,        -- 14.0
+        FallGravityMul   = Config.FallGravityMul,   -- 2.2
+        MaxFallSpeed     = Config.MaxFallSpeed,     -- 30.0
         MaxJumps         = Config.MaxJumps,         -- 1
         AirControlRatio  = Config.AirControlRatio,  -- 0.7
-        CoyoteTime       = Config.CoyoteTime,       -- 0.10
+        CoyoteTime       = Config.CoyoteTime,       -- 0.08
         JumpBufferTime   = Config.JumpBufferTime,   -- 0.10
-        JumpCutMultiplier = Config.JumpCutMultiplier, -- 0.4
-        ApexHangThreshold = Config.ApexHangThreshold, -- 0.15
-        ApexHangGravityMul = Config.ApexHangGravityMul, -- 0.3
         DashSpeed        = Config.DashSpeed,        -- 25.0
         DashDuration     = Config.DashDuration,     -- 0.22
         DashCooldown     = Config.DashCooldown,     -- 2.0
@@ -360,18 +350,13 @@ end
 --- 将所有值应用到 Config 和物理系统
 function TuningPanel.ApplyAllToConfig()
     Config.MoveSpeed        = currentValues_.MoveSpeed
-    Config.JumpHeight       = currentValues_.JumpHeight
-    Config.JumpRiseTime     = currentValues_.JumpRiseTime
-    Config.JumpFallTime     = currentValues_.JumpFallTime
-    Config.JumpRiseExponent = currentValues_.JumpRiseExponent
-    Config.JumpFallExponent = currentValues_.JumpFallExponent
+    Config.JumpSpeed        = currentValues_.JumpSpeed
+    Config.FallGravityMul   = currentValues_.FallGravityMul
+    Config.MaxFallSpeed     = currentValues_.MaxFallSpeed
     Config.MaxJumps         = math.floor(currentValues_.MaxJumps)
     Config.AirControlRatio  = currentValues_.AirControlRatio
     Config.CoyoteTime       = currentValues_.CoyoteTime
     Config.JumpBufferTime   = currentValues_.JumpBufferTime
-    Config.JumpCutMultiplier = currentValues_.JumpCutMultiplier
-    Config.ApexHangThreshold = currentValues_.ApexHangThreshold
-    Config.ApexHangGravityMul = currentValues_.ApexHangGravityMul
     Config.DashSpeed        = currentValues_.DashSpeed
     Config.DashDuration     = currentValues_.DashDuration
     Config.DashCooldown     = currentValues_.DashCooldown
@@ -385,22 +370,22 @@ function TuningPanel.ApplyAllToConfig()
 end
 
 -- 物理参数的 apply 回调（延迟定义，避免前向引用问题）
-PARAMS[17].apply = function(val)  -- GravityY
+PARAMS[12].apply = function(val)  -- GravityY
     if scene_ then
         local pw = scene_:GetComponent("PhysicsWorld")
         if pw then pw:SetGravity(Vector3(0, val, 0)) end
     end
 end
 
-PARAMS[18].apply = function(val)  -- Friction
+PARAMS[13].apply = function(val)  -- Friction
     TuningPanel.ApplyBodyParam("friction", val)
 end
 
-PARAMS[19].apply = function(val)  -- LinearDamping
+PARAMS[14].apply = function(val)  -- LinearDamping
     TuningPanel.ApplyBodyParam("linearDamping", val)
 end
 
-PARAMS[20].apply = function(val)  -- Mass
+PARAMS[15].apply = function(val)  -- Mass
     TuningPanel.ApplyBodyParam("mass", val)
 end
 

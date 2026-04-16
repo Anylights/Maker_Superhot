@@ -48,10 +48,13 @@ function Player.Create(index, isHuman)
 
     local node = scene_:CreateChild("Player_" .. index)
     node.position = Vector3(spawnX, spawnY, 0)
-    node.scale = Vector3(0.9, 0.9, 0.9)
 
-    -- 方块外观
-    local model = node:CreateComponent("StaticModel")
+    -- 视觉子节点（模型挂在子节点上，方便做缩放/旋转动效而不影响物理碰撞体）
+    local visualNode = node:CreateChild("Visual")
+    visualNode.scale = Vector3(0.9, 0.9, 0.9)
+
+    -- 方块外观（挂在视觉子节点上）
+    local model = visualNode:CreateComponent("StaticModel")
     model.model = boxModel_
 
     local mat = Material:new()
@@ -63,6 +66,7 @@ function Player.Create(index, isHuman)
     model:SetMaterial(mat)
     model.castShadows = true
 
+    -- 将 visualNode 引用保存，后面 p 表中会用到
     -- 动态刚体
     local body = node:CreateComponent("RigidBody")
     body.mass = 1.0
@@ -85,6 +89,7 @@ function Player.Create(index, isHuman)
     local p = {
         index = index,
         node = node,
+        visualNode = visualNode,
         body = body,
         material = mat,
         isHuman = isHuman,
@@ -93,12 +98,13 @@ function Player.Create(index, isHuman)
         onGround = false,
         wasOnGround = false,   -- 上一帧是否在地面（用于着陆检测）
         hitCeiling = false,    -- 本帧是否撞到天花板
+        hitWallX = 0,          -- 本帧撞墙方向：-1 左墙, 1 右墙, 0 无
         jumpCount = 0,
+        prevVelY = 0,          -- 上一帧 Y 速度（用于计算落地冲击力）
 
         -- 土狼时间 & 跳跃缓冲
         coyoteTimer = 0,       -- 离开地面后的计时（<= CoyoteTime 时仍可跳）
         jumpBufferTimer = 0,   -- 按下跳跃后的计时（<= JumpBufferTime 时着地自动跳）
-        jumpHeld = false,      -- 跳跃键是否持续按住（用于可变跳跃高度）
 
         -- 冲刺
         dashTimer = 0,        -- >0 表示冲刺中
@@ -123,17 +129,18 @@ function Player.Create(index, isHuman)
         finished = false,      -- 是否已到达终点
         finishOrder = 0,       -- 到达终点的名次
 
-        -- 曲线跳跃状态
-        curveJumping = false,   -- 是否处于曲线跳跃中
-        jumpPhase = "none",     -- "rise" | "fall" | "none"
-        jumpElapsed = 0,        -- 当前阶段已经过时间
-        jumpStartY = 0,         -- 跳跃起始 Y 坐标
-
         -- 输入缓存（AI 或人类写入）
         inputMoveX = 0,
         inputJump = false,
         inputDash = false,
         inputExplode = false,
+
+        -- 视觉动效（squash & stretch）
+        squashScaleX = 1.0,    -- 当前形变 X 比例
+        squashScaleY = 1.0,    -- 当前形变 Y 比例
+        squashVelX = 0,        -- 弹簧速度 X
+        squashVelY = 0,        -- 弹簧速度 Y
+        dashRoll = 0,          -- 冲刺旋转角度（度）
     }
 
     -- 注册碰撞回调
@@ -177,6 +184,7 @@ function PlayerCollision:HandleCollision(eventType, eventData)
     local contacts = eventData["Contacts"]:GetBuffer()
     local foundGround = false
     local hitCeiling = false
+    local hitWallX = 0
 
     while not contacts.eof do
         local contactPosition = contacts:ReadVector3()
@@ -192,6 +200,14 @@ function PlayerCollision:HandleCollision(eventType, eventData)
         if contactNormal.y < -0.75 then
             hitCeiling = true
         end
+        -- 墙壁检测：法线水平分量大，垂直分量小
+        if math.abs(contactNormal.y) < 0.3 then
+            if contactNormal.x > 0.5 then
+                hitWallX = -1  -- 碰到左侧墙壁（法线朝右 = 撞左墙）
+            elseif contactNormal.x < -0.5 then
+                hitWallX = 1   -- 碰到右侧墙壁（法线朝左 = 撞右墙）
+            end
+        end
     end
 
     if foundGround then
@@ -199,6 +215,9 @@ function PlayerCollision:HandleCollision(eventType, eventData)
     end
     if hitCeiling then
         self.playerData.hitCeiling = true
+    end
+    if hitWallX ~= 0 then
+        self.playerData.hitWallX = hitWallX
     end
 end
 
@@ -259,33 +278,32 @@ function Player.UpdateOne(p, dt)
     if p.onGround and not p.wasOnGround then
         -- 刚着陆
         p.jumpCount = 0
-        -- 曲线跳跃中落地 → 结束跳跃
-        if p.curveJumping then
-            p.curveJumping = false
-            p.jumpPhase = "none"
+        -- 落地压扁：根据落地前的下落速度决定压扁幅度
+        local impactSpeed = math.abs(p.prevVelY)
+        local squashAmount = math.min(impactSpeed / 30.0, 0.35)  -- 最多压扁 35%
+        if squashAmount > 0.04 then
+            p.squashScaleY = 1.0 - squashAmount       -- 压扁 Y
+            p.squashScaleX = 1.0 + squashAmount * 0.6 -- 横向膨胀
+            p.squashVelY = 0
+            p.squashVelX = 0
         end
         -- 着陆时检查跳跃缓冲：缓冲窗口内有按键 → 自动起跳
         if p.jumpBufferTimer > 0 then
             p.jumpBufferTimer = 0
-            Player.StartCurveJump(p)
+            Player.DoJump(p)
         end
     end
 
     -- 无敌计时
     if p.invincibleTimer > 0 then
         p.invincibleTimer = p.invincibleTimer - dt
-        -- 闪烁效果
+        -- 闪烁效果（控制视觉子节点）
         local blink = (math.floor(p.invincibleTimer * 10) % 2 == 0)
-        if p.node then
-            local model = p.node:GetComponent("StaticModel")
-            if model then
-                model.enabled = blink
-            end
+        if p.visualNode then
+            p.visualNode.enabled = blink
         end
         if p.invincibleTimer <= 0 then
-            -- 确保显示
-            local model = p.node:GetComponent("StaticModel")
-            if model then model.enabled = true end
+            if p.visualNode then p.visualNode.enabled = true end
         end
     end
 
@@ -336,48 +354,34 @@ function Player.UpdateOne(p, dt)
         print("[Player] Player " .. p.index .. " reached the finish!")
     end
 
+    -- =====================
+    -- 视觉动效更新
+    -- =====================
+    Player.UpdateVisualEffects(p, dt)
+
+    -- 记录本帧速度，下帧着陆检测用
+    if p.body then
+        p.prevVelY = p.body.linearVelocity.y
+    end
+
     -- 保存本帧地面状态，下帧用于着陆检测
     p.wasOnGround = p.onGround
     -- 重置帧碰撞状态
     p.onGround = false    -- 每帧重置，碰撞回调会重新设置
     p.hitCeiling = false   -- 每帧重置天花板碰撞
+    p.hitWallX = 0         -- 每帧重置墙壁碰撞
 end
 
---- 曲线跳跃：计算当前阶段的 Y 位移（相对于起跳点）
---- 上升阶段：y(t) = H * (1 - (1-t)^e)，t = elapsed / riseTime
---- 下落阶段：y(t) = H * (1 - t^e)，t = elapsed / fallTime
----@param phase string "rise" | "fall"
----@param elapsed number 当前阶段已过时间
----@return number Y 位移（相对起跳点）
-local function CurveJumpY(phase, elapsed)
-    local H = Config.JumpHeight
-    if phase == "rise" then
-        local T = Config.JumpRiseTime
-        local e = Config.JumpRiseExponent
-        local t = math.min(elapsed / T, 1.0)
-        return H * (1.0 - (1.0 - t) ^ e)
-    else -- fall
-        local T = Config.JumpFallTime
-        local e = Config.JumpFallExponent
-        local t = math.min(elapsed / T, 1.0)
-        return H * (1.0 - t ^ e)
-    end
-end
-
---- 启动曲线跳跃（提取为独立函数，UpdateOne 的 jumpBuffer 也会调用）
+--- 执行跳跃：给一个向上初速度，由物理重力自然完成抛物线
 ---@param p table
-function Player.StartCurveJump(p)
-    p.curveJumping = true
-    p.jumpPhase = "rise"
-    p.jumpElapsed = 0
-    p.jumpStartY = p.node.position.y
+function Player.DoJump(p)
     p.jumpCount = p.jumpCount + 1
     p.coyoteTimer = Config.CoyoteTime + 1  -- 跳跃后禁止再次土狼跳
 
-    -- 清零当前 Y 速度，由曲线接管
+    -- 设置向上初速度
     if p.body then
         local vel = p.body.linearVelocity
-        p.body.linearVelocity = Vector3(vel.x, 0, 0)
+        p.body.linearVelocity = Vector3(vel.x, Config.JumpSpeed, 0)
     end
 
     SFX.Play("jump", 0.5)
@@ -393,11 +397,6 @@ function Player.UpdateMovement(p, dt)
     -- 冲刺中（不受重力影响，Y 速度锁定为 0）
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
-        -- 冲刺打断曲线跳跃
-        if p.curveJumping then
-            p.curveJumping = false
-            p.jumpPhase = "none"
-        end
         p.body.linearVelocity = Vector3(p.dashDir * Config.DashSpeed, 0, 0)
         return
     end
@@ -409,13 +408,12 @@ function Player.UpdateMovement(p, dt)
     local speed = Config.MoveSpeed
 
     local finalVx
-    if p.onGround and not p.curveJumping then
+    if p.onGround then
         -- 地面：直接设置速度
         finalVx = moveX * speed
     else
-        -- 空中控制（跳跃中 或 自由下落）
-        speed = speed * Config.AirControlRatio
-        local targetVx = moveX * speed
+        -- 空中控制
+        local targetVx = moveX * speed * Config.AirControlRatio
         local currentVx = vel.x
         finalVx = currentVx + (targetVx - currentVx) * Config.AirControlRatio * 5 * dt
     end
@@ -428,114 +426,46 @@ function Player.UpdateMovement(p, dt)
     -- =====================
     -- 天花板碰撞处理
     -- =====================
-    if p.hitCeiling and p.curveJumping and p.jumpPhase == "rise" then
-        -- 撞到天花板 → 立刻切换到下落阶段
-        p.jumpPhase = "fall"
-        p.jumpElapsed = 0
-        -- 以当前实际位置作为顶点（不是理论顶点）
-        p.jumpStartY = p.node.position.y
-        -- 立刻给一个向下的小速度，避免卡在天花板
-        p.body.linearVelocity = Vector3(finalVx, -1.0, 0)
+    if p.hitCeiling and vel.y > 0 then
+        -- 撞到天花板且正在上升 → 立刻清零向上速度
+        vel = Vector3(vel.x, 0, 0)
     end
 
     -- =====================
-    -- 可变跳跃高度（松开跳跃键 → 截断上升）
+    -- 下落加速重力（fast-fall）
+    -- 当角色正在下落（vy < 0）时，额外施加重力让下落更快更利落
     -- =====================
-    if p.curveJumping and p.jumpPhase == "rise" and not p.jumpHeld then
-        -- 松开了跳跃键 → 提前切换到下落阶段
-        -- 但要给一个最低上升时间（避免按键过短导致完全不跳）
-        local minRiseRatio = 0.25  -- 至少完成 25% 的上升
-        if p.jumpElapsed >= Config.JumpRiseTime * minRiseRatio then
-            p.jumpPhase = "fall"
-            p.jumpElapsed = 0
-            p.jumpStartY = p.node.position.y  -- 以当前位置为顶点
+    local vy = vel.y
+    if not p.onGround and vy < 0 then
+        -- 下落中：施加额外重力
+        local extraGravity = -9.81 * (Config.FallGravityMul - 1.0)  -- 只补差值，基础重力已由物理引擎施加
+        vy = vy + extraGravity * dt
+        -- 限制最大下落速度
+        if vy < -Config.MaxFallSpeed then
+            vy = -Config.MaxFallSpeed
         end
     end
 
-    -- =====================
-    -- 曲线跳跃驱动 Y 轴
-    -- =====================
-    if p.curveJumping then
-        p.jumpElapsed = p.jumpElapsed + dt
-
-        if p.jumpPhase == "rise" then
-            local displacement = CurveJumpY("rise", p.jumpElapsed)
-            local targetY = p.jumpStartY + displacement
-
-            -- 用速度驱动（让物理引擎处理碰撞）
-            local currentY = p.node.position.y
-            local vy = (targetY - currentY) / dt
-
-            -- 检查是否上升阶段结束
-            if p.jumpElapsed >= Config.JumpRiseTime then
-                -- 切换到下落阶段
-                p.jumpPhase = "fall"
-                p.jumpElapsed = 0
-                p.jumpStartY = currentY + (targetY - currentY)  -- 实际顶点 Y
-            end
-
-            p.body.linearVelocity = Vector3(finalVx, vy, 0)
-
-        elseif p.jumpPhase == "fall" then
-            -- 计算当前下落进度（归一化 0~1）
-            local T_fall = Config.JumpFallTime
-            local fallProgress = math.min(p.jumpElapsed / T_fall, 1.0)
-
-            -- =====================
-            -- 顶点滞空（Apex Hang Time）
-            -- 在下落初期（刚过顶点），减缓时间流速 → 滞空感
-            -- =====================
-            local effectiveDt = dt
-            if fallProgress < Config.ApexHangThreshold then
-                effectiveDt = dt * Config.ApexHangGravityMul
-                -- 减慢 jumpElapsed 增长（上面已经 += dt，需要补偿）
-                p.jumpElapsed = p.jumpElapsed - dt + effectiveDt
-            end
-
-            local displacement = CurveJumpY("fall", p.jumpElapsed)
-            local currentHeight = displacement  -- CurveJumpY("fall") 返回 H*(1-t^e)，从 H 递减到 0
-            local targetY = p.jumpStartY - (Config.JumpHeight - currentHeight)
-
-            local currentY = p.node.position.y
-            local vy = (targetY - currentY) / dt
-
-            -- 下落阶段结束 或 落地
-            if p.jumpElapsed >= T_fall or p.onGround then
-                p.curveJumping = false
-                p.jumpPhase = "none"
-                -- 落地后恢复物理控制，清零 Y 速度
-                p.body.linearVelocity = Vector3(finalVx, 0, 0)
-                return
-            end
-
-            p.body.linearVelocity = Vector3(finalVx, vy, 0)
-        end
-    else
-        -- 非跳跃中：正常物理 Y（重力自然下落）
-        p.body.linearVelocity = Vector3(finalVx, vel.y, 0)
-    end
+    p.body.linearVelocity = Vector3(finalVx, vy, 0)
 
     -- =====================
     -- 跳跃输入（土狼时间 + 缓冲联合判定）
     -- =====================
-    if p.jumpBufferTimer > 0 and not p.curveJumping then
-        -- 判断是否可以跳跃
+    if p.jumpBufferTimer > 0 then
         local canJump = false
 
         if p.onGround then
-            -- 在地面上
             canJump = (p.jumpCount < Config.MaxJumps)
         elseif p.coyoteTimer <= Config.CoyoteTime then
-            -- 土狼时间窗口内（刚离开地面不久）
             canJump = (p.jumpCount < Config.MaxJumps)
         elseif p.jumpCount > 0 and p.jumpCount < Config.MaxJumps then
-            -- 多段跳（空中二段跳等）
+            -- 多段跳
             canJump = true
         end
 
         if canJump then
             p.jumpBufferTimer = 0
-            Player.StartCurveJump(p)
+            Player.DoJump(p)
         end
     end
 
@@ -550,6 +480,126 @@ function Player.UpdateMovement(p, dt)
             SFX.Play("dash", 0.6)
         end
         p.inputDash = false
+    end
+end
+
+-- ============================================================================
+-- 视觉动效：Squash & Stretch + 冲刺旋转
+-- ============================================================================
+
+-- 弹簧参数（临界阻尼偏过阻尼，Q弹但不会振荡太久）
+local SPRING_STIFFNESS = 600   -- 弹簧刚度 k
+local SPRING_DAMPING   = 30    -- 阻尼系数 c
+local SQUASH_REST      = 1.0   -- 静止比例
+local DASH_ROLL_SPEED  = 720   -- 冲刺旋转速度（度/秒）
+local DASH_ROLL_DECAY  = 1200  -- 非冲刺时旋转回弹速度（度/秒）
+
+--- 更新视觉动效（squash & stretch + 旋转）
+---@param p table
+---@param dt number
+function Player.UpdateVisualEffects(p, dt)
+    if not p.visualNode then return end
+
+    -- =====================
+    -- 撞墙 squash 触发
+    -- =====================
+    if p.hitWallX ~= 0 and p.body then
+        local vx = math.abs(p.body.linearVelocity.x)
+        -- 只有水平速度足够大才触发（避免贴墙静止时触发）
+        if vx > 2.0 then
+            local squashAmount = math.min(vx / 25.0, 0.3)
+            if squashAmount > 0.04 then
+                p.squashScaleX = 1.0 - squashAmount       -- 横向压扁
+                p.squashScaleY = 1.0 + squashAmount * 0.5 -- 纵向膨胀
+                p.squashVelX = 0
+                p.squashVelY = 0
+            end
+        end
+    end
+
+    -- =====================
+    -- 玩家互相挤压
+    -- =====================
+    for _, other in ipairs(Player.list) do
+        if other.index ~= p.index and other.alive and other.node and p.node then
+            local dx = other.node.position.x - p.node.position.x
+            local dy = other.node.position.y - p.node.position.y
+            local dist = math.sqrt(dx * dx + dy * dy)
+            -- 方块有效尺寸约0.9，两个贴在一起时 dist ≈ 0.9
+            if dist < 0.95 and dist > 0.01 then
+                local overlap = 0.95 - dist  -- 重叠程度
+                local squeeze = overlap * 0.15  -- 形变量（柔和）
+                if squeeze > 0.03 then
+                    -- 沿挤压方向压缩
+                    if math.abs(dx) > math.abs(dy) then
+                        -- 水平挤压
+                        p.squashScaleX = math.min(p.squashScaleX, 1.0 - squeeze)
+                        p.squashScaleY = math.max(p.squashScaleY, 1.0 + squeeze * 0.4)
+                    else
+                        -- 垂直挤压
+                        p.squashScaleY = math.min(p.squashScaleY, 1.0 - squeeze)
+                        p.squashScaleX = math.max(p.squashScaleX, 1.0 + squeeze * 0.4)
+                    end
+                end
+            end
+        end
+    end
+
+    -- =====================
+    -- 弹簧物理：恢复 squash 到 1.0
+    -- F = -k * displacement - c * velocity
+    -- =====================
+    local dispX = p.squashScaleX - SQUASH_REST
+    local dispY = p.squashScaleY - SQUASH_REST
+
+    local forceX = -SPRING_STIFFNESS * dispX - SPRING_DAMPING * p.squashVelX
+    local forceY = -SPRING_STIFFNESS * dispY - SPRING_DAMPING * p.squashVelY
+
+    p.squashVelX = p.squashVelX + forceX * dt
+    p.squashVelY = p.squashVelY + forceY * dt
+
+    p.squashScaleX = p.squashScaleX + p.squashVelX * dt
+    p.squashScaleY = p.squashScaleY + p.squashVelY * dt
+
+    -- 安全钳位，防止极端形变
+    p.squashScaleX = math.max(0.5, math.min(1.5, p.squashScaleX))
+    p.squashScaleY = math.max(0.5, math.min(1.5, p.squashScaleY))
+
+    -- =====================
+    -- 冲刺旋转
+    -- =====================
+    if p.dashTimer > 0 then
+        -- 冲刺中：朝冲刺方向旋转（绕 Z 轴）
+        p.dashRoll = p.dashRoll + p.dashDir * (-DASH_ROLL_SPEED) * dt
+    else
+        -- 非冲刺：旋转回弹到 0
+        if math.abs(p.dashRoll) > 0.5 then
+            local decay = DASH_ROLL_DECAY * dt
+            if p.dashRoll > 0 then
+                p.dashRoll = math.max(0, p.dashRoll - decay)
+            else
+                p.dashRoll = math.min(0, p.dashRoll + decay)
+            end
+        else
+            p.dashRoll = 0
+        end
+    end
+
+    -- =====================
+    -- 应用到 visualNode
+    -- =====================
+    local baseScale = 0.9  -- 原始缩放
+    p.visualNode.scale = Vector3(
+        baseScale * p.squashScaleX,
+        baseScale * p.squashScaleY,
+        baseScale
+    )
+
+    -- 旋转只在 Z 轴（2D 平面内的翻滚）
+    if p.dashRoll ~= 0 then
+        p.visualNode.rotation = Quaternion(p.dashRoll, Vector3.FORWARD)
+    else
+        p.visualNode.rotation = Quaternion.IDENTITY
     end
 end
 
@@ -802,10 +852,20 @@ function Player.Respawn(p)
     p.wasOnGround = false
     p.dashTimer = 0
     p.dashCooldown = 0
-    p.curveJumping = false
-    p.jumpPhase = "none"
-    p.jumpElapsed = 0
-    p.jumpStartY = 0
+
+    -- 重置视觉动效
+    p.squashScaleX = 1.0
+    p.squashScaleY = 1.0
+    p.squashVelX = 0
+    p.squashVelY = 0
+    p.dashRoll = 0
+    p.prevVelY = 0
+    p.hitWallX = 0
+    if p.visualNode then
+        p.visualNode.scale = Vector3(0.9, 0.9, 0.9)
+        p.visualNode.rotation = Quaternion.IDENTITY
+        p.visualNode.enabled = true
+    end
 
     -- 回到起点
     local sx, sy = MapData.GetSpawnPosition(p.index)
@@ -837,14 +897,24 @@ function Player.ResetAll()
         p.wasOnGround = false
         p.dashTimer = 0
         p.dashCooldown = 0
-        p.curveJumping = false
-        p.jumpPhase = "none"
-        p.jumpElapsed = 0
-        p.jumpStartY = 0
         p.inputMoveX = 0
         p.inputJump = false
         p.inputDash = false
         p.inputExplode = false
+
+        -- 重置视觉动效
+        p.squashScaleX = 1.0
+        p.squashScaleY = 1.0
+        p.squashVelX = 0
+        p.squashVelY = 0
+        p.dashRoll = 0
+        p.prevVelY = 0
+        p.hitWallX = 0
+        if p.visualNode then
+            p.visualNode.scale = Vector3(0.9, 0.9, 0.9)
+            p.visualNode.rotation = Quaternion.IDENTITY
+            p.visualNode.enabled = true
+        end
 
         local sx, sy = MapData.GetSpawnPosition(p.index)
         if p.node then

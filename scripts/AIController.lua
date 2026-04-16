@@ -109,17 +109,7 @@ function AIController.UpdateOne(p, dt)
 
     if state.wantJump then
         p.inputJump = true
-        p.jumpHeld = true           -- AI 始终满跳（持续按住）
-        state.jumpHeldTimer = 0.3   -- AI 按住跳跃键 0.3 秒
         state.wantJump = false
-    end
-
-    -- AI 跳跃按住计时器
-    if state.jumpHeldTimer and state.jumpHeldTimer > 0 then
-        state.jumpHeldTimer = state.jumpHeldTimer - dt
-        p.jumpHeld = true
-    else
-        p.jumpHeld = false
     end
 
     if state.wantDash then

@@ -111,7 +111,7 @@ Config.CountdownTime     = 3.0     -- 开局倒计时（秒）
 -- 相机
 Config.CameraZ           = -40.0   -- 相机 Z 位置（侧视）
 Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸
-Config.CameraMaxOrtho    = 30.0    -- 最大正交尺寸
+Config.CameraMaxOrtho    = 40.0    -- 最大正交尺寸（适配更大地图）
 Config.CameraPadding     = 4.0     -- 相机包围盒边距
 Config.CameraSmoothSpeed = 3.0     -- 相机平滑速度
 

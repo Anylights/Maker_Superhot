@@ -13,15 +13,23 @@ local AI_THINK_INTERVAL = 0.15   -- 决策间隔（秒）
 local AI_JUMP_LOOKAHEAD = 2.0    -- 前方检测距离（米）
 local AI_EXPLODE_RANGE = 6.0     -- 爆炸考虑范围
 
--- 层级定义（与 MapData 中的垂直 zig-zag 对应）
--- 每层有：Y 范围、前进方向、通往下一层的楼梯 X 位置
+-- 层级定义（与新地图 6 单元结构对应）
+-- 每层有：Y 范围、移动方向（主路线）、上升目标 X
+-- dir: 1=向右移动, -1=向左, 0=向中央收束
+-- targetX: AI 应该往哪个 X 去寻找上升台阶
 local LEVELS = {
-    { yMin = 0,  yMax = 5,  dir =  1, stairX = 36 },  -- L1: Y≈3, 向右，楼梯在右侧 x≈36
-    { yMin = 5,  yMax = 9,  dir = -1, stairX = 5  },  -- L2: Y≈7, 向左，楼梯在左侧 x≈5
-    { yMin = 9,  yMax = 13, dir =  1, stairX = 36 },  -- L3: Y≈11, 向右，楼梯在右侧
-    { yMin = 13, yMax = 17, dir = -1, stairX = 5  },  -- L4: Y≈15, 向左，楼梯在左侧
-    { yMin = 17, yMax = 21, dir =  1, stairX = 20 },  -- L5: Y≈19, 向右，楼梯在中间 x≈20
-    { yMin = 21, yMax = 99, dir =  0, stairX = 20 },  -- Summit: 到达终点，向中间聚拢
+    -- U1 暖身区 (Y=3~10): 向右跑到右侧台阶上升
+    { yMin = 0,  yMax = 10, dir =  1, targetX = 44 },
+    -- U2 分流竞争区 (Y=10~19): 从右入口→中央→选左或右路→向上
+    { yMin = 10, yMax = 19, dir = -1, targetX = 25 },
+    -- U3 8字交叉区 (Y=19~27): 从两侧→中央交叉→继续上升
+    { yMin = 19, yMax = 27, dir =  0, targetX = 25 },
+    -- U4 双层追击区 (Y=27~35): 向两侧→优先走下层稳定路线→右侧出口上升
+    { yMin = 27, yMax = 35, dir =  1, targetX = 44 },
+    -- U5 收束攀升区 (Y=35~43): 向中央汇合
+    { yMin = 35, yMax = 43, dir =  0, targetX = 25 },
+    -- U6 终点戏剧区 (Y=43~99): 向中央终点
+    { yMin = 43, yMax = 99, dir =  0, targetX = 25 },
 }
 
 -- AI 状态
@@ -42,7 +50,7 @@ function AIController.Init(playerRef, mapRef)
     playerModule_ = playerRef
     mapModule_ = mapRef
     aiStates_ = {}
-    print("[AI] Initialized (vertical map)")
+    print("[AI] Initialized (vertical map v2)")
 end
 
 --- 为 AI 玩家创建状态
@@ -54,9 +62,9 @@ function AIController.Register(playerData)
         wantJump = false,
         wantDash = false,
         -- 蓄力爆炸状态
-        isCharging = false,        -- AI 是否在蓄力中
-        chargeHoldTime = 0,        -- AI 计划蓄力持续时间（秒）
-        chargeElapsed = 0,         -- AI 已蓄力时间（秒）
+        isCharging = false,
+        chargeHoldTime = 0,
+        chargeElapsed = 0,
         stuckTimer = 0,
         lastX = 0,
         lastY = 0,
@@ -72,7 +80,7 @@ local function GetLevel(wy)
             return lv
         end
     end
-    return LEVELS[#LEVELS]  -- 默认最高层
+    return LEVELS[#LEVELS]
 end
 
 -- ============================================================================
@@ -124,13 +132,11 @@ function AIController.UpdateOne(p, dt)
     if state.isCharging then
         state.chargeElapsed = state.chargeElapsed + dt
         if state.chargeElapsed >= state.chargeHoldTime then
-            -- 蓄力到目标时间 → 松开触发爆炸
             p.inputExplodeRelease = true
             p.inputCharging = false
             state.isCharging = false
             state.chargeElapsed = 0
         else
-            -- 继续按住
             p.inputCharging = true
         end
     end
@@ -143,41 +149,39 @@ function AIController.Think(p, state)
     if p.node == nil then return end
 
     local pos = p.node.position
-    local vel = p.body and p.body.linearVelocity or Vector3(0, 0, 0)
 
     -- 确定当前层级
     local level = GetLevel(pos.y)
 
     -- 决定移动方向
     if level.dir == 0 then
-        -- 顶层：向终点（约 x=20）移动
-        local targetX = 20
-        if math.abs(pos.x - targetX) < 2 then
-            state.moveDir = 0  -- 到了就停
-        elseif pos.x < targetX then
+        -- 向目标 X 收束
+        local diff = level.targetX - pos.x
+        if math.abs(diff) < 2 then
+            -- 接近目标X，尝试跳跃上升
+            state.moveDir = diff > 0 and 1 or -1
+            state.wantJump = true
+        elseif diff > 0 then
             state.moveDir = 1
         else
             state.moveDir = -1
         end
     else
-        -- 检查是否已到达楼梯区域（需要上楼）
-        local atStair = math.abs(pos.x - level.stairX) < 3
-        if atStair then
-            -- 在楼梯附近：跳跃上去
+        -- 按层级方向前进
+        state.moveDir = level.dir
+
+        -- 检查是否接近目标X（需要上升的位置）
+        local atTarget = math.abs(pos.x - level.targetX) < 4
+        if atTarget then
             state.wantJump = true
-            -- 继续沿原方向移动一小段到楼梯中心
-            if math.abs(pos.x - level.stairX) > 1 then
-                state.moveDir = pos.x < level.stairX and 1 or -1
-            else
-                state.moveDir = level.dir  -- 保持原方向微调
+            -- 微调方向朝向目标X
+            if math.abs(pos.x - level.targetX) > 1 then
+                state.moveDir = pos.x < level.targetX and 1 or -1
             end
-        else
-            -- 正常沿层方向前进
-            state.moveDir = level.dir
         end
     end
 
-    -- 卡住检测（同时检测水平和垂直）
+    -- 卡住检测
     local dx = math.abs(pos.x - state.lastX)
     local dy = math.abs(pos.y - state.lastY)
     if dx < 0.1 and dy < 0.1 then
@@ -192,7 +196,6 @@ function AIController.Think(p, state)
     if state.stuckTimer > 0.5 then
         state.wantJump = true
         if state.stuckTimer > 1.2 then
-            -- 长时间卡住：反向移动 + 冲刺
             state.moveDir = -state.moveDir
             if state.moveDir == 0 then state.moveDir = 1 end
             state.stuckTimer = 0
@@ -230,20 +233,16 @@ function AIController.Think(p, state)
                 local diff = other.node.position - pos
                 local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
                 if dist < AI_EXPLODE_RANGE then
-                    -- 对方在更高处 = 领先，更想炸
                     if other.node.position.y > pos.y then
                         shouldExplode = true
                     elseif dist < 3.0 then
-                        -- 很近就炸
                         shouldExplode = true
                     end
                 end
             end
         end
 
-        -- 随机性：不是每次满能量都立刻开始蓄力
         if shouldExplode and math.random() > 0.3 then
-            -- AI 随机蓄力 0.8~1.5 秒（不总是蓄满）
             state.isCharging = true
             state.chargeHoldTime = 0.8 + math.random() * 0.7
             state.chargeElapsed = 0

@@ -10,6 +10,9 @@ local Camera = require("Camera")
 
 local HUD = {}
 
+-- Map 模块引用（由 main 注入）
+local mapModule_ = nil
+
 -- NanoVG 上下文
 ---@type number
 local vg_ = nil
@@ -38,9 +41,11 @@ local flashAlpha_ = 0
 --- 初始化 HUD
 ---@param playerRef table
 ---@param gmRef table
-function HUD.Init(playerRef, gmRef)
+---@param mapRef table|nil
+function HUD.Init(playerRef, gmRef, mapRef)
     playerModule_ = playerRef
     gameManager_ = gmRef
+    mapModule_ = mapRef
 
     vg_ = nvgCreate(1)  -- 1 = NVG_ANTIALIAS
 
@@ -201,6 +206,294 @@ function HUD.DrawWorldIndicators()
                     math.floor(pulse * 255 + 80), 2.0)
             end
         end
+    end
+
+    -- ----- 被炸方块虚线轮廓 + 重生进度条 -----
+    HUD.DrawDestroyedBlockGhosts()
+end
+
+--- 绘制被炸方块的虚线轮廓和重生进度条
+function HUD.DrawDestroyedBlockGhosts()
+    if mapModule_ == nil then return end
+
+    local blocks = mapModule_.GetDestroyedBlocks()
+    if #blocks == 0 then return end
+
+    local bs = Config.BlockSize
+    local blockScreenSize = Camera.WorldSizeToScreen(bs, logH_)
+    -- 太小了就不画
+    if blockScreenSize < 3 then return end
+
+    local dashLen = math.max(2, blockScreenSize * 0.12)
+    local gapLen = math.max(2, blockScreenSize * 0.10)
+
+    -- 圆角半径：方块屏幕尺寸的 18%
+    local cornerR = blockScreenSize * 0.18
+
+    for _, info in ipairs(blocks) do
+        -- 网格坐标转世界坐标（中心）
+        local wx = (info.x - 1) * bs + bs * 0.5
+        local wy = (info.y - 1) * bs + bs * 0.5
+        local sx, sy = Camera.WorldToScreen(wx, wy, logW_, logH_)
+
+        local halfS = blockScreenSize * 0.5
+
+        -- 稍微内缩，让虚线框比原方块小一点
+        local inset = blockScreenSize * 0.06
+        local drawSize = blockScreenSize - inset * 2
+        local drawX = sx - halfS + inset
+        local drawY = sy - halfS + inset
+
+        local progress = 1.0 - (info.timer / info.totalTime)  -- 0→1
+        local alpha = 80 + math.floor(math.abs(math.sin(os.clock() * 3 + info.x * 0.7)) * 40)
+
+        -- 1) 灰色虚线轮廓（底层，圆角）
+        nvgStrokeColor(vg_, nvgRGBA(200, 200, 220, alpha))
+        nvgStrokeWidth(vg_, 2.5)
+        HUD.DrawDashedRoundedRect(drawX, drawY, drawSize, drawSize, cornerR, dashLen, gapLen)
+
+        -- 2) 高亮进度（沿同一外框走进度，覆盖在灰色虚线之上）
+        local segments = HUD.GetRoundedRectSegments(drawX, drawY, drawSize, drawSize, cornerR)
+        local totalPerim = 0
+        for _, seg in ipairs(segments) do totalPerim = totalPerim + seg.len end
+        local filledPerim = totalPerim * progress
+
+        if filledPerim > 0.5 then
+            local pAlpha = 160 + math.floor(progress * 95)
+            nvgStrokeColor(vg_, nvgRGBA(120, 200, 255, pAlpha))
+            nvgStrokeWidth(vg_, 3.5)
+            HUD.DrawDashedPath(segments, filledPerim, dashLen, gapLen)
+        end
+    end
+end
+
+-- ============================================================================
+-- 圆角矩形虚线绘制
+-- ============================================================================
+
+--- 获取圆角矩形的分段路径（直线 + 圆弧），顺时针从左上圆角末端开始
+--- 返回 segments 数组，每个元素 = { type="line"|"arc", len, ... }
+---@param x number 左上角 X
+---@param y number 左上角 Y
+---@param w number 宽度
+---@param h number 高度
+---@param r number 圆角半径
+---@return table segments
+function HUD.GetRoundedRectSegments(x, y, w, h, r)
+    r = math.min(r, w * 0.5, h * 0.5)
+    local segs = {}
+    -- 顺时针：上边 → 右上弧 → 右边 → 右下弧 → 下边 → 左下弧 → 左边 → 左上弧
+    -- 上边（从 x+r 到 x+w-r）
+    table.insert(segs, { type = "line", x1 = x + r, y1 = y, x2 = x + w - r, y2 = y, len = w - 2 * r })
+    -- 右上弧
+    local arcLen = math.pi * 0.5 * r
+    table.insert(segs, { type = "arc", cx = x + w - r, cy = y + r, r = r, startAngle = -math.pi * 0.5, endAngle = 0, len = arcLen })
+    -- 右边
+    table.insert(segs, { type = "line", x1 = x + w, y1 = y + r, x2 = x + w, y2 = y + h - r, len = h - 2 * r })
+    -- 右下弧
+    table.insert(segs, { type = "arc", cx = x + w - r, cy = y + h - r, r = r, startAngle = 0, endAngle = math.pi * 0.5, len = arcLen })
+    -- 下边
+    table.insert(segs, { type = "line", x1 = x + w - r, y1 = y + h, x2 = x + r, y2 = y + h, len = w - 2 * r })
+    -- 左下弧
+    table.insert(segs, { type = "arc", cx = x + r, cy = y + h - r, r = r, startAngle = math.pi * 0.5, endAngle = math.pi, len = arcLen })
+    -- 左边
+    table.insert(segs, { type = "line", x1 = x, y1 = y + h - r, x2 = x, y2 = y + r, len = h - 2 * r })
+    -- 左上弧
+    table.insert(segs, { type = "arc", cx = x + r, cy = y + r, r = r, startAngle = math.pi, endAngle = math.pi * 1.5, len = arcLen })
+    return segs
+end
+
+--- 沿分段路径绘制虚线（支持直线和圆弧段）
+---@param segments table 分段路径
+---@param maxLen number 最大绘制长度（用于进度条，nil 或极大值则画完整圈）
+---@param dashLen number 虚线段长
+---@param gapLen number 间隙长
+function HUD.DrawDashedPath(segments, maxLen, dashLen, gapLen)
+    dashLen = math.max(dashLen, 1.0)
+    gapLen = math.max(gapLen, 0.5)
+    local cycleLen = dashLen + gapLen
+    local globalPos = 0  -- 全局已走过的路径长度（用于虚线相位）
+    local remaining = maxLen or 1e9
+
+    for _, seg in ipairs(segments) do
+        if remaining <= 0 then break end
+        local segDrawLen = math.min(seg.len, remaining)
+        remaining = remaining - segDrawLen
+
+        if seg.type == "line" then
+            local edgeLen = seg.len
+            if edgeLen < 0.1 then goto continueSeg end
+            local ux = (seg.x2 - seg.x1) / edgeLen
+            local uy = (seg.y2 - seg.y1) / edgeLen
+            local pos = 0
+            local maxIter = math.ceil(segDrawLen / math.max(cycleLen * 0.5, 0.5)) + 4
+            local iter = 0
+            while pos < segDrawLen and iter < maxIter do
+                iter = iter + 1
+                local cyclePos = math.fmod(globalPos + pos, cycleLen)
+                if cyclePos < dashLen then
+                    local advance = math.max(dashLen - cyclePos, 0.5)
+                    local drawEnd = math.min(pos + advance, segDrawLen)
+                    nvgBeginPath(vg_)
+                    nvgMoveTo(vg_, seg.x1 + ux * pos, seg.y1 + uy * pos)
+                    nvgLineTo(vg_, seg.x1 + ux * drawEnd, seg.y1 + uy * drawEnd)
+                    nvgStroke(vg_)
+                    pos = drawEnd + 0.01
+                else
+                    local advance = math.max(cycleLen - cyclePos, 0.5)
+                    pos = pos + advance
+                end
+            end
+            globalPos = globalPos + segDrawLen
+
+        elseif seg.type == "arc" then
+            local totalArc = seg.endAngle - seg.startAngle
+            if math.abs(totalArc) < 0.001 or seg.r < 0.1 then goto continueSeg end
+            local pos = 0
+            local maxIter = math.ceil(segDrawLen / math.max(cycleLen * 0.5, 0.5)) + 4
+            local iter = 0
+            while pos < segDrawLen and iter < maxIter do
+                iter = iter + 1
+                local cyclePos = math.fmod(globalPos + pos, cycleLen)
+                if cyclePos < dashLen then
+                    local advance = math.max(dashLen - cyclePos, 0.5)
+                    local drawEnd = math.min(pos + advance, segDrawLen)
+                    -- 将路径距离转为角度
+                    local a1 = seg.startAngle + totalArc * (pos / seg.len)
+                    local a2 = seg.startAngle + totalArc * (drawEnd / seg.len)
+                    nvgBeginPath(vg_)
+                    nvgArc(vg_, seg.cx, seg.cy, seg.r, a1, a2, NVG_CW)
+                    nvgStroke(vg_)
+                    pos = drawEnd + 0.01
+                else
+                    local advance = math.max(cycleLen - cyclePos, 0.5)
+                    pos = pos + advance
+                end
+            end
+            globalPos = globalPos + segDrawLen
+        end
+
+        ::continueSeg::
+    end
+end
+
+--- 绘制完整的圆角矩形虚线轮廓
+function HUD.DrawDashedRoundedRect(x, y, w, h, r, dashLen, gapLen)
+    local segments = HUD.GetRoundedRectSegments(x, y, w, h, r)
+    local totalLen = 0
+    for _, seg in ipairs(segments) do totalLen = totalLen + seg.len end
+    HUD.DrawDashedPath(segments, totalLen, dashLen, gapLen)
+end
+
+--- 绘制虚线矩形（保留兼容，无圆角版本）
+---@param x number 左上角 X
+---@param y number 左上角 Y
+---@param w number 宽度
+---@param h number 高度
+---@param dashLen number 虚线长度
+---@param gapLen number 间隙长度
+function HUD.DrawDashedRect(x, y, w, h, dashLen, gapLen)
+    -- 4 条边
+    local edges = {
+        { x, y, x + w, y },           -- 上
+        { x + w, y, x + w, y + h },   -- 右
+        { x + w, y + h, x, y + h },   -- 下
+        { x, y + h, x, y },           -- 左
+    }
+    for _, e in ipairs(edges) do
+        HUD.DrawDashedLine(e[1], e[2], e[3], e[4], dashLen, gapLen)
+    end
+end
+
+--- 绘制虚线直线
+function HUD.DrawDashedLine(x1, y1, x2, y2, dashLen, gapLen)
+    local dx = x2 - x1
+    local dy = y2 - y1
+    local totalLen = math.sqrt(dx * dx + dy * dy)
+    if totalLen < 0.1 then return end
+
+    local ux = dx / totalLen
+    local uy = dy / totalLen
+    local pos = 0
+
+    while pos < totalLen do
+        -- 画一段 dash
+        local segEnd = math.min(pos + dashLen, totalLen)
+        nvgBeginPath(vg_)
+        nvgMoveTo(vg_, x1 + ux * pos, y1 + uy * pos)
+        nvgLineTo(vg_, x1 + ux * segEnd, y1 + uy * segEnd)
+        nvgStroke(vg_)
+        -- 跳过 gap
+        pos = segEnd + gapLen
+    end
+end
+
+--- 绘制进度矩形（沿矩形周长的虚线进度条）
+---@param x number 左上角 X
+---@param y number 左上角 Y
+---@param w number 宽度
+---@param h number 高度
+---@param filledPerim number 已填充的周长
+---@param totalPerim number 总周长
+---@param dashLen number 虚线段长度
+---@param gapLen number 间隙长度
+function HUD.DrawProgressRect(x, y, w, h, filledPerim, totalPerim, dashLen, gapLen)
+    if filledPerim <= 0 then return end
+    -- 防止 dashLen/gapLen 过小导致死循环
+    dashLen = math.max(dashLen, 1.0)
+    gapLen = math.max(gapLen, 0.5)
+    local cycleLen = dashLen + gapLen
+
+    -- 从顶部左端开始，顺时针
+    local edges = {
+        { sx = x, sy = y, ex = x + w, ey = y, len = w },         -- 上
+        { sx = x + w, sy = y, ex = x + w, ey = y + h, len = h }, -- 右
+        { sx = x + w, sy = y + h, ex = x, ey = y + h, len = w }, -- 下
+        { sx = x, sy = y + h, ex = x, ey = y, len = h },         -- 左
+    }
+
+    local remaining = filledPerim
+    local dashPos = 0  -- 累计虚线相位
+
+    for _, e in ipairs(edges) do
+        if remaining <= 0 then break end
+
+        local segLen = math.min(remaining, e.len)
+        remaining = remaining - segLen
+
+        local edgeLen = e.len
+        if edgeLen < 0.1 then goto continue end
+
+        local ux = (e.ex - e.sx) / edgeLen
+        local uy = (e.ey - e.sy) / edgeLen
+
+        -- 沿这条边逐段绘制虚线
+        local pos = 0
+        local maxIter = math.ceil(segLen / math.max(cycleLen * 0.5, 0.5)) + 4
+        local iter = 0
+        while pos < segLen and iter < maxIter do
+            iter = iter + 1
+            local cyclePos = math.fmod(dashPos + pos, cycleLen)
+            if cyclePos < dashLen then
+                -- 在 dash 阶段：画一段线
+                local advanceDash = dashLen - cyclePos
+                if advanceDash < 0.5 then advanceDash = 0.5 end  -- 最小步进防死循环
+                local drawEnd = math.min(pos + advanceDash, segLen)
+                nvgBeginPath(vg_)
+                nvgMoveTo(vg_, e.sx + ux * pos, e.sy + uy * pos)
+                nvgLineTo(vg_, e.sx + ux * drawEnd, e.sy + uy * drawEnd)
+                nvgStroke(vg_)
+                pos = drawEnd + 0.01  -- 微小偏移确保推进
+            else
+                -- 在 gap 阶段：跳过
+                local advanceGap = cycleLen - cyclePos
+                if advanceGap < 0.5 then advanceGap = 0.5 end  -- 最小步进防死循环
+                pos = pos + advanceGap
+            end
+        end
+
+        dashPos = dashPos + segLen
+        ::continue::
     end
 end
 

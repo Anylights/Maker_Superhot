@@ -78,11 +78,14 @@ function Start()
     renderer:SetViewport(0, viewport)
     renderer.hdrRendering = true
 
+    -- 设置默认背景色（深色）
+    renderer.defaultZone.fogColor = Color(0.12, 0.12, 0.18)
+
     -- 创建游戏内容
     CreateGameContent()
 
-    -- 初始化 HUD（依赖 Player, GameManager）
-    HUD.Init(Player, GameManager)
+    -- 初始化 HUD（依赖 Player, GameManager, Map）
+    HUD.Init(Player, GameManager, Map)
 
     -- 初始化调参面板（加载存档并应用到 Config）
     if TuningPanel then
@@ -124,6 +127,20 @@ function CreateScene()
         local lightGroup = scene_:CreateChild("LightGroup")
         lightGroup:LoadXML(lightGroupFile:GetRoot())
         print("[Main] LightGroup loaded: Daytime")
+        -- 覆盖 LightGroup 中 Zone 的背景色为深色
+        local zoneComp = lightGroup:GetComponent("Zone")
+        if not zoneComp then
+            -- Zone 可能在子节点上
+            for i = 0, lightGroup.numChildren - 1 do
+                local child = lightGroup:GetChild(i)
+                zoneComp = child:GetComponent("Zone")
+                if zoneComp then break end
+            end
+        end
+        if zoneComp then
+            zoneComp.fogColor = Color(0.12, 0.12, 0.18)
+            print("[Main] Zone fogColor overridden to dark")
+        end
     else
         CreateFallbackLighting()
     end
@@ -148,8 +165,8 @@ function CreateFallbackLighting()
     local zoneNode = scene_:CreateChild("Zone")
     local zone = zoneNode:CreateComponent("Zone")
     zone.boundingBox = BoundingBox(-200.0, 200.0)
-    zone.ambientColor = Color(0.4, 0.4, 0.45)
-    zone.fogColor = Color(0.6, 0.7, 0.85)
+    zone.ambientColor = Color(0.35, 0.35, 0.4)
+    zone.fogColor = Color(0.12, 0.12, 0.18)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
 

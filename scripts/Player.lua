@@ -20,7 +20,6 @@ local mapModule_ = nil  -- Map 模块引用
 -- PBR 技术缓存
 local pbrTechnique_ = nil
 local pbrAlphaTechnique_ = nil
-local boxModel_ = nil
 
 -- ============================================================================
 -- 初始化
@@ -34,7 +33,6 @@ function Player.Init(scene, mapRef)
     mapModule_ = mapRef
     pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
     pbrAlphaTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml")
-    boxModel_ = cache:GetResource("Model", "Models/Box.mdl")
     Player.list = {}
     print("[Player] Initialized")
 end
@@ -53,9 +51,10 @@ function Player.Create(index, isHuman)
     local visualNode = node:CreateChild("Visual")
     visualNode.scale = Vector3(0.9, 0.9, 0.9)
 
-    -- 方块外观（挂在视觉子节点上）
-    local model = visualNode:CreateComponent("StaticModel")
-    model.model = boxModel_
+    -- 方块外观（圆角矩形，与地图方块统一风格）
+    local geom = visualNode:CreateComponent("CustomGeometry")
+    mapModule_.BuildRoundedBox(geom, Config.BlockSize, 0.1)
+    geom.castShadows = true
 
     local mat = Material:new()
     mat:SetTechnique(0, pbrTechnique_)
@@ -63,8 +62,7 @@ function Player.Create(index, isHuman)
     mat:SetShaderParameter("MatEmissiveColor", Variant(Config.PlayerEmissive[index]))
     mat:SetShaderParameter("Metallic", Variant(0.1))
     mat:SetShaderParameter("Roughness", Variant(0.5))
-    model:SetMaterial(mat)
-    model.castShadows = true
+    geom:SetMaterial(mat)
 
     -- 将 visualNode 引用保存，后面 p 表中会用到
     -- 动态刚体
@@ -619,12 +617,13 @@ end
 -- 爆炸前摇视觉效果
 -- ============================================================================
 
---- 爆炸前摇红色闪烁
+--- 爆炸前摇红色闪烁 + 缩放脉冲
 ---@param p table
 function Player.UpdateExplodeVisual(p)
     if not p.material then return end
     -- 快速闪烁：原始颜色 ↔ 红色，频率随前摇剩余时间加快
-    local freq = 6 + (Config.ExplosionWindup - p.explodeTimer) / Config.ExplosionWindup * 14  -- 6→20 Hz
+    local progress = (Config.ExplosionWindup - p.explodeTimer) / Config.ExplosionWindup  -- 0→1
+    local freq = 6 + progress * 14  -- 6→20 Hz
     local flash = math.sin(p.explodeTimer * freq * math.pi * 2)
     if flash > 0 then
         -- 红色
@@ -636,6 +635,18 @@ function Player.UpdateExplodeVisual(p)
         local e = Config.PlayerEmissive[p.index]
         p.material:SetShaderParameter("MatDiffColor", Variant(c))
         p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
+    end
+
+    -- 缩放脉冲：与闪烁同步，幅度随进度增大（0.03→0.12）
+    if p.visualNode then
+        local pulseAmp = 0.03 + progress * 0.09  -- 幅度从 3% 到 12%
+        local pulseScale = 1.0 + math.abs(flash) * pulseAmp
+        local baseScale = 0.9
+        p.visualNode.scale = Vector3(
+            baseScale * pulseScale,
+            baseScale * pulseScale,
+            baseScale * pulseScale
+        )
     end
 end
 
@@ -828,14 +839,87 @@ function Player.Kill(p, reason)
     p.alive = false
     p.respawnTimer = Config.RespawnDelay
 
-    -- 隐藏节点
+    -- 隐藏玩家节点 + 停止物理
     if p.node then
-        p.node.enabled = false
+        local deathPos = p.node.position
+        p.node:SetEnabled(false)
+        if p.body then
+            p.body.linearVelocity = Vector3.ZERO
+        end
+        -- 爆炸死亡：喷溅特效
+        if reason == "explosion" then
+            Player.SpawnSplatFX(deathPos, p.index)
+        end
     end
 
     SFX.Play("death", 0.7)
 
     print("[Player] Player " .. p.index .. " died (" .. reason .. ")")
+end
+
+--- 生成玩家被炸死的喷溅特效
+---@param pos Vector3 死亡位置
+---@param playerIndex number 玩家编号（用于颜色）
+function Player.SpawnSplatFX(pos, playerIndex)
+    if scene_ == nil then return end
+
+    local color = Config.PlayerColors[playerIndex]
+    local r, g, b = color.r, color.g, color.b
+
+    -- 主喷溅粒子：大量碎片向四周飞散
+    local fxNode = scene_:CreateChild("SplatFX")
+    fxNode.position = Vector3(pos.x, pos.y, -0.3)
+
+    local effect = ParticleEffect:new()
+
+    local mat = Material:new()
+    mat:SetTechnique(0, pbrAlphaTechnique_)
+    mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 0.9)))
+    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.3, g * 0.3, b * 0.3)))
+    mat:SetShaderParameter("Metallic", Variant(0.05))
+    mat:SetShaderParameter("Roughness", Variant(0.6))
+    effect:SetMaterial(mat)
+
+    effect:SetNumParticles(50)
+    effect:SetEmitterType(EMITTER_SPHERE)
+    effect:SetEmitterSize(Vector3(0.15, 0.15, 0.05))
+
+    -- 向四周飞散（偏 2D 平面）
+    effect:SetMinDirection(Vector3(-1, -0.5, -0.05))
+    effect:SetMaxDirection(Vector3(1, 1.2, 0.05))
+    effect:SetMinVelocity(5.0)
+    effect:SetMaxVelocity(12.0)
+    effect:SetDampingForce(3.0)
+    effect:SetConstantForce(Vector3(0, -10, 0))  -- 重力让碎片下坠
+
+    -- 粒子大小（小颗粒碎片感）
+    effect:SetMinParticleSize(Vector2(0.03, 0.03))
+    effect:SetMaxParticleSize(Vector2(0.1, 0.1))
+
+    -- 生命期
+    effect:SetMinTimeToLive(0.2)
+    effect:SetMaxTimeToLive(0.5)
+
+    -- 旋转
+    effect:SetMinRotationSpeed(-300)
+    effect:SetMaxRotationSpeed(300)
+
+    -- 短暂爆发
+    effect:SetMinEmissionRate(300)
+    effect:SetMaxEmissionRate(400)
+    effect:SetActiveTime(0.08)
+    effect:SetInactiveTime(999)
+
+    -- 颜色渐变：玩家色 → 深色 → 消失
+    effect:SetNumColorFrames(3)
+    effect:SetColorFrame(0, ColorFrame(Color(r, g, b, 1.0), 0.0))
+    effect:SetColorFrame(1, ColorFrame(Color(r * 0.6, g * 0.6, b * 0.6, 0.8), 0.4))
+    effect:SetColorFrame(2, ColorFrame(Color(r * 0.2, g * 0.2, b * 0.2, 0.0), 1.0))
+
+    local emitter = fxNode:CreateComponent("ParticleEmitter")
+    emitter.effect = effect
+    emitter.emitting = true
+    emitter.autoRemoveMode = REMOVE_NODE
 end
 
 --- 重生玩家
@@ -870,7 +954,7 @@ function Player.Respawn(p)
     -- 回到起点
     local sx, sy = MapData.GetSpawnPosition(p.index)
     if p.node then
-        p.node.enabled = true
+        p.node:SetEnabled(true)
         p.node.position = Vector3(sx, sy, 0)
     end
     if p.body then
@@ -918,7 +1002,7 @@ function Player.ResetAll()
 
         local sx, sy = MapData.GetSpawnPosition(p.index)
         if p.node then
-            p.node.enabled = true
+            p.node:SetEnabled(true)
             p.node.position = Vector3(sx, sy, 0)
         end
         if p.body then

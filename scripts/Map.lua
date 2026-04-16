@@ -26,6 +26,137 @@ local materialCache_ = {}
 local boxModel_ = nil
 local pbrTechnique_ = nil
 
+-- 飞散碎片列表：{ node, velX, velY, rotSpeed, life }
+local debris_ = {}
+
+-- 重生缩放动画列表：{ node, timer, duration }
+local respawnAnims_ = {}
+
+-- ============================================================================
+-- 圆角矩形生成（CustomGeometry）
+-- ============================================================================
+
+--- 在 CustomGeometry 上生成一个圆角矩形方块
+--- 方块中心在原点，尺寸 size x size x size，圆角半径 r
+---@param geom userdata CustomGeometry 组件
+---@param size number 方块边长
+---@param r number 圆角半径
+local function buildRoundedBox(geom, size, r)
+    local h = size * 0.5
+    r = math.min(r, h * 0.5)  -- 圆角最大不超过半边长的一半
+    local segs = 4  -- 每个圆角分段数
+
+    -- 面定义：法线方向, 四个角的偏移轴（两个向量构成面内的基）
+    -- 圆角只作用在正面和背面（Z 方向），侧面保持锐边即可
+    -- 简化方案：6 个面，正面/背面做圆角轮廓拉伸，四个侧面仍然是平面
+
+    geom:SetNumGeometries(1)
+    geom:BeginGeometry(0, TRIANGLE_LIST)
+
+    -- 辅助：添加一个三角形（3 个顶点）
+    local function tri(p1, p2, p3, n)
+        geom:DefineVertex(p1)
+        geom:DefineNormal(n)
+        geom:DefineVertex(p2)
+        geom:DefineNormal(n)
+        geom:DefineVertex(p3)
+        geom:DefineNormal(n)
+    end
+
+    -- 辅助：添加一个四边形（2 个三角形）
+    local function quad(p1, p2, p3, p4, n)
+        tri(p1, p2, p3, n)
+        tri(p1, p3, p4, n)
+    end
+
+    -- 生成圆角轮廓顶点（2D，在 XY 平面）
+    -- 从右上角开始，逆时针
+    local function roundedRectVerts()
+        local verts = {}
+        -- 4 个角的圆心位置
+        local corners = {
+            { x =  h - r, y =  h - r },  -- 右上
+            { x = -h + r, y =  h - r },  -- 左上
+            { x = -h + r, y = -h + r },  -- 左下
+            { x =  h - r, y = -h + r },  -- 右下
+        }
+        -- 每个角的起始角度
+        local startAngles = { 0, math.pi * 0.5, math.pi, math.pi * 1.5 }
+        for ci = 1, 4 do
+            local cx = corners[ci].x
+            local cy = corners[ci].y
+            local sa = startAngles[ci]
+            for si = 0, segs do
+                local a = sa + (math.pi * 0.5) * si / segs
+                table.insert(verts, {
+                    x = cx + r * math.cos(a),
+                    y = cy + r * math.sin(a),
+                })
+            end
+        end
+        return verts
+    end
+
+    local outline = roundedRectVerts()
+    local nv = #outline
+
+    local frontZ = h
+    local backZ = -h
+
+    -- =========== 正面（Z+）===========
+    local nFront = Vector3(0, 0, 1)
+    -- 三角扇：中心点 + 轮廓
+    local center = Vector3(0, 0, frontZ)
+    for i = 1, nv do
+        local j = (i % nv) + 1
+        local p1 = Vector3(outline[i].x, outline[i].y, frontZ)
+        local p2 = Vector3(outline[j].x, outline[j].y, frontZ)
+        tri(center, p1, p2, nFront)
+    end
+
+    -- =========== 背面（Z-）===========
+    local nBack = Vector3(0, 0, -1)
+    local centerB = Vector3(0, 0, backZ)
+    for i = 1, nv do
+        local j = (i % nv) + 1
+        local p1 = Vector3(outline[i].x, outline[i].y, backZ)
+        local p2 = Vector3(outline[j].x, outline[j].y, backZ)
+        tri(centerB, p2, p1, nBack)  -- 反向绕序
+    end
+
+    -- =========== 侧面（连接正面和背面轮廓）===========
+    for i = 1, nv do
+        local j = (i % nv) + 1
+        local v1 = outline[i]
+        local v2 = outline[j]
+
+        local f1 = Vector3(v1.x, v1.y, frontZ)
+        local f2 = Vector3(v2.x, v2.y, frontZ)
+        local b1 = Vector3(v1.x, v1.y, backZ)
+        local b2 = Vector3(v2.x, v2.y, backZ)
+
+        -- 计算侧面法线（沿轮廓边的外法线）
+        local dx = v2.x - v1.x
+        local dy = v2.y - v1.y
+        local len = math.sqrt(dx * dx + dy * dy)
+        local nx, ny = dy / len, -dx / len  -- 外法线（逆时针轮廓的外法线）
+        local sideN = Vector3(nx, ny, 0)
+
+        quad(f1, f2, b2, b1, sideN)
+    end
+
+    geom:Commit()
+end
+
+--- 公共接口：在指定 CustomGeometry 上构建圆角矩形
+--- 供其他模块（如 Player）复用
+---@param geom userdata CustomGeometry 组件
+---@param size number 方块边长
+---@param r number 圆角半径
+function Map.BuildRoundedBox(geom, size, r)
+    buildRoundedBox(geom, size, r)
+end
+
 -- ============================================================================
 -- 初始化
 -- ============================================================================
@@ -99,11 +230,12 @@ function Map.Build()
 
     -- 清空重生列表
     destroyed_ = {}
+    debris_ = {}
 
     print("[Map] Built " .. blockCount .. " blocks (" .. MapData.Width .. "x" .. MapData.Height .. ")")
 end
 
---- 创建单个方块节点
+--- 创建单个方块节点（使用圆角矩形 CustomGeometry）
 ---@param parent Node
 ---@param gx number 网格 X（1-based）
 ---@param gy number 网格 Y（1-based）
@@ -118,17 +250,17 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local node = parent:CreateChild("Block_" .. gx .. "_" .. gy)
     node.position = Vector3(wx, wy, 0)
 
-    -- 视觉
-    local model = node:CreateComponent("StaticModel")
-    model.model = boxModel_
-    model.castShadows = true
+    -- 使用 CustomGeometry 创建圆角方块
+    local geom = node:CreateComponent("CustomGeometry")
+    buildRoundedBox(geom, bs, 0.1)  -- 0.1 米圆角半径（微妙圆角）
+    geom.castShadows = true
 
     local mat = materialCache_[blockType]
     if mat then
-        model:SetMaterial(mat)
+        geom:SetMaterial(mat)
     end
 
-    -- 物理碰撞（静态刚体，mass=0）
+    -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
     local body = node:CreateComponent("RigidBody")
     body.collisionLayer = 1
 
@@ -142,24 +274,85 @@ end
 -- 运行时操作
 -- ============================================================================
 
---- 每帧更新（处理方块重生）
+--- 每帧更新（处理方块重生 + 碎片动画）
 ---@param dt number
 function Map.Update(dt)
+    -- 方块重生
     local toRespawn = {}
-
     for key, info in pairs(destroyed_) do
         info.timer = info.timer - dt
         if info.timer <= 0 then
             table.insert(toRespawn, key)
         end
     end
-
-    -- 重生方块
     for _, key in ipairs(toRespawn) do
         local info = destroyed_[key]
         if info then
             Map.RespawnBlock(info.x, info.y, info.blockType)
             destroyed_[key] = nil
+        end
+    end
+
+    -- 更新飞散碎片
+    Map.UpdateDebris(dt)
+
+    -- 更新重生缩放动画
+    Map.UpdateRespawnAnims(dt)
+end
+
+--- 更新飞散方块动画（整块坠落，不缩小）
+---@param dt number
+function Map.UpdateDebris(dt)
+    local gravity = -25.0  -- 重力加速度
+    local i = 1
+    while i <= #debris_ do
+        local d = debris_[i]
+
+        -- 速度更新（重力）
+        d.velY = d.velY + gravity * dt
+
+        -- 位置更新
+        if d.node then
+            local pos = d.node.position
+            d.node.position = Vector3(pos.x + d.velX * dt, pos.y + d.velY * dt, pos.z)
+
+            -- 旋转
+            local rot = d.node.rotation
+            d.node.rotation = rot * Quaternion(d.rotSpeed * dt, Vector3(d.rotAxisX, d.rotAxisY, d.rotAxisZ))
+        end
+
+        -- 移除条件：掉出屏幕足够远
+        if d.node and d.node.position.y < Config.DeathY - 10 then
+            d.node:Remove()
+            table.remove(debris_, i)
+        else
+            i = i + 1
+        end
+    end
+end
+
+--- 更新重生缩放动画（从小变大，ease-out 曲线）
+---@param dt number
+function Map.UpdateRespawnAnims(dt)
+    local i = 1
+    while i <= #respawnAnims_ do
+        local a = respawnAnims_[i]
+        a.timer = a.timer + dt
+        local t = a.timer / a.duration
+        if t >= 1.0 then
+            -- 动画完成，设为标准尺寸
+            if a.node then
+                a.node.scale = Vector3(1, 1, 1)
+            end
+            table.remove(respawnAnims_, i)
+        else
+            -- ease-out-back 曲线：先超过 1 再回弹，产生弹性感
+            local s = 1.0 - (1.0 - t) * (1.0 - t)  -- ease-out-quad 基础
+            s = s + math.sin(s * math.pi) * 0.12     -- 微妙回弹
+            if a.node then
+                a.node.scale = Vector3(s, s, s)
+            end
+            i = i + 1
         end
     end
 end
@@ -173,13 +366,16 @@ function Map.Explode(centerGX, centerGY, radius)
     local count = 0
     local radiusSq = radius * radius
 
+    -- 计算爆炸中心世界坐标
+    local centerWX, centerWY = Map.GridToWorld(centerGX, centerGY)
+
     for dy = -radius, radius do
         for dx = -radius, radius do
             local gx = centerGX + dx
             local gy = centerGY + dy
             -- 圆形范围判定
             if dx * dx + dy * dy <= radiusSq then
-                if Map.DestroyBlock(gx, gy) then
+                if Map.DestroyBlock(gx, gy, centerWX, centerWY) then
                     count = count + 1
                 end
             end
@@ -193,11 +389,13 @@ function Map.Explode(centerGX, centerGY, radius)
     return count
 end
 
---- 破坏指定方块
+--- 破坏指定方块（整块炸飞）
 ---@param gx number
 ---@param gy number
+---@param explodeCX number|nil 爆炸中心世界 X（nil 时直接向上飞）
+---@param explodeCY number|nil 爆炸中心世界 Y
 ---@return boolean 是否成功破坏
-function Map.DestroyBlock(gx, gy)
+function Map.DestroyBlock(gx, gy, explodeCX, explodeCY)
     if gx < 1 or gx > MapData.Width or gy < 1 or gy > MapData.Height then
         return false
     end
@@ -209,9 +407,51 @@ function Map.DestroyBlock(gx, gy)
         return false
     end
 
-    -- 移除节点
+    -- 把原节点直接变成飞散碎片（不销毁、不分裂）
     if blockNodes_[gy] and blockNodes_[gy][gx] then
-        blockNodes_[gy][gx]:Remove()
+        local origNode = blockNodes_[gy][gx]
+
+        -- 移除物理组件，让方块不再参与碰撞
+        local body = origNode:GetComponent("RigidBody")
+        if body then origNode:RemoveComponent(body) end
+        local shape = origNode:GetComponent("CollisionShape")
+        if shape then origNode:RemoveComponent(shape) end
+
+        -- 计算飞散方向：从爆炸中心指向方块
+        local pos = origNode.position
+        local dirX, dirY = 0, 1
+        if explodeCX and explodeCY then
+            dirX = pos.x - explodeCX
+            dirY = pos.y - explodeCY
+            local len = math.sqrt(dirX * dirX + dirY * dirY)
+            if len > 0.01 then
+                dirX = dirX / len
+                dirY = dirY / len
+            else
+                dirX = 0
+                dirY = 1
+            end
+        end
+
+        -- 飞散速度 + 随机扩散
+        local baseSpeed = 5.0 + math.random() * 4.0
+        local spreadAngle = (math.random() - 0.5) * 0.8
+        local cosA = math.cos(spreadAngle)
+        local sinA = math.sin(spreadAngle)
+        local vx = (dirX * cosA - dirY * sinA) * baseSpeed
+        local vy = (dirX * sinA + dirY * cosA) * baseSpeed + 2.0  -- 稍微向上抛
+
+        table.insert(debris_, {
+            node = origNode,
+            velX = vx,
+            velY = vy,
+            -- 只绕 Z 轴旋转，保持 2D 平面感
+            rotSpeed = 120 + math.random() * 240,
+            rotAxisX = 0,
+            rotAxisY = 0,
+            rotAxisZ = 1,
+        })
+
         blockNodes_[gy][gx] = nil
     end
 
@@ -230,7 +470,7 @@ function Map.DestroyBlock(gx, gy)
     return true
 end
 
---- 重生方块
+--- 重生方块（带从小变大的缩放动效）
 ---@param gx number
 ---@param gy number
 ---@param blockType number
@@ -250,6 +490,14 @@ function Map.RespawnBlock(gx, gy, blockType)
             blockNodes_[gy] = {}
         end
         blockNodes_[gy][gx] = node
+
+        -- 初始缩放为 0，启动缩放动画
+        node.scale = Vector3(0.01, 0.01, 0.01)
+        table.insert(respawnAnims_, {
+            node = node,
+            timer = 0,
+            duration = 0.3,
+        })
     end
 end
 
@@ -323,6 +571,8 @@ function Map.Clear()
     grid_ = {}
     blockNodes_ = {}
     destroyed_ = {}
+    debris_ = {}
+    respawnAnims_ = {}
 end
 
 --- 重置地图（回到完整状态）

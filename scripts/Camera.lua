@@ -19,12 +19,22 @@ local currentOrtho_ = Config.CameraMinOrtho
 local targetCenter_ = Vector3(0, 0, 0)
 local targetOrtho_ = Config.CameraMinOrtho
 
+-- 手动模式（编辑器用，禁用自动跟随）
+Camera.manualMode = false
+
+-- 固定模式（游戏时显示全局地图，禁用自动跟随）
+Camera.fixedMode = false
+
+-- 屏幕震动状态
+local shakeTimer_ = 0
+local shakeDuration_ = 0
+local shakeIntensity_ = 0
+
 --- 初始化相机
 ---@param scene Scene
 function Camera.Init(scene)
     Camera.node = scene:CreateChild("Camera")
     Camera.node.position = Vector3(0, 5, Config.CameraZ)
-    -- 朝向 +Z 方向看（侧视）
     Camera.node.rotation = Quaternion(0, 0, 0)
 
     Camera.camera = Camera.node:CreateComponent("Camera")
@@ -40,20 +50,33 @@ function Camera.Init(scene)
 end
 
 --- 每帧更新：根据玩家位置调整相机
---- 优先保证人类玩家可见；对所有位置做地图边界钳位
 ---@param dt number
----@param playerPositions table  -- {Vector3, Vector3, ...} 活跃玩家位置列表
----@param humanPos Vector3|nil   -- 人类玩家当前位置（即使死亡也传重生点）
+---@param playerPositions table
+---@param humanPos Vector3|nil
 function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
+    if Camera.manualMode then return end
 
-    -- 地图边界（世界坐标）
+    -- 固定模式：仍需处理屏幕震动
+    if Camera.fixedMode then
+        if shakeTimer_ > 0 then
+            shakeTimer_ = shakeTimer_ - dt
+            local progress = shakeTimer_ / shakeDuration_
+            local amp = shakeIntensity_ * progress
+            local offX = (math.random() * 2 - 1) * amp
+            local offY = (math.random() * 2 - 1) * amp
+            Camera.node.position = Vector3(currentCenter_.x + offX, currentCenter_.y + offY, Config.CameraZ)
+        else
+            Camera.node.position = Vector3(currentCenter_.x, currentCenter_.y, Config.CameraZ)
+        end
+        return
+    end
+
     local mapMinX = 0
     local mapMaxX = MapData.Width * Config.BlockSize
     local mapMinY = 0
     local mapMaxY = MapData.Height * Config.BlockSize
 
-    -- 收集有效位置（钳位到地图边界内）
     local positions = {}
     for _, pos in ipairs(playerPositions) do
         local clampedY = math.max(mapMinY, pos.y)
@@ -61,17 +84,14 @@ function Camera.Update(dt, playerPositions, humanPos)
         table.insert(positions, Vector3(clampedX, clampedY, 0))
     end
 
-    -- 人类玩家位置始终加入（保证自己始终可见）
     if humanPos then
         local clampedY = math.max(mapMinY, humanPos.y)
         local clampedX = math.max(mapMinX, math.min(mapMaxX, humanPos.x))
         table.insert(positions, Vector3(clampedX, clampedY, 0))
     end
 
-    -- 如果没有任何有效位置，维持当前相机
     if #positions == 0 then return end
 
-    -- 计算所有位置的包围盒（XY 平面）
     local minX, maxX = math.huge, -math.huge
     local minY, maxY = math.huge, -math.huge
 
@@ -82,39 +102,41 @@ function Camera.Update(dt, playerPositions, humanPos)
         if pos.y > maxY then maxY = pos.y end
     end
 
-    -- 目标中心
     local cx = (minX + maxX) * 0.5
     local cy = (minY + maxY) * 0.5
-
-    -- 钳位相机中心到地图范围内
     cx = math.max(mapMinX, math.min(mapMaxX, cx))
     cy = math.max(mapMinY, math.min(mapMaxY, cy))
 
     targetCenter_ = Vector3(cx, cy, 0)
 
-    -- 目标正交尺寸：需要包含所有玩家 + 边距
     local spanX = maxX - minX + Config.CameraPadding * 2
     local spanY = maxY - minY + Config.CameraPadding * 2
 
-    -- 根据屏幕宽高比决定
     local aspect = Camera.camera.aspectRatio
     if aspect <= 0 then aspect = 16.0 / 9.0 end
 
-    -- orthoSize 是视野全高度，需要满足水平和垂直都能包含
     local orthoFromX = spanX / aspect
     local orthoFromY = spanY
     targetOrtho_ = math.max(orthoFromX, orthoFromY)
     targetOrtho_ = math.max(Config.CameraMinOrtho, math.min(Config.CameraMaxOrtho, targetOrtho_))
 
-    -- 平滑过渡
     local smooth = Config.CameraSmoothSpeed * dt
-    smooth = math.min(smooth, 1.0)  -- 防止 dt 过大导致过冲
+    smooth = math.min(smooth, 1.0)
 
     currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
     currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
 
-    -- 应用相机参数
-    Camera.node.position = Vector3(currentCenter_.x, currentCenter_.y, Config.CameraZ)
+    -- 应用屏幕震动偏移
+    local shakeOffX, shakeOffY = 0, 0
+    if shakeTimer_ > 0 then
+        shakeTimer_ = shakeTimer_ - dt
+        local progress = shakeTimer_ / shakeDuration_  -- 1→0 衰减
+        local amp = shakeIntensity_ * progress
+        shakeOffX = (math.random() * 2 - 1) * amp
+        shakeOffY = (math.random() * 2 - 1) * amp
+    end
+
+    Camera.node.position = Vector3(currentCenter_.x + shakeOffX, currentCenter_.y + shakeOffY, Config.CameraZ)
     Camera.camera.orthoSize = currentOrtho_
 end
 
@@ -171,6 +193,111 @@ end
 function Camera.WorldSizeToScreen(worldSize, logH)
     if Camera.camera == nil then return 0 end
     return worldSize / Camera.camera.orthoSize * logH
+end
+
+-- ============================================================================
+-- 编辑器支持方法
+-- ============================================================================
+
+--- 直接设置正交尺寸（手动模式用）
+---@param size number
+function Camera.SetOrthoSize(size)
+    currentOrtho_ = size
+    targetOrtho_ = size
+    if Camera.camera then
+        Camera.camera.orthoSize = size
+    end
+end
+
+--- 获取当前正交尺寸
+---@return number
+function Camera.GetOrthoSize()
+    return currentOrtho_
+end
+
+--- 直接设置相机中心（手动模式用）
+---@param x number
+---@param y number
+function Camera.SetCenter(x, y)
+    currentCenter_ = Vector3(x, y, 0)
+    targetCenter_ = Vector3(x, y, 0)
+    if Camera.node then
+        Camera.node.position = Vector3(x, y, Config.CameraZ)
+    end
+end
+
+--- 获取当前相机中心
+---@return number, number
+function Camera.GetCenter()
+    return currentCenter_.x, currentCenter_.y
+end
+
+-- ============================================================================
+-- 固定模式（显示全局地图）
+-- ============================================================================
+
+--- 设置固定相机模式，自动计算中心和 orthoSize 以显示整个地图
+---@param mapWidth number 地图宽度（格数）
+---@param mapHeight number 地图高度（格数）
+---@param padding number|nil 边距（默认 2）
+function Camera.SetFixedForMap(mapWidth, mapHeight, padding)
+    padding = padding or 2
+    Camera.fixedMode = true
+
+    local bs = Config.BlockSize
+    local totalW = mapWidth * bs + padding * 2
+    local totalH = mapHeight * bs + padding * 2
+
+    -- 中心
+    local cx = mapWidth * bs * 0.5
+    local cy = mapHeight * bs * 0.5
+
+    -- 计算所需 orthoSize
+    local aspect = Camera.camera and Camera.camera.aspectRatio or (16.0 / 9.0)
+    if aspect <= 0 then aspect = 16.0 / 9.0 end
+
+    local orthoFromW = totalW / aspect
+    local orthoFromH = totalH
+    local ortho = math.max(orthoFromW, orthoFromH)
+
+    Camera.SetImmediate(Vector3(cx, cy, 0), ortho)
+    print("[Camera] Fixed mode: center=(" .. string.format("%.1f,%.1f", cx, cy) ..
+          ") ortho=" .. string.format("%.1f", ortho) ..
+          " map=" .. mapWidth .. "x" .. mapHeight)
+end
+
+--- 触发屏幕震动
+---@param intensity number 震动强度（世界坐标单位偏移）
+---@param duration number 震动持续时间（秒）
+function Camera.Shake(intensity, duration)
+    shakeIntensity_ = intensity
+    shakeDuration_ = duration
+    shakeTimer_ = duration
+end
+
+--- 释放固定模式（恢复自动跟随）
+function Camera.ReleaseFixed()
+    Camera.fixedMode = false
+    print("[Camera] Fixed mode released")
+end
+
+--- 屏幕逻辑坐标 → 世界坐标（WorldToScreen 的逆变换）
+---@param sx number 屏幕逻辑 X
+---@param sy number 屏幕逻辑 Y
+---@param logW number 逻辑宽度
+---@param logH number 逻辑高度
+---@return number, number  -- wx, wy
+function Camera.ScreenToWorld(sx, sy, logW, logH)
+    if Camera.camera == nil or Camera.node == nil then return 0, 0 end
+    local pos = Camera.node.position
+    local ortho = Camera.camera.orthoSize
+    local aspect = Camera.camera.aspectRatio
+    if aspect <= 0 then aspect = 16.0 / 9.0 end
+    local halfH = ortho * 0.5
+    local halfW = halfH * aspect
+    local wx = (sx / logW) * (2 * halfW) - halfW + pos.x
+    local wy = (1.0 - sy / logH) * (2 * halfH) - halfH + pos.y
+    return wx, wy
 end
 
 return Camera

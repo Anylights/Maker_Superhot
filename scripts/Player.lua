@@ -6,6 +6,7 @@
 local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
+local Camera = require("Camera")
 
 local Player = {}
 
@@ -364,13 +365,32 @@ function Player.UpdateOne(p, dt)
         end
     end
 
-    -- 爆炸后摇
+    -- 爆炸后摇（后摇期间不接受输入，但重力和物理仍生效）
     if p.explodeRecovery > 0 then
         p.explodeRecovery = p.explodeRecovery - dt
-        return  -- 后摇期间不能移动
+        -- 清除所有输入，但不跳过物理更新
+        p.inputMoveX = 0
+        p.inputJump = false
+        p.inputDash = false
+        p.inputCharging = false
+        p.inputExplodeRelease = false
+        -- 应用重力（不调用完整 UpdateMovement 以避免输入干扰）
+        if p.body then
+            local vel = p.body.linearVelocity
+            local vy = vel.y
+            if not p.onGround and vy < 0 then
+                local extraGravity = -9.81 * (Config.FallGravityMul - 1.0)
+                vy = vy + extraGravity * dt
+                if vy < -Config.MaxFallSpeed then vy = -Config.MaxFallSpeed end
+            end
+            -- 后摇期间水平速度快速衰减到 0
+            local vx = vel.x * 0.85
+            p.body.linearVelocity = Vector3(vx, vy, 0)
+        end
+        goto updateVisuals
     end
 
-    -- 蓄力中
+    -- 蓄力中（允许水平移动，禁止跳跃/冲刺）
     if p.charging then
         -- 持续蓄力：计时递增
         p.chargeTimer = math.min(p.chargeTimer + dt, Config.ExplosionChargeTime)
@@ -383,10 +403,26 @@ function Player.UpdateOne(p, dt)
             p.inputExplodeRelease = false
             p.inputCharging = false
         end
-        -- 仍在按住 → 继续蓄力，不能移动
         p.inputCharging = false
         p.inputExplodeRelease = false
-        return  -- 蓄力期间不能移动
+
+        -- 蓄力期间仍允许水平移动和重力（但禁止跳跃/冲刺）
+        p.inputJump = false
+        p.inputDash = false
+        p.dashCooldown = p.dashCooldown  -- 保持冷却
+
+        -- 冲刺冷却递减
+        if p.dashCooldown > 0 then
+            p.dashCooldown = p.dashCooldown - dt
+        end
+
+        -- 调用移动更新（跳跃/冲刺输入已被清除）
+        Player.UpdateMovement(p, dt)
+
+        -- 能量自动充能
+        Player.UpdateEnergy(p, dt)
+
+        goto updateVisuals
     end
 
     -- 冲刺冷却
@@ -421,8 +457,10 @@ function Player.UpdateOne(p, dt)
     end
 
     -- =====================
-    -- 视觉动效更新
+    -- 视觉动效、帧末状态更新（蓄力/后摇 goto 跳转到此处）
     -- =====================
+    ::updateVisuals::
+
     Player.UpdateVisualEffects(p, dt)
 
     -- 记录本帧速度，下帧着陆检测用
@@ -896,6 +934,9 @@ function Player.DoExplode(p, progress)
     p.chargeProgress = 0
     p.energy = 0
     p.explodeRecovery = Config.ExplosionRecovery
+    -- 强制重置地面状态：爆炸可能摧毁脚下平台，确保玩家立刻下落
+    p.onGround = false
+    p.wasOnGround = false
     Player.RestoreMaterial(p)
 
     if p.node == nil then return end
@@ -910,7 +951,10 @@ function Player.DoExplode(p, progress)
     local destroyed = mapModule_.Explode(centerGX, centerGY, actualRadius)
 
     -- 检测范围内其他玩家（杀伤范围同比缩放）
-    local killRadius = actualRadius * Config.BlockSize
+    -- 边缘判定：爆炸边缘碰到玩家描边线即可击杀
+    -- 玩家描边外半径 ≈ BlockSize * 0.9 * 1.15 * 0.5 ≈ 0.52
+    local playerOutlineRadius = Config.BlockSize * 0.9 * 1.15 * 0.5
+    local killRadius = actualRadius * Config.BlockSize + playerOutlineRadius
     for _, other in ipairs(Player.list) do
         if other.index ~= p.index and other.alive and other.invincibleTimer <= 0 then
             if other.node then
@@ -926,6 +970,10 @@ function Player.DoExplode(p, progress)
 
     -- 生成爆炸粒子特效
     Player.SpawnExplosionFX(pos, p.index)
+
+    -- 屏幕震动（强度随爆炸半径缩放）
+    local shakeIntensity = 0.15 + actualRadius * 0.05  -- 1格≈0.20, 7格≈0.50
+    Camera.Shake(shakeIntensity, 0.25)
 
     -- 爆炸音效
     SFX.Play("explosion", 0.8)
@@ -945,14 +993,24 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     -- 程序化创建粒子效果
     local effect = ParticleEffect:new()
 
-    -- 创建粒子材质（透明）
+    -- 创建粒子材质（透明）- 极高饱和度颜色
     local mat = Material:new()
     mat:SetTechnique(0, pbrAlphaTechnique_)
     local color = Config.PlayerColors[playerIndex]
-    mat:SetShaderParameter("MatDiffColor", Variant(Color(color.r, color.g, color.b, 0.8)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(color.r * 0.5, color.g * 0.5, color.b * 0.5)))
-    mat:SetShaderParameter("Metallic", Variant(0.1))
-    mat:SetShaderParameter("Roughness", Variant(0.5))
+    -- 将颜色推向极高饱和度：找到最大通道，压低其他通道
+    local maxC = math.max(color.r, color.g, color.b, 0.01)
+    local satR = math.min(1.0, (color.r / maxC) ^ 0.3) * 1.0  -- 增强对比
+    local satG = math.min(1.0, (color.g / maxC) ^ 0.3) * 1.0
+    local satB = math.min(1.0, (color.b / maxC) ^ 0.3) * 1.0
+    -- 再压低非主导通道，拉到极致饱和
+    local minSat = math.min(satR, satG, satB)
+    satR = math.min(1.0, satR - minSat * 0.6 + 0.05)
+    satG = math.min(1.0, satG - minSat * 0.6 + 0.05)
+    satB = math.min(1.0, satB - minSat * 0.6 + 0.05)
+    mat:SetShaderParameter("MatDiffColor", Variant(Color(satR, satG, satB, 0.95)))
+    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(satR * 0.8, satG * 0.8, satB * 0.8)))
+    mat:SetShaderParameter("Metallic", Variant(0.0))
+    mat:SetShaderParameter("Roughness", Variant(0.3))
     effect:SetMaterial(mat)
 
     -- 粒子参数
@@ -987,11 +1045,11 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     effect:SetActiveTime(0.15)
     effect:SetInactiveTime(999)
 
-    -- 颜色渐变：亮 → 暗 → 消失
+    -- 颜色渐变：极亮高饱和 → 玩家饱和色 → 消失
     effect:SetNumColorFrames(3)
-    effect:SetColorFrame(0, ColorFrame(Color(1.0, 0.9, 0.5, 1.0), 0.0))
-    effect:SetColorFrame(1, ColorFrame(Color(color.r, color.g, color.b, 0.8), 0.3))
-    effect:SetColorFrame(2, ColorFrame(Color(0.2, 0.2, 0.2, 0.0), 1.0))
+    effect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.3, 1.0), 0.0))  -- 初始闪光
+    effect:SetColorFrame(1, ColorFrame(Color(satR, satG, satB, 0.9), 0.25))  -- 高饱和玩家色
+    effect:SetColorFrame(2, ColorFrame(Color(satR * 0.5, satG * 0.3, satB * 0.2, 0.0), 1.0))  -- 渐暗消失
 
     -- 创建发射器
     local emitter = fxNode:CreateComponent("ParticleEmitter")
@@ -1007,10 +1065,10 @@ function Player.SpawnExplosionFX(pos, playerIndex)
 
     local ringMat = Material:new()
     ringMat:SetTechnique(0, pbrAlphaTechnique_)
-    ringMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.8, 0.3, 0.6)))
-    ringMat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.5, 0.3, 0.05)))
+    ringMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.6, 0.0, 0.85)))
+    ringMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1.0, 0.4, 0.0)))
     ringMat:SetShaderParameter("Metallic", Variant(0.0))
-    ringMat:SetShaderParameter("Roughness", Variant(1.0))
+    ringMat:SetShaderParameter("Roughness", Variant(0.3))
     ringEffect:SetMaterial(ringMat)
 
     ringEffect:SetNumParticles(20)
@@ -1035,8 +1093,8 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     ringEffect:SetInactiveTime(999)
 
     ringEffect:SetNumColorFrames(2)
-    ringEffect:SetColorFrame(0, ColorFrame(Color(1.0, 0.9, 0.4, 0.8), 0.0))
-    ringEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.5, 0.1, 0.0), 1.0))
+    ringEffect:SetColorFrame(0, ColorFrame(Color(1.0, 0.95, 0.1, 1.0), 0.0))  -- 极亮黄白闪光
+    ringEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.3, 0.0, 0.0), 1.0))   -- 高饱和橙红消散
 
     local ringEmitter = ringNode:CreateComponent("ParticleEmitter")
     ringEmitter.effect = ringEffect

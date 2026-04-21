@@ -206,6 +206,8 @@ function Map.CreateBlockMaterial(color, blockType)
         mat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.05, 0.2, 0.05)))
     elseif blockType == Config.BLOCK_FINISH then
         mat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.6, 0.5, 0.05)))
+    elseif Config.SpawnBlockEmissive[blockType] then
+        mat:SetShaderParameter("MatEmissiveColor", Variant(Config.SpawnBlockEmissive[blockType]))
     end
 
     return mat
@@ -423,7 +425,7 @@ function Map.DestroyBlock(gx, gy, explodeCX, explodeCY)
 
     local blockType = grid_[gy][gx]
 
-    -- 只能破坏普通方块和能量托台
+    -- 只能破坏普通方块和能量托台（出生点、安全、终点不可破坏）
     if blockType ~= Config.BLOCK_NORMAL and blockType ~= Config.BLOCK_ENERGY_PAD then
         return false
     end
@@ -599,6 +601,107 @@ end
 --- 重置地图（回到完整状态）
 function Map.Reset()
     Map.Build()
+end
+
+-- ============================================================================
+-- 编辑器支持 API
+-- ============================================================================
+
+--- 获取当前 grid 引用
+---@return table
+function Map.GetGrid()
+    return grid_
+end
+
+--- 获取地图尺寸
+---@return number, number  -- width, height
+function Map.GetDimensions()
+    return MapData.Width, MapData.Height
+end
+
+--- 在指定网格位置放置方块（编辑器用）
+---@param gx number
+---@param gy number
+---@param blockType number
+function Map.SetBlock(gx, gy, blockType)
+    if gx < 1 or gx > MapData.Width or gy < 1 or gy > MapData.Height then
+        return
+    end
+
+    -- 先移除已有方块
+    Map.RemoveBlock(gx, gy)
+
+    -- 更新 grid
+    grid_[gy][gx] = blockType
+
+    if blockType == Config.BLOCK_EMPTY then
+        return
+    end
+
+    -- 创建新方块节点
+    local mapRoot = scene_:GetChild("MapRoot")
+    if mapRoot then
+        local node = Map.CreateBlockNode(mapRoot, gx, gy, blockType)
+        if not blockNodes_[gy] then blockNodes_[gy] = {} end
+        blockNodes_[gy][gx] = node
+    end
+end
+
+--- 移除指定网格位置的方块（编辑器用）
+---@param gx number
+---@param gy number
+function Map.RemoveBlock(gx, gy)
+    if gx < 1 or gx > MapData.Width or gy < 1 or gy > MapData.Height then
+        return
+    end
+
+    -- 移除节点
+    if blockNodes_[gy] and blockNodes_[gy][gx] then
+        blockNodes_[gy][gx]:Remove()
+        blockNodes_[gy][gx] = nil
+    end
+
+    -- 更新 grid
+    if grid_[gy] then
+        grid_[gy][gx] = Config.BLOCK_EMPTY
+    end
+end
+
+--- 从外部 grid 数据重建整个地图（编辑器加载用）
+---@param externalGrid table
+function Map.BuildFromGrid(externalGrid)
+    Map.Clear()
+
+    -- 创建空 grid 并复制数据
+    grid_ = {}
+    for y = 1, MapData.Height do
+        grid_[y] = {}
+        for x = 1, MapData.Width do
+            grid_[y][x] = (externalGrid[y] and externalGrid[y][x]) or Config.BLOCK_EMPTY
+        end
+    end
+
+    -- 创建地图父节点
+    local mapRoot = scene_:CreateChild("MapRoot")
+    blockNodes_ = {}
+    local blockCount = 0
+
+    for y = 1, MapData.Height do
+        blockNodes_[y] = {}
+        for x = 1, MapData.Width do
+            local blockType = grid_[y][x]
+            if blockType ~= Config.BLOCK_EMPTY then
+                local node = Map.CreateBlockNode(mapRoot, x, y, blockType)
+                blockNodes_[y][x] = node
+                blockCount = blockCount + 1
+            end
+        end
+    end
+
+    destroyed_ = {}
+    debris_ = {}
+
+    print("[Map] Built from external grid: " .. blockCount .. " blocks")
 end
 
 return Map

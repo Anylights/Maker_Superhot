@@ -7,6 +7,7 @@
 
 local Config = require("Config")
 local Camera = require("Camera")
+local LevelManager = require("LevelManager")
 
 local HUD = {}
 
@@ -29,6 +30,19 @@ local fontBold_ = -1
 -- 模块引用（由 main 注入）
 local playerModule_ = nil
 local gameManager_ = nil
+local levelEditorRef_ = nil
+
+-- 编辑器按钮区域（菜单内点击检测用）
+local editorBtnRect_ = { x = 0, y = 0, w = 0, h = 0 }
+-- 我的关卡按钮区域
+local levelListBtnRect_ = { x = 0, y = 0, w = 0, h = 0 }
+
+-- 关卡列表状态
+local levelListCache_ = {}       -- 缓存的关卡列表
+local levelListAction_ = nil     -- 最近一次点击动作 { action="play"|"edit"|"delete"|"new"|"back", filename=... }
+local levelListScroll_ = 0       -- 滚动偏移
+local testPlayExitClicked_ = false  -- 试玩退出按钮是否被点击
+local persistClicked_ = false  -- "保存到工程"按钮是否被点击
 
 -- 动画
 local countdownScale_ = 1.0
@@ -63,6 +77,82 @@ function HUD.Init(playerRef, gmRef, mapRef)
     print("[HUD] Initialized")
 end
 
+--- 设置关卡编辑器引用
+---@param editorRef table LevelEditor 模块
+function HUD.SetLevelEditor(editorRef)
+    levelEditorRef_ = editorRef
+end
+
+--- 获取 NanoVG 上下文（供 LevelEditor 共享）
+---@return number
+function HUD.GetNVGContext()
+    return vg_
+end
+
+--- 获取逻辑分辨率
+---@return number, number
+function HUD.GetLogicalSize()
+    return logW_, logH_
+end
+
+--- 检测菜单中编辑器按钮是否被点击
+---@return boolean
+function HUD.IsEditorButtonClicked()
+    if input:GetMouseButtonPress(MOUSEB_LEFT) then
+        local mx = input.mousePosition.x / dpr_
+        local my = input.mousePosition.y / dpr_
+        if mx >= editorBtnRect_.x and mx <= editorBtnRect_.x + editorBtnRect_.w
+           and my >= editorBtnRect_.y and my <= editorBtnRect_.y + editorBtnRect_.h then
+            return true
+        end
+    end
+    return false
+end
+
+--- 刷新关卡列表缓存
+function HUD.RefreshLevelList()
+    levelListCache_ = LevelManager.List()
+    levelListScroll_ = 0
+end
+
+--- 获取关卡列表中最近一次用户动作，获取后自动清除
+---@return table|nil -- { action="play"|"edit"|"delete"|"new"|"back", filename=string|nil }
+function HUD.GetLevelListAction()
+    local a = levelListAction_
+    levelListAction_ = nil
+    return a
+end
+
+--- 检查菜单中"我的关卡"按钮是否被点击
+---@return boolean
+function HUD.IsLevelListButtonClicked()
+    if input:GetMouseButtonPress(MOUSEB_LEFT) then
+        local mx = input.mousePosition.x / dpr_
+        local my = input.mousePosition.y / dpr_
+        if mx >= levelListBtnRect_.x and mx <= levelListBtnRect_.x + levelListBtnRect_.w
+           and my >= levelListBtnRect_.y and my <= levelListBtnRect_.y + levelListBtnRect_.h then
+            return true
+        end
+    end
+    return false
+end
+
+--- 检查试玩退出按钮是否被点击（获取后自动清除）
+---@return boolean
+function HUD.IsTestPlayExitClicked()
+    local v = testPlayExitClicked_
+    testPlayExitClicked_ = false
+    return v
+end
+
+--- 检查"保存到工程"按钮是否被点击（获取后自动清除）
+---@return boolean
+function HUD.IsPersistClicked()
+    local v = persistClicked_
+    persistClicked_ = false
+    return v
+end
+
 --- 刷新分辨率数据
 function HUD.RefreshResolution()
     physW_ = graphics:GetWidth()
@@ -90,6 +180,23 @@ function HandleNanoVGRender(eventType, eventData)
         return
     end
 
+    -- 关卡列表
+    if state == "levelList" then
+        HUD.DrawLevelList()
+        nvgEndFrame(vg_)
+        return
+    end
+
+    -- 关卡编辑器
+    if state == "editor" then
+        if levelEditorRef_ then
+            levelEditorRef_.SetResolution(logW_, logH_)
+            levelEditorRef_.Draw()
+        end
+        nvgEndFrame(vg_)
+        return
+    end
+
     -- 温暖渐变背景（所有游戏状态共用）
     HUD.DrawBackground()
 
@@ -106,6 +213,11 @@ function HandleNanoVGRender(eventType, eventData)
     end
 
     HUD.DrawRoundInfo()
+
+    -- 试玩模式下绘制退出按钮
+    if gameManager_ and gameManager_.testPlayMode then
+        HUD.DrawTestPlayExitButton()
+    end
 
     if state == "countdown" then
         HUD.DrawCountdown()
@@ -1042,6 +1154,58 @@ function HUD.DrawMenu()
         local label = i == 1 and "P1 你" or ("P" .. i .. " AI")
         nvgText(vg_, dx, dotY + 12, label)
     end
+
+    -- ======== 底部按钮区域 ========
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    local ebtnW = 180
+    local ebtnH = 36
+    local ebtnGap = 10
+    local ebtnX = cx - ebtnW * 0.5
+    local ebtnY = dotY + 38
+
+    -- ---- "我的关卡 (L)" 按钮 ----
+    levelListBtnRect_.x = ebtnX
+    levelListBtnRect_.y = ebtnY
+    levelListBtnRect_.w = ebtnW
+    levelListBtnRect_.h = ebtnH
+
+    local lhovered = mx >= ebtnX and mx <= ebtnX + ebtnW and my >= ebtnY and my <= ebtnY + ebtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, ebtnX, ebtnY, ebtnW, ebtnH, 8)
+    nvgFillColor(vg_, lhovered and nvgRGBA(60, 80, 120, 200) or nvgRGBA(35, 50, 75, 160))
+    nvgFill(vg_)
+    nvgStrokeColor(vg_, nvgRGBA(120, 170, 220, lhovered and 150 or 80))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(200, 220, 255, lhovered and 255 or 200))
+    nvgText(vg_, cx, ebtnY + ebtnH * 0.5, "我的关卡 (L)")
+
+    -- ---- "关卡编辑器 (E)" 按钮 ----
+    local edBtnY = ebtnY + ebtnH + ebtnGap
+
+    editorBtnRect_.x = ebtnX
+    editorBtnRect_.y = edBtnY
+    editorBtnRect_.w = ebtnW
+    editorBtnRect_.h = ebtnH
+
+    local hovered = mx >= ebtnX and mx <= ebtnX + ebtnW and my >= edBtnY and my <= edBtnY + ebtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, ebtnX, edBtnY, ebtnW, ebtnH, 8)
+    nvgFillColor(vg_, hovered and nvgRGBA(80, 60, 40, 200) or nvgRGBA(50, 35, 22, 160))
+    nvgFill(vg_)
+    nvgStrokeColor(vg_, nvgRGBA(220, 180, 100, hovered and 150 or 80))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 220, 160, hovered and 255 or 200))
+    nvgText(vg_, cx, edBtnY + ebtnH * 0.5, "关卡编辑器 (E)")
 end
 
 --- 绘制控制提示（底部）
@@ -1051,6 +1215,287 @@ function HUD.DrawControls()
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     nvgFillColor(vg_, nvgRGBA(160, 140, 120, 140))
     nvgText(vg_, logW_ * 0.5, logH_ - 8, "A/D: Move  SPACE: Jump  SHIFT: Dash  E: Explode  TAB: Debug")
+end
+
+-- ============================================================================
+-- 关卡列表 UI
+-- ============================================================================
+
+--- 绘制关卡列表界面
+function HUD.DrawLevelList()
+    -- 全屏背景
+    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
+        nvgRGBA(45, 25, 15, 255), nvgRGBA(60, 30, 20, 255))
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillPaint(vg_, bgPaint)
+    nvgFill(vg_)
+
+    local cx = logW_ * 0.5
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 36)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 200, 80, 255))
+    nvgText(vg_, cx, 40, "我的关卡")
+
+    -- 关卡数量提示
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 14)
+    nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
+    nvgText(vg_, cx, 65, "共 " .. #levelListCache_ .. " 个关卡")
+
+    -- 列表区域
+    local listX = cx - 200
+    local listW = 400
+    local listY = 85
+    local itemH = 50
+    local itemGap = 6
+    local listMaxH = logH_ - 150  -- 留出底部按钮空间
+
+    -- 列表背景
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, listX - 10, listY - 5, listW + 20, listMaxH + 10, 8)
+    nvgFillColor(vg_, nvgRGBA(25, 15, 10, 120))
+    nvgFill(vg_)
+
+    -- 滚轮控制滚动
+    local wheel = input:GetMouseMoveWheel()
+    if wheel ~= 0 then
+        levelListScroll_ = levelListScroll_ - wheel * 40
+        local maxScroll = math.max(0, #levelListCache_ * (itemH + itemGap) - listMaxH)
+        levelListScroll_ = math.max(0, math.min(maxScroll, levelListScroll_))
+    end
+
+    -- 裁剪区域（NanoVG scissor）
+    nvgSave(vg_)
+    nvgScissor(vg_, listX - 10, listY - 5, listW + 20, listMaxH + 10)
+
+    -- 绘制关卡项
+    local btnW = 50
+    local btnH = 28
+    local btnGap = 6
+
+    for i, entry in ipairs(levelListCache_) do
+        local iy = listY + (i - 1) * (itemH + itemGap) - levelListScroll_
+
+        -- 跳过不可见项
+        if iy + itemH < listY - 5 or iy > listY + listMaxH + 5 then
+            goto continueItem
+        end
+
+        -- 项背景
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, listX, iy, listW, itemH, 6)
+        nvgFillColor(vg_, nvgRGBA(50, 35, 25, 180))
+        nvgFill(vg_)
+
+        -- 关卡名称
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 16)
+        nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(240, 230, 220, 240))
+        nvgText(vg_, listX + 12, iy + itemH * 0.5, entry.name or entry.filename)
+
+        -- 文件名（小字）
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 11)
+        nvgFillColor(vg_, nvgRGBA(160, 140, 120, 150))
+        nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgText(vg_, listX + 12, iy + itemH * 0.5 + 14, entry.filename)
+
+        -- 操作按钮（从右到左：删除、修改、试玩）
+        local bx = listX + listW - 12
+        local by = iy + (itemH - btnH) * 0.5
+
+        -- 鼠标逻辑坐标
+        local mx = input.mousePosition.x / dpr_
+        local my = input.mousePosition.y / dpr_
+        local clicked = input:GetMouseButtonPress(MOUSEB_LEFT)
+
+        -- 删除按钮
+        bx = bx - btnW
+        local delHover = mx >= bx and mx <= bx + btnW and my >= by and my <= by + btnH
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, bx, by, btnW, btnH, 4)
+        nvgFillColor(vg_, delHover and nvgRGBA(180, 50, 40, 200) or nvgRGBA(120, 40, 30, 160))
+        nvgFill(vg_)
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 13)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(255, 220, 200, delHover and 255 or 200))
+        nvgText(vg_, bx + btnW * 0.5, by + btnH * 0.5, "删除")
+        if clicked and delHover then
+            levelListAction_ = { action = "delete", filename = entry.filename }
+        end
+
+        -- 修改按钮
+        bx = bx - btnW - btnGap
+        local editHover = mx >= bx and mx <= bx + btnW and my >= by and my <= by + btnH
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, bx, by, btnW, btnH, 4)
+        nvgFillColor(vg_, editHover and nvgRGBA(80, 120, 60, 200) or nvgRGBA(60, 90, 45, 160))
+        nvgFill(vg_)
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 13)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(220, 255, 200, editHover and 255 or 200))
+        nvgText(vg_, bx + btnW * 0.5, by + btnH * 0.5, "修改")
+        if clicked and editHover then
+            levelListAction_ = { action = "edit", filename = entry.filename }
+        end
+
+        -- 试玩按钮
+        bx = bx - btnW - btnGap
+        local playHover = mx >= bx and mx <= bx + btnW and my >= by and my <= by + btnH
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, bx, by, btnW, btnH, 4)
+        nvgFillColor(vg_, playHover and nvgRGBA(60, 100, 160, 200) or nvgRGBA(40, 70, 120, 160))
+        nvgFill(vg_)
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 13)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(200, 220, 255, playHover and 255 or 200))
+        nvgText(vg_, bx + btnW * 0.5, by + btnH * 0.5, "试玩")
+        if clicked and playHover then
+            levelListAction_ = { action = "play", filename = entry.filename }
+        end
+
+        ::continueItem::
+    end
+
+    -- 空列表提示
+    if #levelListCache_ == 0 then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 18)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(180, 160, 140, 150))
+        nvgText(vg_, cx, listY + listMaxH * 0.4, "还没有保存的关卡")
+        nvgFontSize(vg_, 14)
+        nvgText(vg_, cx, listY + listMaxH * 0.4 + 28, "点击下方\"新建关卡\"开始创作！")
+    end
+
+    nvgRestore(vg_)  -- 恢复裁剪
+
+    -- 底部按钮栏（3个按钮）
+    local bottomY = logH_ - 55
+    local bbtnW = 120
+    local bbtnH = 36
+    local bbtnGap = 14
+    local totalBtnW = bbtnW * 3 + bbtnGap * 2
+    local btnStartX = cx - totalBtnW * 0.5
+
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+    local clicked = input:GetMouseButtonPress(MOUSEB_LEFT)
+
+    -- "新建关卡" 按钮
+    local newX = btnStartX
+    local newHover = mx >= newX and mx <= newX + bbtnW and my >= bottomY and my <= bottomY + bbtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, newX, bottomY, bbtnW, bbtnH, 8)
+    nvgFillColor(vg_, newHover and nvgRGBA(80, 140, 60, 220) or nvgRGBA(55, 100, 40, 180))
+    nvgFill(vg_)
+    nvgStrokeColor(vg_, nvgRGBA(120, 200, 80, newHover and 180 or 100))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(220, 255, 200, newHover and 255 or 220))
+    nvgText(vg_, newX + bbtnW * 0.5, bottomY + bbtnH * 0.5, "新建关卡")
+    if clicked and newHover then
+        levelListAction_ = { action = "new" }
+    end
+
+    -- "保存到工程" 按钮（金色醒目）
+    local persistX = btnStartX + bbtnW + bbtnGap
+    local persistHover = mx >= persistX and mx <= persistX + bbtnW and my >= bottomY and my <= bottomY + bbtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, persistX, bottomY, bbtnW, bbtnH, 8)
+    nvgFillColor(vg_, persistHover and nvgRGBA(160, 120, 30, 230) or nvgRGBA(120, 90, 20, 190))
+    nvgFill(vg_)
+    nvgStrokeColor(vg_, nvgRGBA(255, 210, 80, persistHover and 200 or 120))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 15)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 240, 180, persistHover and 255 or 220))
+    nvgText(vg_, persistX + bbtnW * 0.5, bottomY + bbtnH * 0.5, "保存到工程")
+    if clicked and persistHover then
+        persistClicked_ = true
+    end
+
+    -- "返回菜单" 按钮
+    local backX = btnStartX + (bbtnW + bbtnGap) * 2
+    local backHover = mx >= backX and mx <= backX + bbtnW and my >= bottomY and my <= bottomY + bbtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, backX, bottomY, bbtnW, bbtnH, 8)
+    nvgFillColor(vg_, backHover and nvgRGBA(80, 60, 45, 220) or nvgRGBA(55, 38, 25, 180))
+    nvgFill(vg_)
+    nvgStrokeColor(vg_, nvgRGBA(180, 150, 110, backHover and 150 or 80))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(240, 220, 190, backHover and 255 or 200))
+    nvgText(vg_, backX + bbtnW * 0.5, bottomY + bbtnH * 0.5, "返回菜单")
+    if clicked and backHover then
+        levelListAction_ = { action = "back" }
+    end
+
+    -- ESC 快捷键返回
+    if input:GetKeyPress(KEY_ESCAPE) then
+        levelListAction_ = { action = "back" }
+    end
+end
+
+-- ============================================================================
+-- 试玩退出按钮
+-- ============================================================================
+
+--- 绘制试玩模式退出按钮（左上角）
+function HUD.DrawTestPlayExitButton()
+    local btnW = 100
+    local btnH = 32
+    local btnX = 12
+    local btnY = 12
+
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+    local hovered = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
+
+    -- 背景
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, btnX, btnY, btnW, btnH, 6)
+    nvgFillColor(vg_, hovered and nvgRGBA(180, 60, 40, 220) or nvgRGBA(120, 40, 30, 180))
+    nvgFill(vg_)
+
+    nvgStrokeColor(vg_, nvgRGBA(255, 120, 80, hovered and 200 or 100))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+
+    -- 文字
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 14)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 230, 210, hovered and 255 or 220))
+    nvgText(vg_, btnX + btnW * 0.5, btnY + btnH * 0.5, "退出试玩")
+
+    -- "试玩中" 标签
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 11)
+    nvgFillColor(vg_, nvgRGBA(255, 200, 100, 160))
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+    nvgText(vg_, btnX, btnY + btnH + 4, "试玩模式")
+
+    -- 点击检测
+    if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
+        testPlayExitClicked_ = true
+    end
 end
 
 return HUD

@@ -15,6 +15,9 @@ local AIController = require("AIController")
 local GameManager = require("GameManager")
 local HUD = require("HUD")
 local SFX = require("SFX")
+local RandomPickup = require("RandomPickup")
+local LevelEditor = require("LevelEditor")
+local LevelManager = require("LevelManager")
 
 -- 调参面板（仅客户端加载，服务端跳过）
 ---@type table|nil
@@ -75,8 +78,8 @@ function Start()
     -- 初始化音效系统
     SFX.Init(scene_)
 
-    -- 初始化游戏管理器（依赖 Player, Map, Pickup, AI）
-    GameManager.Init(Player, Map, Pickup, AIController)
+    -- 初始化游戏管理器（依赖 Player, Map, Pickup, AI, RandomPickup）
+    GameManager.Init(Player, Map, Pickup, AIController, RandomPickup)
 
     -- 初始化相机
     Camera.Init(scene_)
@@ -94,6 +97,16 @@ function Start()
 
     -- 初始化 HUD（依赖 Player, GameManager, Map）
     HUD.Init(Player, GameManager, Map)
+
+    -- 初始化随机道具系统（依赖 Map, Pickup）
+    RandomPickup.Init(Map, Pickup)
+
+    -- 初始化关卡管理器
+    LevelManager.Init()
+
+    -- 初始化关卡编辑器（依赖 HUD 的 NanoVG 上下文）
+    LevelEditor.Init(HUD.GetNVGContext(), GameManager, Map)
+    HUD.SetLevelEditor(LevelEditor)
 
     -- 初始化调参面板（加载存档并应用到 Config）
     if TuningPanel then
@@ -159,7 +172,7 @@ function CreateScene()
         CreateFallbackLighting()
     end
 
-    -- 死亡区域（底部）- 不可见触发器
+    -- 死亡区域（底部）- 不可见触发器（初始创建，后续由 UpdateDeathZone 更新）
     local deathZone = scene_:CreateChild("DeathZone")
     deathZone.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
     deathZone.scale = Vector3(MapData.Width + 20, 2, 10)
@@ -250,6 +263,16 @@ function CreateBackgroundPlane()
     print("[Main] Background gradient plane created (" .. strips .. " strips)")
 end
 
+--- 更新死亡区域位置和大小（适配当前 MapData 尺寸）
+function UpdateDeathZone()
+    if scene_ == nil then return end
+    local dz = scene_:GetChild("DeathZone", false)
+    if dz then
+        dz.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
+        dz.scale = Vector3(MapData.Width + 20, 2, 10)
+    end
+end
+
 function CreateGameContent()
     -- 创建渐变背景平面
     CreateBackgroundPlane()
@@ -267,12 +290,11 @@ function CreateGameContent()
         end
     end
 
-    -- 生成能量拾取物
-    Pickup.SpawnAll()
+    -- 随机生成能量拾取物（由 RandomPickup 管理生成位置）
+    RandomPickup.Reset()
 
-    -- 初始化相机到起点区域
-    local spawnX, spawnY = MapData.GetSpawnPosition(1)
-    Camera.SetImmediate(Vector3(spawnX + 10, spawnY + 5, 0), Config.CameraMinOrtho)
+    -- 固定摄像机显示全局地图
+    Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
 
     -- 进入主菜单（等待玩家按键开始）
     GameManager.EnterMenu()
@@ -292,10 +314,100 @@ function HandleUpdate(eventType, eventData)
     -- 主菜单：按空格或回车开始游戏
     if GameManager.state == GameManager.STATE_MENU then
         if input:GetKeyPress(KEY_SPACE) or input:GetKeyPress(KEY_RETURN) then
+            -- 正常游戏：随机选取自定义关卡
+            local grid, fn = LevelManager.GetRandom()
+            if grid then
+                MapData.SetCustomGrid(grid)
+                print("[Main] Random level selected: " .. tostring(fn))
+            else
+                MapData.ClearCustomGrid()
+                print("[Main] No custom levels, using procedural map")
+            end
             GameManager.StartMatch()
+            -- 每次开赛后重新设置固定摄像机和死亡区域（地图可能已变）
+            Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
+            UpdateDeathZone()
             print("[Main] Game started from menu")
+        elseif input:GetKeyPress(KEY_L) or HUD.IsLevelListButtonClicked() then
+            HUD.RefreshLevelList()
+            GameManager.EnterLevelList()
+            print("[Main] Entering level list")
+        elseif input:GetKeyPress(KEY_E) or HUD.IsEditorButtonClicked() then
+            Camera.ReleaseFixed()
+            GameManager.EnterEditor()
+            LevelEditor.NewLevel()
+            LevelEditor.Enter()
+            print("[Main] Entering level editor (new level)")
         end
-        return  -- 菜单状态不处理其他逻辑
+        return
+    end
+
+    -- 关卡列表状态
+    if GameManager.state == GameManager.STATE_LEVEL_LIST then
+        -- 保存到工程（导出关卡数据到日志）
+        if HUD.IsPersistClicked() then
+            local count = LevelManager.ExportToLog()
+            if count > 0 then
+                print("[Main] Persist requested: " .. count .. " levels exported to log")
+            else
+                print("[Main] Persist requested but no levels to export")
+            end
+        end
+
+        local action = HUD.GetLevelListAction()
+        if action then
+            if action.action == "play" then
+                -- 试玩：加载关卡并开始试玩
+                local grid = LevelManager.Load(action.filename)
+                if grid then
+                    MapData.SetCustomGrid(grid)
+                    GameManager.StartTestPlay(action.filename)
+                    Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
+                    UpdateDeathZone()
+                    print("[Main] Test play: " .. action.filename)
+                end
+            elseif action.action == "edit" then
+                -- 修改：加载到编辑器
+                Camera.ReleaseFixed()
+                GameManager.EnterEditor()
+                LevelEditor.LoadFile(action.filename)
+                LevelEditor.Enter()
+                print("[Main] Editing level: " .. action.filename)
+            elseif action.action == "delete" then
+                -- 删除关卡
+                LevelManager.Delete(action.filename)
+                HUD.RefreshLevelList()
+                print("[Main] Deleted level: " .. action.filename)
+            elseif action.action == "new" then
+                -- 新建关卡
+                Camera.ReleaseFixed()
+                GameManager.EnterEditor()
+                LevelEditor.NewLevel()
+                LevelEditor.Enter()
+                print("[Main] New level from list")
+            elseif action.action == "back" then
+                -- 返回菜单
+                GameManager.ExitLevelList()
+                print("[Main] Back to menu from level list")
+            end
+        end
+        return
+    end
+
+    -- 关卡编辑器状态：仅更新编辑器，跳过所有游戏逻辑
+    if GameManager.state == GameManager.STATE_EDITOR then
+        LevelEditor.Update(dt)
+        return
+    end
+
+    -- 试玩模式下：ESC 或点击退出按钮 → 退出试玩
+    if GameManager.testPlayMode then
+        if input:GetKeyPress(KEY_ESCAPE) or HUD.IsTestPlayExitClicked() then
+            GameManager.ExitTestPlay()
+            HUD.RefreshLevelList()
+            print("[Main] Exited test play")
+            return
+        end
     end
 
     -- 调参面板切换（P 键 = 手感调参，O 键 = 爆炸调参）
@@ -341,6 +453,9 @@ function HandleUpdate(eventType, eventData)
 
     -- 更新拾取物系统
     Pickup.Update(dt)
+
+    -- 更新随机道具生成（补充被捡走的道具）
+    RandomPickup.Update(dt)
 
     -- 调试开关
     if input:GetKeyPress(KEY_TAB) then

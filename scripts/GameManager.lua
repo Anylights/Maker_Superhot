@@ -15,6 +15,8 @@ GameManager.STATE_RACING     = "racing"
 GameManager.STATE_ROUND_END  = "roundEnd"
 GameManager.STATE_SCORE      = "score"
 GameManager.STATE_MATCH_END  = "matchEnd"
+GameManager.STATE_EDITOR     = "editor"
+GameManager.STATE_LEVEL_LIST = "levelList"
 
 -- 当前状态
 GameManager.state = GameManager.STATE_MENU
@@ -27,11 +29,16 @@ GameManager.scores = { 0, 0, 0, 0 }
 GameManager.finishCount = 0      -- 当前回合已到达终点的人数
 GameManager.roundResults = {}     -- 当前回合名次
 
+-- 试玩模式
+GameManager.testPlayMode = false
+GameManager.testPlayLevelFile = nil
+
 -- 模块引用
 local playerModule_ = nil
 local mapModule_ = nil
 local pickupModule_ = nil
 local aiModule_ = nil
+local randomPickupModule_ = nil
 
 -- 状态转换回调
 local onStateChange_ = nil
@@ -47,11 +54,12 @@ local lastCountdownNum_ = 0
 ---@param mapRef table
 ---@param pickupRef table
 ---@param aiRef table
-function GameManager.Init(playerRef, mapRef, pickupRef, aiRef)
+function GameManager.Init(playerRef, mapRef, pickupRef, aiRef, randomPickupRef)
     playerModule_ = playerRef
     mapModule_ = mapRef
     pickupModule_ = pickupRef
     aiModule_ = aiRef
+    randomPickupModule_ = randomPickupRef
 
     GameManager.scores = {}
     for i = 1, Config.NumPlayers do
@@ -92,6 +100,7 @@ function GameManager.StartRound()
     if mapModule_ then mapModule_.Reset() end
     if playerModule_ then playerModule_.ResetAll() end
     if pickupModule_ then pickupModule_.Reset() end
+    if randomPickupModule_ then randomPickupModule_.Reset() end
 
     -- 重置倒计时音效跟踪
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
@@ -138,6 +147,12 @@ function GameManager.Update(dt)
         GameManager.UpdateScoreScreen(dt)
     elseif state == GameManager.STATE_MATCH_END then
         GameManager.UpdateMatchEnd(dt)
+    elseif state == GameManager.STATE_EDITOR then
+        -- 编辑器状态由 LevelEditor 模块自行管理，这里不做任何更新
+        return
+    elseif state == GameManager.STATE_LEVEL_LIST then
+        -- 关卡列表状态由 HUD + main 管理
+        return
     end
 end
 
@@ -212,8 +227,11 @@ end
 function GameManager.UpdateMatchEnd(dt)
     GameManager.stateTimer = GameManager.stateTimer - dt
     if GameManager.stateTimer <= 0 then
-        -- 回到主菜单
-        GameManager.EnterMenu()
+        if GameManager.testPlayMode then
+            GameManager.ExitTestPlay()
+        else
+            GameManager.EnterMenu()
+        end
     end
 end
 
@@ -291,6 +309,59 @@ end
 ---@return boolean
 function GameManager.CanPlayersMove()
     return GameManager.state == GameManager.STATE_RACING
+end
+
+-- ============================================================================
+-- 编辑器状态
+-- ============================================================================
+
+--- 进入编辑器
+function GameManager.EnterEditor()
+    GameManager.SetState(GameManager.STATE_EDITOR)
+    print("[GameManager] Entered editor mode")
+end
+
+--- 退出编辑器，回到主菜单
+function GameManager.ExitEditor()
+    GameManager.SetState(GameManager.STATE_MENU)
+    print("[GameManager] Exited editor mode, back to menu")
+end
+
+-- ============================================================================
+-- 关卡列表状态
+-- ============================================================================
+
+--- 进入关卡列表
+function GameManager.EnterLevelList()
+    GameManager.SetState(GameManager.STATE_LEVEL_LIST)
+    print("[GameManager] Entered level list")
+end
+
+--- 退出关卡列表，回到主菜单
+function GameManager.ExitLevelList()
+    GameManager.SetState(GameManager.STATE_MENU)
+    print("[GameManager] Exited level list, back to menu")
+end
+
+-- ============================================================================
+-- 试玩模式
+-- ============================================================================
+
+--- 开始试玩（标记模式后启动比赛）
+---@param levelFile string|nil 关卡文件名
+function GameManager.StartTestPlay(levelFile)
+    GameManager.testPlayMode = true
+    GameManager.testPlayLevelFile = levelFile
+    GameManager.StartMatch()
+    print("[GameManager] Test play started: " .. tostring(levelFile))
+end
+
+--- 退出试玩，回到关卡列表
+function GameManager.ExitTestPlay()
+    GameManager.testPlayMode = false
+    GameManager.testPlayLevelFile = nil
+    GameManager.EnterLevelList()
+    print("[GameManager] Test play ended, back to level list")
 end
 
 return GameManager

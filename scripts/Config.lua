@@ -38,16 +38,32 @@ Config.BLOCK_EMPTY      = 0
 Config.BLOCK_NORMAL     = 1  -- 普通可破坏（白色）
 Config.BLOCK_SAFE       = 2  -- 永久安全（深色）
 Config.BLOCK_ENERGY_PAD = 3  -- 能量托台（亮色）
-Config.BLOCK_SPAWN      = 4  -- 起点
+Config.BLOCK_SPAWN      = 4  -- 起点（旧版通用，兼容）
 Config.BLOCK_FINISH     = 5  -- 终点
+Config.BLOCK_SPAWN_P1   = 10 -- P1 出生点（番茄红）
+Config.BLOCK_SPAWN_P2   = 11 -- P2 出生点（宝蓝）
+Config.BLOCK_SPAWN_P3   = 12 -- P3 出生点（翠绿）
+Config.BLOCK_SPAWN_P4   = 13 -- P4 出生点（鲜黄）
 
 -- 方块颜色（温暖色调）
 Config.BlockColors = {
     [1] = Color(0.92, 0.88, 0.82, 1.0),   -- 普通：奶白
     [2] = Color(0.30, 0.25, 0.22, 1.0),   -- 安全：巧克力灰
     [3] = Color(0.35, 0.85, 0.80, 1.0),   -- 能量托台：薄荷绿
-    [4] = Color(0.45, 0.88, 0.40, 1.0),   -- 起点：暖绿
+    [4] = Color(0.45, 0.88, 0.40, 1.0),   -- 起点：暖绿（旧版兼容）
     [5] = Color(1.00, 0.75, 0.15, 1.0),   -- 终点：橙金
+    [10] = Color(0.95, 0.22, 0.18, 1.0),  -- P1 出生点：番茄红
+    [11] = Color(0.20, 0.48, 0.95, 1.0),  -- P2 出生点：宝蓝
+    [12] = Color(0.18, 0.85, 0.35, 1.0),  -- P3 出生点：翠绿
+    [13] = Color(0.98, 0.78, 0.12, 1.0),  -- P4 出生点：鲜黄
+}
+
+-- 出生点方块自发光颜色（复用 PlayerEmissive）
+Config.SpawnBlockEmissive = {
+    [10] = Config.PlayerEmissive[1],
+    [11] = Config.PlayerEmissive[2],
+    [12] = Config.PlayerEmissive[3],
+    [13] = Config.PlayerEmissive[4],
 }
 
 -- 方块描边颜色（统一深棕）
@@ -117,5 +133,28 @@ Config.CameraSmoothSpeed = 3.0     -- 相机平滑速度
 
 -- 玩家数量
 Config.NumPlayers = 4
+
+-- 默认地图尺寸（30x24 固定相机可视全局）
+Config.DefaultMapWidth  = 30
+Config.DefaultMapHeight = 24
+
+-- 出生点方块类型列表（按玩家编号索引）
+Config.SpawnBlockTypes = {
+    Config.BLOCK_SPAWN_P1,
+    Config.BLOCK_SPAWN_P2,
+    Config.BLOCK_SPAWN_P3,
+    Config.BLOCK_SPAWN_P4,
+}
+
+--- 判断方块类型是否为出生点（含旧版和 P1-P4）
+---@param blockType number
+---@return boolean
+function Config.IsSpawnBlock(blockType)
+    return blockType == Config.BLOCK_SPAWN
+        or blockType == Config.BLOCK_SPAWN_P1
+        or blockType == Config.BLOCK_SPAWN_P2
+        or blockType == Config.BLOCK_SPAWN_P3
+        or blockType == Config.BLOCK_SPAWN_P4
+end
 
 return Config

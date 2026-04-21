@@ -3,7 +3,6 @@
 -- ============================================================================
 
 local Config = require("Config")
-local MapData = require("MapData")
 local SFX = require("SFX")
 
 local Pickup = {}
@@ -60,15 +59,11 @@ function Pickup.Init(scene, playerRef)
     print("[Pickup] Initialized")
 end
 
---- 生成所有拾取物
+--- 生成所有拾取物（现由 RandomPickup 模块控制，此处仅保留接口）
 function Pickup.SpawnAll()
     Pickup.ClearAll()
-
-    for _, data in ipairs(MapData.EnergyPickups) do
-        Pickup.Spawn(data.x, data.y, data.size)
-    end
-
-    print("[Pickup] Spawned " .. #pickups_ .. " energy pickups")
+    -- 不再从 MapData.EnergyPickups 读取，由 RandomPickup.Reset() 调用 Spawn()
+    print("[Pickup] SpawnAll called (awaiting RandomPickup)")
 end
 
 --- 构建钻石造型 CustomGeometry（八面体）
@@ -201,12 +196,9 @@ function Pickup.Update(dt)
                         local dy = pPos.y - pkY
                         local dist = math.sqrt(dx * dx + dy * dy)
                         if dist < PICKUP_DISTANCE then
-                            -- 拾取：隐藏节点（移到视野外 + 禁用）
+                            -- 拾取：标记为待移除
                             playerModule_.AddEnergy(p, pk.amount)
-                            pk.active = false
-                            pk.respawnTimer = Config.PickupRespawnTime
-                            pk.node.position = Vector3(pk.spawnX, -200, 0)
-                            pk.node:SetDeepEnabled(false)
+                            pk.collected = true
                             SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6)
                             print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " energy")
                             break
@@ -214,18 +206,49 @@ function Pickup.Update(dt)
                     end
                 end
             end
-        else
-            -- 等待重生
-            pk.respawnTimer = pk.respawnTimer - dt
-            if pk.respawnTimer <= 0 then
-                pk.active = true
-                if pk.node then
-                    pk.node:SetDeepEnabled(true)
-                    pk.node.position = Vector3(pk.spawnX, pk.spawnY, 0)
-                end
+        end
+    end
+
+    -- 清理已收集的拾取物（反向遍历安全删除）
+    for i = #pickups_, 1, -1 do
+        if pickups_[i].collected then
+            if pickups_[i].node then
+                pickups_[i].node:Remove()
+            end
+            table.remove(pickups_, i)
+        end
+    end
+end
+
+--- 获取当前活跃（未被收集）的拾取物数量
+---@return number
+function Pickup.GetActiveCount()
+    local count = 0
+    for _, pk in ipairs(pickups_) do
+        if pk.active and not pk.collected then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+--- 检查指定位置附近是否已有拾取物
+---@param x number 世界 X
+---@param y number 世界 Y
+---@param radius number 检查半径
+---@return boolean
+function Pickup.HasPickupNear(x, y, radius)
+    local r2 = radius * radius
+    for _, pk in ipairs(pickups_) do
+        if pk.active and not pk.collected then
+            local dx = pk.spawnX - x
+            local dy = pk.spawnY - y
+            if dx * dx + dy * dy < r2 then
+                return true
             end
         end
     end
+    return false
 end
 
 --- 清除所有拾取物

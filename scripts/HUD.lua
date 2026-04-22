@@ -53,14 +53,37 @@ local persistClicked_ = false  -- "保存到工程"按钮是否被点击
 local cachedMousePress_ = false
 local cachedMouseLogX_ = 0
 local cachedMouseLogY_ = 0
+local prevMouseDown_ = false   -- 上一帧鼠标左键是否按下
+local cacheInputCalledThisFrame_ = false  -- 本帧是否已调用 CacheInput
 
---- 在 Update 阶段缓存鼠标输入状态（GetMouseButtonPress 在渲染阶段不可靠）
+-- 调试变量（画面可视化用）
+local dbg_cacheInputCount_ = 0       -- CacheInput 总调用次数
+local dbg_cacheInputMissed_ = 0      -- 渲染阶段补调次数（说明 Update 没调到）
+local dbg_lastPressTime_ = 0         -- 上次检测到 press 的时间
+local dbg_mouseDownRaw_ = false      -- GetMouseButtonDown 原始值
+local dbg_lastClickX_ = 0            -- 上次点击 X
+local dbg_lastClickY_ = 0            -- 上次点击 Y
+local dbg_lastAction_ = "none"       -- 上次触发的动作
+local dbg_lastActionTime_ = 0        -- 上次动作时间
+local dbg_btnReturnTrue_ = 0         -- DrawRubberButton 返回 true 的次数
+
+--- 在 Update 阶段缓存鼠标输入状态
+--- 使用 GetMouseButtonDown + 前帧状态差分，彻底规避 GetMouseButtonPress 时序问题
 --- 必须由 Client.HandleUpdate / Standalone.HandleUpdate 在每帧开头调用
 function HUD.CacheInput()
-    cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
+    cacheInputCalledThisFrame_ = true
+    dbg_cacheInputCount_ = dbg_cacheInputCount_ + 1
+    local down = input:GetMouseButtonDown(MOUSEB_LEFT)
+    dbg_mouseDownRaw_ = down
+    -- press = 本帧按下 且 上一帧未按下（手动实现 press 检测）
+    cachedMousePress_ = down and not prevMouseDown_
+    prevMouseDown_ = down
     if cachedMousePress_ then
         cachedMouseLogX_ = input.mousePosition.x / dpr_
         cachedMouseLogY_ = input.mousePosition.y / dpr_
+        dbg_lastPressTime_ = os.clock()
+        dbg_lastClickX_ = cachedMouseLogX_
+        dbg_lastClickY_ = cachedMouseLogY_
     end
 end
 
@@ -192,8 +215,13 @@ end
 function HandleNanoVGRender(eventType, eventData)
     if vg_ == nil then return end
 
-    -- 注意：鼠标点击状态已在 HUD.CacheInput()（Update 阶段）中缓存
-    -- GetMouseButtonPress 在渲染阶段不可靠，不要在此调用
+    -- 安全回退：如果 Update 阶段没调用 CacheInput，在渲染阶段补调
+    -- 这修复了 Module.HandleUpdate 链断裂导致完全无法点击的 bug
+    if not cacheInputCalledThisFrame_ then
+        HUD.CacheInput()
+        dbg_cacheInputMissed_ = dbg_cacheInputMissed_ + 1
+    end
+    cacheInputCalledThisFrame_ = false  -- 重置，为下一帧准备
 
     -- 计算帧间隔（用于浮动文字动画）
     local now = os.clock()
@@ -217,7 +245,7 @@ function HandleNanoVGRender(eventType, eventData)
             HUD.DrawToast()
             nvgEndFrame(vg_)
             return
-        elseif cs == "friendMenu" then
+        elseif cs == "friendMenu" or cs == "creatingRoom" then
             HUD.DrawFriendMenu()
             HUD.DrawToast()
             nvgEndFrame(vg_)
@@ -1506,6 +1534,92 @@ function HUD.DrawMatchEnd()
     nvgText(vg_, logW_ * 0.5, logH_ - 30, "New match starting soon...")
 end
 
+--- 画面调试覆盖层（左上角显示输入/连接状态）
+function HUD.DrawDebugOverlay()
+    nvgSave(vg_)
+
+    -- 半透明黑底（加大高度以容纳网络日志）
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 4, 4, 460, 560)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
+    nvgFill(vg_)
+
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 13)
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+
+    local dy = 10
+    local function line(text, r, g, b)
+        nvgFillColor(vg_, nvgRGBA(r or 220, g or 220, b or 220, 255))
+        nvgText(vg_, 10, dy, text)
+        dy = dy + 15
+    end
+
+    line("[DEBUG INFO]", 255, 255, 0)
+
+    -- 连接状态（最重要，放最前面）
+    local clientMod = _G.ClientModule
+    if clientMod then
+        local connStr = "NOT CONNECTED"
+        local cr, cg = 255, 100
+        if clientMod.IsConnected and clientMod.IsConnected() then
+            connStr = "CONNECTED"
+            cr, cg = 100, 255
+        end
+        line("Server: " .. connStr, cr, cg, 100)
+        line("ClientState: " .. (clientMod.GetState and clientMod.GetState() or "?"), 200, 200, 200)
+    else
+        line("ClientModule: nil", 255, 100, 100)
+    end
+
+    -- 按钮命中追踪
+    line("BtnReturnTrue: " .. dbg_btnReturnTrue_, 200, 200, 200)
+
+    -- 上次动作
+    local actElapsed = os.clock() - dbg_lastActionTime_
+    local actColor = actElapsed < 3 and 255 or 150
+    line("LastAction: " .. dbg_lastAction_, actColor, actColor, 100)
+
+    -- 实时点击指示器（点击后 1 秒内闪烁绿色方块）
+    local elapsed = os.clock() - dbg_lastPressTime_
+    if dbg_lastPressTime_ > 0 and elapsed < 1.0 then
+        nvgBeginPath(vg_)
+        nvgRect(vg_, 420, 10, 24, 24)
+        nvgFillColor(vg_, nvgRGBA(0, 255, 0, math.floor(255 * (1.0 - elapsed))))
+        nvgFill(vg_)
+    end
+
+    -- ======== 网络事件日志（核心调试信息）========
+    dy = dy + 4
+    line("[NET EVENT LOG]", 255, 180, 0)
+
+    if clientMod and clientMod.GetNetLog then
+        local netLog = clientMod.GetNetLog()
+        if #netLog == 0 then
+            line("  (no events yet)", 150, 150, 150)
+        else
+            local now = os.clock()
+            -- 显示最近的日志条目（从最新到最旧）
+            local startIdx = math.max(1, #netLog - 15)  -- 最多显示 16 条
+            for i = #netLog, startIdx, -1 do
+                local entry = netLog[i]
+                local age = now - entry.time
+                local ageStr = string.format("%.1fs", age)
+                -- 超过 30 秒的日志变暗
+                local alpha = age < 30 and 255 or 120
+                local r = math.floor(entry.r * alpha / 255)
+                local g = math.floor(entry.g * alpha / 255)
+                local b = math.floor(entry.b * alpha / 255)
+                line("[" .. ageStr .. "] " .. entry.msg, r, g, b)
+            end
+        end
+    else
+        line("  GetNetLog not available", 255, 100, 100)
+    end
+
+    nvgRestore(vg_)
+end
+
 --- 绘制橡胶材质按钮（5 层 NanoVG 效果）
 ---@param x number 左上角 X
 ---@param y number 左上角 Y
@@ -1574,6 +1688,9 @@ function HUD.DrawRubberButton(x, y, w, h, label, baseR, baseG, baseB, hovered)
 
     -- 点击检测（使用帧缓存的鼠标状态）
     if cachedMousePress_ and hovered then
+        dbg_btnReturnTrue_ = dbg_btnReturnTrue_ + 1
+        dbg_lastAction_ = "BTN:" .. label
+        dbg_lastActionTime_ = os.clock()
         return true
     end
     return false
@@ -1691,7 +1808,22 @@ function HUD.DrawMenu()
         local clicked = HUD.DrawRubberButton(bx, btnY, btnW, btnH, btn.label, btn.r, btn.g, btn.b, hovered)
         if clicked then
             menuButtonClicked_ = btn.id
+            dbg_lastAction_ = "MENU:" .. btn.id
+            dbg_lastActionTime_ = os.clock()
         end
+    end
+
+    -- 独立点击追踪（主菜单）
+    if cachedMousePress_ then
+        local hitBtn = "MISS"
+        for idx, btn in ipairs(buttons) do
+            local bx = btnStartX + (idx - 1) * (btnW + btnGap)
+            if mx >= bx and mx <= bx + btnW and my >= btnY and my <= btnY + btnH then
+                hitBtn = "HIT:" .. btn.label
+            end
+        end
+        dbg_lastAction_ = "MENU_CLICK@" .. math.floor(mx) .. "," .. math.floor(my) .. " " .. hitBtn
+        dbg_lastActionTime_ = os.clock()
     end
 
     -- ======== 底部玩家颜色指示 ========
@@ -1718,6 +1850,9 @@ function HUD.DrawMenu()
         local label = i == 1 and "P1 你" or ("P" .. i)
         nvgText(vg_, dx, dotY + 12, label)
     end
+
+    -- 调试覆盖层
+    HUD.DrawDebugOverlay()
 
     -- ======== 操作说明（紧凑版） ========
     nvgFontFace(vg_, "sans")
@@ -2371,6 +2506,8 @@ function HUD.DrawFriendMenu()
     local bx1 = btnStartX
     local h1 = mx >= bx1 and mx <= bx1 + btnW and my >= btnY and my <= btnY + btnH
     if HUD.DrawRubberButton(bx1, btnY, btnW, btnH, "开房间", 242, 160, 46, h1) then
+        dbg_lastAction_ = "ACT:RequestCreateRoom"
+        dbg_lastActionTime_ = os.clock()
         if clientMod then clientMod.RequestCreateRoom() end
     end
 
@@ -2378,6 +2515,8 @@ function HUD.DrawFriendMenu()
     local bx2 = btnStartX + btnW + btnGap
     local h2 = mx >= bx2 and mx <= bx2 + btnW and my >= btnY and my <= btnY + btnH
     if HUD.DrawRubberButton(bx2, btnY, btnW, btnH, "加入房间", 46, 190, 86, h2) then
+        dbg_lastAction_ = "ACT:EnterJoinRoom"
+        dbg_lastActionTime_ = os.clock()
         if clientMod then clientMod.EnterJoinRoom() end
     end
 
@@ -2388,8 +2527,29 @@ function HUD.DrawFriendMenu()
     local backY = btnY + btnH + 30
     local hBack = mx >= backX and mx <= backX + backW and my >= backY and my <= backY + backH
     if HUD.DrawRubberButton(backX, backY, backW, backH, "返回", 120, 100, 90, hBack) then
+        dbg_lastAction_ = "ACT:BackToMenu"
+        dbg_lastActionTime_ = os.clock()
         if clientMod then clientMod.BackToMenu() end
     end
+
+    -- 独立点击追踪（不依赖 DrawRubberButton 返回值）
+    if cachedMousePress_ then
+        local hitInfo = "MISS"
+        if h1 then hitInfo = "HIT:开房间"
+        elseif h2 then hitInfo = "HIT:加入房间"
+        elseif hBack then hitInfo = "HIT:返回"
+        end
+        dbg_lastAction_ = "CLICK@" .. math.floor(mx) .. "," .. math.floor(my) .. " " .. hitInfo
+        dbg_lastActionTime_ = os.clock()
+
+        -- 显示按钮边界供核对
+        dbg_lastAction_ = dbg_lastAction_ ..
+            " btn1:[" .. math.floor(bx1) .. "-" .. math.floor(bx1+btnW) ..
+            "," .. math.floor(btnY) .. "-" .. math.floor(btnY+btnH) .. "]"
+    end
+
+    -- 调试覆盖层
+    HUD.DrawDebugOverlay()
 
     -- ESC 提示
     nvgFontFace(vg_, "sans")

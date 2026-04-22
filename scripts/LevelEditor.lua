@@ -44,6 +44,7 @@ local isPanning_ = false  -- 中键平移模式
 local cachedMousePress_ = false
 local cachedMouseLogX_ = 0
 local cachedMouseLogY_ = 0
+local prevMouseDown_LE_ = false  -- 上一帧鼠标状态
 
 -- NanoVG 上下文和分辨率（由 HUD 共享传入）
 local vg_ = nil
@@ -210,8 +211,10 @@ function LevelEditor.Update(dt)
         end
     end
 
-    -- 缓存鼠标单击状态（GetMouseButtonPress 是一次性的，必须在 Update 中采集）
-    cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
+    -- 缓存鼠标单击状态（用 GetMouseButtonDown + 前帧差分，规避 GetMouseButtonPress 时序问题）
+    local down = input:GetMouseButtonDown(MOUSEB_LEFT)
+    cachedMousePress_ = down and not prevMouseDown_LE_
+    prevMouseDown_LE_ = down
     if cachedMousePress_ then
         local dpr = graphics:GetDPR()
         cachedMouseLogX_ = input:GetMousePosition().x / dpr

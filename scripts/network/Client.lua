@@ -26,6 +26,27 @@ local CTRL   = Shared.CTRL
 local Client = {}
 
 -- ============================================================================
+-- Network Event Log (可视化调试，在 HUD Debug Overlay 中显示)
+-- ============================================================================
+
+local NET_LOG_MAX = 20  -- 最多保留最近 20 条日志
+local netLog_ = {}      -- { { time=os.clock(), msg="...", color={r,g,b} }, ... }
+
+--- 记录网络事件日志
+local function NetLog(msg, r, g, b)
+    table.insert(netLog_, { time = os.clock(), msg = msg, r = r or 200, g = g or 200, b = b or 200 })
+    if #netLog_ > NET_LOG_MAX then
+        table.remove(netLog_, 1)
+    end
+    print("[NetLog] " .. msg)
+end
+
+--- 外部访问：获取网络日志（供 HUD 显示）
+function Client.GetNetLog()
+    return netLog_
+end
+
+-- ============================================================================
 -- Client-side State
 -- ============================================================================
 
@@ -94,6 +115,7 @@ local function OnServerConnectionReady()
     -- 标记需要发送 CLIENT_READY（在下一帧 Update 中发送，确保场景分配完成）
     needSendReady_ = true
 
+    NetLog("CONN: ServerConnection ready, scene assigned", 100, 255, 100)
     print("[Client] Server connection established, scene assigned, will send CLIENT_READY next frame")
 end
 
@@ -172,8 +194,10 @@ function Client.Start()
     local existingConn = network:GetServerConnection()
     if existingConn then
         OnServerConnectionReady()
+        NetLog("INIT: Connection already available at start", 100, 255, 100)
         print("[Client] Connection already available at start")
     else
+        NetLog("INIT: No connection yet, waiting...", 255, 200, 100)
         print("[Client] Started, waiting for server connection...")
     end
 end
@@ -295,17 +319,20 @@ end
 -- ============================================================================
 
 function HandleServerConnected(eventType, eventData)
+    NetLog("EVENT: ServerConnected fired", 100, 255, 100)
     OnServerConnectionReady()
     print("[Client] Connected to server (ServerConnected)")
 end
 
 --- 后台匹配模式：匹配成功、服务器脚本已加载后触发
 function HandleServerReady(eventType, eventData)
+    NetLog("EVENT: ServerReady fired", 100, 255, 100)
     OnServerConnectionReady()
     print("[Client] Server ready (background match completed)")
 end
 
 function HandleServerDisconnected(eventType, eventData)
+    NetLog("EVENT: ServerDisconnected!", 255, 100, 100)
     serverConnection_ = nil
     mySlot_ = 0
     clientState_ = "menu"
@@ -314,6 +341,7 @@ function HandleServerDisconnected(eventType, eventData)
 end
 
 function HandleConnectFailed(eventType, eventData)
+    NetLog("EVENT: ConnectFailed!", 255, 100, 100)
     serverConnection_ = nil
     clientState_ = "menu"
     Client.ShowToast("连接服务器失败")
@@ -325,10 +353,12 @@ end
 -- ============================================================================
 
 function HandleAssignRole(eventType, eventData)
+    NetLog("RECV: ASSIGN_ROLE", 100, 200, 255)
     mySlot_ = eventData["Slot"]:GetInt()
     local mapW = eventData["MapWidth"]:GetInt()
     local mapH = eventData["MapHeight"]:GetInt()
 
+    NetLog("  slot=" .. mySlot_ .. " map=" .. mapW .. "x" .. mapH, 100, 200, 255)
     print("[Client] Assigned slot: " .. mySlot_ .. " map: " .. mapW .. "x" .. mapH)
 
     -- 更新 MapData 尺寸
@@ -384,13 +414,16 @@ function HandleAssignRole(eventType, eventData)
 end
 
 function HandleRoomCreated(eventType, eventData)
+    NetLog("RECV: ROOM_CREATED", 100, 255, 100)
     roomCode_ = eventData["RoomCode"]:GetString()
     roomIsHost_ = true
     clientState_ = "roomWaiting"
+    NetLog("  roomCode=" .. roomCode_ .. " -> roomWaiting", 100, 255, 100)
     print("[Client] Room created: " .. roomCode_)
 end
 
 function HandleRoomJoined(eventType, eventData)
+    NetLog("RECV: ROOM_JOINED", 100, 255, 100)
     roomCode_ = eventData["RoomCode"]:GetString()
     roomIsHost_ = false
     clientState_ = "roomWaiting"
@@ -398,15 +431,18 @@ function HandleRoomJoined(eventType, eventData)
 end
 
 function HandleRoomUpdate(eventType, eventData)
+    NetLog("RECV: ROOM_UPDATE", 100, 200, 255)
     roomCode_ = eventData["RoomCode"]:GetString()
     roomPlayerCount_ = eventData["PlayerCount"]:GetInt()
     roomAICount_ = eventData["AICount"]:GetInt()
     roomTotal_ = eventData["Total"]:GetInt()
     roomIsHost_ = eventData["IsHost"]:GetBool()
+    NetLog("  room=" .. roomCode_ .. " p=" .. roomPlayerCount_ .. " ai=" .. roomAICount_, 100, 200, 255)
     print("[Client] Room update: " .. roomPlayerCount_ .. " players + " .. roomAICount_ .. " AI = " .. roomTotal_)
 end
 
 function HandleRoomDismissed(eventType, eventData)
+    NetLog("RECV: ROOM_DISMISSED", 255, 200, 100)
     clientState_ = "menu"
     roomCode_ = ""
     Client.ShowToast("房间已解散")
@@ -414,8 +450,10 @@ function HandleRoomDismissed(eventType, eventData)
 end
 
 function HandleGameStarting(eventType, eventData)
+    NetLog("RECV: GAME_STARTING", 100, 255, 100)
     mySlot_ = eventData["Slot"]:GetInt()
     Client.ShowToast("游戏即将开始...")
+    NetLog("  slot=" .. mySlot_, 100, 255, 100)
     print("[Client] Game starting, my slot: " .. mySlot_)
 end
 
@@ -459,20 +497,26 @@ function HandleGameState(eventType, eventData)
 end
 
 function HandleJoinFailed(eventType, eventData)
+    NetLog("RECV: JOIN_FAILED", 255, 100, 100)
     local reason = eventData["Reason"]:GetString()
+    NetLog("  reason=" .. reason, 255, 100, 100)
     Client.ShowToast(reason)
     print("[Client] Join failed: " .. reason)
 end
 
 function HandleMatchFound(eventType, eventData)
+    NetLog("RECV: MATCH_FOUND", 100, 255, 100)
     mySlot_ = eventData["Slot"]:GetInt()
+    NetLog("  slot=" .. mySlot_, 100, 255, 100)
     Client.ShowToast("匹配成功！")
     print("[Client] Match found, slot: " .. mySlot_)
 end
 
 function HandleQuickUpdate(eventType, eventData)
+    NetLog("RECV: QUICK_UPDATE", 100, 200, 255)
     quickPlayerCount_ = eventData["PlayerCount"]:GetInt()
     quickHumanCount_ = eventData["HumanCount"]:GetInt()
+    NetLog("  total=" .. quickPlayerCount_ .. " human=" .. quickHumanCount_, 100, 200, 255)
     print("[Client] Quick update: " .. quickPlayerCount_ .. " total (" .. quickHumanCount_ .. " human)")
 end
 
@@ -626,12 +670,14 @@ end
 --- 快速开始
 function Client.RequestQuickMatch()
     if serverConnection_ == nil then
+        NetLog("SEND FAIL: REQUEST_QUICK - no connection!", 255, 100, 100)
         Client.ShowToast("尚未连接到服务器")
         return
     end
     clientState_ = "quickMatching"
     quickPlayerCount_ = 1
     quickHumanCount_ = 1
+    NetLog("SEND: REQUEST_QUICK", 255, 255, 100)
     serverConnection_:SendRemoteEvent(EVENTS.REQUEST_QUICK, true)
     print("[Client] Requesting quick match")
 end
@@ -639,6 +685,7 @@ end
 --- 取消快速匹配
 function Client.CancelQuickMatch()
     if serverConnection_ then
+        NetLog("SEND: CANCEL_QUICK", 255, 255, 100)
         serverConnection_:SendRemoteEvent(EVENTS.CANCEL_QUICK, true)
     end
     clientState_ = "menu"
@@ -659,9 +706,16 @@ end
 --- 创建房间
 function Client.RequestCreateRoom()
     if serverConnection_ == nil then
+        NetLog("SEND FAIL: REQUEST_CREATE - no connection!", 255, 100, 100)
         Client.ShowToast("尚未连接到服务器")
         return
     end
+    -- 防止重复发送（按钮在渲染帧每帧触发）
+    if clientState_ == "roomWaiting" or clientState_ == "creatingRoom" then
+        return
+    end
+    clientState_ = "creatingRoom"  -- 临时状态，防止重复发送
+    NetLog("SEND: REQUEST_CREATE", 255, 255, 100)
     serverConnection_:SendRemoteEvent(EVENTS.REQUEST_CREATE, true)
     print("[Client] Requesting create room")
 end
@@ -675,6 +729,7 @@ end
 --- 加入房间（提交房间码）
 function Client.RequestJoinRoom()
     if serverConnection_ == nil then
+        NetLog("SEND FAIL: REQUEST_JOIN - no connection!", 255, 100, 100)
         Client.ShowToast("尚未连接到服务器")
         return
     end
@@ -684,6 +739,7 @@ function Client.RequestJoinRoom()
     end
     local data = VariantMap()
     data["RoomCode"] = Variant(roomCodeInput_)
+    NetLog("SEND: REQUEST_JOIN code=" .. roomCodeInput_, 255, 255, 100)
     serverConnection_:SendRemoteEvent(EVENTS.REQUEST_JOIN, true, data)
     print("[Client] Requesting join room: " .. roomCodeInput_)
 end
@@ -691,6 +747,7 @@ end
 --- 离开房间
 function Client.RequestLeaveRoom()
     if serverConnection_ then
+        NetLog("SEND: REQUEST_LEAVE", 255, 255, 100)
         serverConnection_:SendRemoteEvent(EVENTS.REQUEST_LEAVE, true)
     end
     clientState_ = "menu"
@@ -701,6 +758,7 @@ end
 --- 解散房间（房主）
 function Client.RequestDismissRoom()
     if serverConnection_ then
+        NetLog("SEND: REQUEST_DISMISS", 255, 255, 100)
         serverConnection_:SendRemoteEvent(EVENTS.REQUEST_DISMISS, true)
     end
     clientState_ = "menu"
@@ -711,6 +769,7 @@ end
 --- 添加 AI（房主）
 function Client.RequestAddAI()
     if serverConnection_ then
+        NetLog("SEND: REQUEST_ADD_AI", 255, 255, 100)
         serverConnection_:SendRemoteEvent(EVENTS.REQUEST_ADD_AI, true)
     end
     print("[Client] Requesting add AI")
@@ -719,6 +778,7 @@ end
 --- 开始游戏（房主）
 function Client.RequestStartGame()
     if serverConnection_ then
+        NetLog("SEND: REQUEST_START", 255, 255, 100)
         serverConnection_:SendRemoteEvent(EVENTS.REQUEST_START, true)
     end
     print("[Client] Requesting start game")
@@ -750,6 +810,7 @@ function Client.HandleUpdate(dt)
     -- 发送 CLIENT_READY（连接建立后的下一帧）
     if needSendReady_ and serverConnection_ then
         needSendReady_ = false
+        NetLog("SEND: CLIENT_READY", 255, 255, 100)
         serverConnection_:SendRemoteEvent(EVENTS.CLIENT_READY, true)
         print("[Client] CLIENT_READY sent to server")
     end

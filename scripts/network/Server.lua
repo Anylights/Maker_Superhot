@@ -90,7 +90,19 @@ function Server.Start()
     SFX.Init(scene_)
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, nil)
     RandomPickup.Init(Map, Pickup)
-    LevelManager.Init()
+
+    -- LevelManager.Init() 使用文件系统操作（CreateDir/File），
+    -- 在服务端沙箱环境中可能被禁止，用 pcall 保护防止崩溃
+    local ok, err = pcall(function()
+        LevelManager.Init()
+    end)
+    if not ok then
+        print("[Server] WARNING: LevelManager.Init() failed (expected in sandbox): " .. tostring(err))
+        print("[Server] Continuing without level manager file operations...")
+        -- 手动加载内置关卡到缓存（不写文件）
+        local LevelsData = require("LevelsData")
+        print("[Server] Built-in levels available from LevelsData")
+    end
 
     -- 监听连接事件
     SubscribeToEvent("ClientConnected", "HandleClientConnected")
@@ -151,6 +163,20 @@ end
 --- 从 eventData 中提取 connection 并查找对应的 connData
 --- 如果 tostring 匹配失败，会遍历 connections_ 按对象引用查找
 ---@return Connection|nil, string, table|nil
+local function DumpConnections(label)
+    local count = 0
+    for k, v in pairs(connections_) do
+        count = count + 1
+        print("[Server] " .. label .. " conn[" .. count .. "]: key=" .. k ..
+              " ready=" .. tostring(v.ready) ..
+              " inQuick=" .. tostring(v.inQuick) ..
+              " roomCode=" .. tostring(v.roomCode))
+    end
+    if count == 0 then
+        print("[Server] " .. label .. " connections_ is EMPTY!")
+    end
+end
+
 local function FindConnection(eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local connKey = tostring(connection)
@@ -168,7 +194,8 @@ local function FindConnection(eventData)
         end
     end
 
-    print("[Server] WARNING: Unknown connection: " .. connKey)
+    print("[Server] WARNING: FindConnection FAILED for connKey=" .. connKey)
+    DumpConnections("FindConnection-dump")
     return connection, connKey, nil
 end
 
@@ -196,9 +223,11 @@ function HandleClientConnected(eventType, eventData)
     }
 
     print("[Server] Client connected: " .. connKey .. " (waiting for CLIENT_READY)")
+    DumpConnections("after-connect")
 end
 
 function HandleClientReady(eventType, eventData)
+    print("[Server] >>> HandleClientReady ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
 
     if not connData then
@@ -211,6 +240,7 @@ function HandleClientReady(eventType, eventData)
     connData.ready = true
 
     print("[Server] CLIENT_READY received, scene assigned: " .. connKey)
+    DumpConnections("after-ready")
 end
 
 function HandleClientDisconnected(eventType, eventData)
@@ -265,15 +295,24 @@ end
 -- ============================================================================
 
 function HandleRequestQuick(eventType, eventData)
+    print("[Server] >>> HandleRequestQuick ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_QUICK: unknown connection, ignoring")
+        print("[Server] REQUEST_QUICK: FindConnection returned nil! connKey=" .. tostring(connKey))
+        DumpConnections("REQUEST_QUICK-fail")
         return
     end
-    print("[Server] REQUEST_QUICK from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ")")
+    print("[Server] REQUEST_QUICK from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ", inQuick=" .. tostring(connData.inQuick) .. ", roomCode=" .. tostring(connData.roomCode) .. ")")
 
     -- 如果已在队列或房间中，忽略
-    if connData.inQuick or connData.roomCode then return end
+    if connData.inQuick then
+        print("[Server] REQUEST_QUICK: already in quick queue, ignoring")
+        return
+    end
+    if connData.roomCode then
+        print("[Server] REQUEST_QUICK: already in room " .. connData.roomCode .. ", ignoring")
+        return
+    end
 
     connData.inQuick = true
     table.insert(quickQueue_, { connKey = connKey, joinTime = serverTime_ })
@@ -288,9 +327,10 @@ function HandleRequestQuick(eventType, eventData)
 end
 
 function HandleCancelQuick(eventType, eventData)
+    print("[Server] >>> HandleCancelQuick ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] CANCEL_QUICK: unknown connection, ignoring")
+        print("[Server] CANCEL_QUICK: FindConnection returned nil! connKey=" .. tostring(connKey))
         return
     end
     print("[Server] CANCEL_QUICK from " .. connKey)
@@ -418,15 +458,24 @@ function Server.GenerateRoomCode()
 end
 
 function HandleRequestCreate(eventType, eventData)
+    print("[Server] >>> HandleRequestCreate ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_CREATE: unknown connection, ignoring")
+        print("[Server] REQUEST_CREATE: FindConnection returned nil! connKey=" .. tostring(connKey))
+        DumpConnections("REQUEST_CREATE-fail")
         return
     end
-    print("[Server] REQUEST_CREATE from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ")")
+    print("[Server] REQUEST_CREATE from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ", inQuick=" .. tostring(connData.inQuick) .. ", roomCode=" .. tostring(connData.roomCode) .. ")")
 
     -- 如果已在房间或队列中，忽略
-    if connData.roomCode or connData.inQuick then return end
+    if connData.roomCode then
+        print("[Server] REQUEST_CREATE: already in room " .. connData.roomCode .. ", ignoring")
+        return
+    end
+    if connData.inQuick then
+        print("[Server] REQUEST_CREATE: already in quick queue, ignoring")
+        return
+    end
 
     local roomCode = Server.GenerateRoomCode()
     rooms_[roomCode] = {
@@ -440,6 +489,7 @@ function HandleRequestCreate(eventType, eventData)
     -- 通知房主
     local data = VariantMap()
     data["RoomCode"] = Variant(roomCode)
+    print("[Server] Sending ROOM_CREATED to " .. connKey .. " with roomCode=" .. roomCode)
     connection:SendRemoteEvent(EVENTS.ROOM_CREATED, true, data)
 
     -- 广播房间状态
@@ -449,12 +499,14 @@ function HandleRequestCreate(eventType, eventData)
 end
 
 function HandleRequestJoin(eventType, eventData)
+    print("[Server] >>> HandleRequestJoin ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_JOIN: unknown connection, ignoring")
+        print("[Server] REQUEST_JOIN: FindConnection returned nil! connKey=" .. tostring(connKey))
+        DumpConnections("REQUEST_JOIN-fail")
         return
     end
-    print("[Server] REQUEST_JOIN from " .. connKey)
+    print("[Server] REQUEST_JOIN from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ")")
 
     local roomCode = eventData["RoomCode"]:GetString()
     local room = rooms_[roomCode]
@@ -497,54 +549,89 @@ function HandleRequestJoin(eventType, eventData)
 end
 
 function HandleRequestLeave(eventType, eventData)
+    print("[Server] >>> HandleRequestLeave ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_LEAVE: unknown connection, ignoring")
+        print("[Server] REQUEST_LEAVE: FindConnection returned nil!")
         return
     end
     print("[Server] REQUEST_LEAVE from " .. connKey)
-    if not connData.roomCode then return end
+    if not connData.roomCode then
+        print("[Server] REQUEST_LEAVE: not in any room, ignoring")
+        return
+    end
 
     local roomCode = connData.roomCode
     local room = rooms_[roomCode]
-    if not room then return end
+    if not room then
+        print("[Server] REQUEST_LEAVE: room " .. roomCode .. " not found, ignoring")
+        return
+    end
 
     -- 房主不能离开，只能解散
-    if room.hostKey == connKey then return end
+    if room.hostKey == connKey then
+        print("[Server] REQUEST_LEAVE: is host, must use dismiss instead")
+        return
+    end
 
     Server.RemoveFromRoom(roomCode, connKey)
 end
 
 function HandleRequestDismiss(eventType, eventData)
+    print("[Server] >>> HandleRequestDismiss ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_DISMISS: unknown connection, ignoring")
+        print("[Server] REQUEST_DISMISS: FindConnection returned nil!")
         return
     end
     print("[Server] REQUEST_DISMISS from " .. connKey)
-    if not connData.roomCode then return end
+    if not connData.roomCode then
+        print("[Server] REQUEST_DISMISS: not in any room, ignoring")
+        return
+    end
 
     local roomCode = connData.roomCode
     local room = rooms_[roomCode]
-    if not room or room.hostKey ~= connKey then return end
+    if not room then
+        print("[Server] REQUEST_DISMISS: room " .. roomCode .. " not found")
+        return
+    end
+    if room.hostKey ~= connKey then
+        print("[Server] REQUEST_DISMISS: not host (host=" .. room.hostKey .. "), ignoring")
+        return
+    end
 
     Server.DismissRoom(roomCode)
 end
 
 function HandleRequestAddAI(eventType, eventData)
+    print("[Server] >>> HandleRequestAddAI ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_ADD_AI: unknown connection, ignoring")
+        print("[Server] REQUEST_ADD_AI: FindConnection returned nil!")
         return
     end
     print("[Server] REQUEST_ADD_AI from " .. connKey)
-    if not connData.roomCode then return end
+    if not connData.roomCode then
+        print("[Server] REQUEST_ADD_AI: not in any room, ignoring")
+        return
+    end
 
     local roomCode = connData.roomCode
     local room = rooms_[roomCode]
-    if not room or room.hostKey ~= connKey then return end
+    if not room then
+        print("[Server] REQUEST_ADD_AI: room " .. roomCode .. " not found")
+        return
+    end
+    if room.hostKey ~= connKey then
+        print("[Server] REQUEST_ADD_AI: not host, ignoring")
+        return
+    end
 
-    if #room.players + room.aiCount >= Config.MaxRoomPlayers then return end
+    if #room.players + room.aiCount >= Config.MaxRoomPlayers then
+        print("[Server] REQUEST_ADD_AI: room full (" .. #room.players .. "+" .. room.aiCount .. "), ignoring")
+        return
+    end
 
     room.aiCount = room.aiCount + 1
     Server.BroadcastRoomUpdate(roomCode)
@@ -553,18 +640,32 @@ function HandleRequestAddAI(eventType, eventData)
 end
 
 function HandleRequestStart(eventType, eventData)
+    print("[Server] >>> HandleRequestStart ENTERED")
     local connection, connKey, connData = FindConnection(eventData)
     if not connData then
-        print("[Server] REQUEST_START: unknown connection, ignoring")
+        print("[Server] REQUEST_START: FindConnection returned nil!")
         return
     end
     print("[Server] REQUEST_START from " .. connKey)
-    if not connData.roomCode then return end
+    if not connData.roomCode then
+        print("[Server] REQUEST_START: not in any room, ignoring")
+        return
+    end
 
     local roomCode = connData.roomCode
     local room = rooms_[roomCode]
-    if not room or room.hostKey ~= connKey then return end
-    if room.state ~= "waiting" then return end
+    if not room then
+        print("[Server] REQUEST_START: room " .. roomCode .. " not found")
+        return
+    end
+    if room.hostKey ~= connKey then
+        print("[Server] REQUEST_START: not host (host=" .. room.hostKey .. "), ignoring")
+        return
+    end
+    if room.state ~= "waiting" then
+        print("[Server] REQUEST_START: room state=" .. room.state .. ", not waiting")
+        return
+    end
 
     -- 补齐 AI 到 NumPlayers
     local total = #room.players + room.aiCount

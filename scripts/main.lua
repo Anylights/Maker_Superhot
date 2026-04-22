@@ -1,19 +1,12 @@
 -- ============================================================================
--- main.lua - 超级红温！ 模式分支入口
--- 根据 IsServerMode / IsNetworkMode 分发到对应模块
+-- main.lua - 超级红温！ 单机入口
 -- ============================================================================
 
 ---@type table
 local Module = nil
 
 function Start()
-    if IsServerMode and IsServerMode() then
-        Module = require("network.Server")
-    elseif IsNetworkMode and IsNetworkMode() then
-        Module = require("network.Client")
-    else
-        Module = require("network.Standalone")
-    end
+    Module = require("network.Standalone")
     Module.Start()
 
     -- 订阅事件（全局函数 → 委托给 Module）

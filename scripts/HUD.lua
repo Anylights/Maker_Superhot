@@ -33,14 +33,9 @@ local gameManager_ = nil
 local levelEditorRef_ = nil
 
 -- 菜单按钮点击结果（每帧检测后存储，获取后清除）
-local menuButtonClicked_ = nil  -- "quickStart" | "withFriends" | "editor" | nil
+local menuButtonClicked_ = nil  -- "startGame" | "editor" | nil
 
--- 「与朋友玩」子菜单状态
-local menuSubState_ = nil          -- nil | "friends" | "createRoom" | "joinRoom"
-local roomCode_ = ""               -- 创建房间时生成的房间码
-local aiPlayerCount_ = 3           -- 房主选择的 AI 数量（默认3）
-local roomCodeInput_ = ""          -- 加入房间时输入的房间码
-local ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
 
 -- 标题图片句柄
 local titleImage_ = -1
@@ -123,7 +118,7 @@ function HUD.GetLogicalSize()
 end
 
 --- 获取菜单中哪个按钮被点击（获取后自动清除）
----@return string|nil -- "quickStart" | "withFriends" | "editor" | nil
+---@return string|nil -- "startGame" | "editor" | nil
 function HUD.GetMenuButtonClicked()
     local v = menuButtonClicked_
     menuButtonClicked_ = nil
@@ -169,23 +164,6 @@ function HUD.RefreshResolution()
     logH_ = physH_ / dpr_
 end
 
---- 重置菜单子状态（返回主菜单时调用）
-function HUD.ResetMenuState()
-    menuSubState_ = nil
-    roomCode_ = ""
-    roomCodeInput_ = ""
-    aiPlayerCount_ = 3
-end
-
---- 生成4位随机房间码
-local function generateRoomCode()
-    local code = ""
-    for _ = 1, 4 do
-        local idx = math.random(1, #ROOM_CODE_CHARS)
-        code = code .. string.sub(ROOM_CODE_CHARS, idx, idx)
-    end
-    return code
-end
 
 -- ============================================================================
 -- 渲染
@@ -1551,17 +1529,6 @@ end
 
 --- 主菜单界面
 function HUD.DrawMenu()
-    -- 子菜单拦截
-    if menuSubState_ == "friends" then
-        HUD.DrawFriendsMenu()
-        return
-    elseif menuSubState_ == "createRoom" then
-        HUD.DrawCreateRoomMenu()
-        return
-    elseif menuSubState_ == "joinRoom" then
-        HUD.DrawJoinRoomMenu()
-        return
-    end
 
     -- 全屏背景渐变（暖色日落）
     local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
@@ -1639,14 +1606,13 @@ function HUD.DrawMenu()
     local btnW = 150
     local btnH = 52
     local btnGap = 18
-    local totalW = btnW * 3 + btnGap * 2
+    local totalW = btnW * 2 + btnGap
     local btnStartX = cx - totalW * 0.5
     local btnY = cy + 85
 
-    -- 按钮颜色（红、黄、蓝 — 与玩家色一致）
+    -- 按钮颜色（红、蓝）
     local buttons = {
-        { label = "快速开始",   r = 242, g = 56, b = 46,  id = "quickStart" },   -- 番茄红
-        { label = "与朋友玩",   r = 250, g = 199, b = 31, id = "withFriends" },  -- 鲜黄
+        { label = "开始游戏",   r = 242, g = 56, b = 46,  id = "startGame" },    -- 番茄红
         { label = "关卡编辑器", r = 51,  g = 122, b = 242, id = "editor" },      -- 宝蓝
     }
 
@@ -1655,12 +1621,7 @@ function HUD.DrawMenu()
         local hovered = mx >= bx and mx <= bx + btnW and my >= btnY and my <= btnY + btnH
         local clicked = HUD.DrawRubberButton(bx, btnY, btnW, btnH, btn.label, btn.r, btn.g, btn.b, hovered)
         if clicked then
-            if btn.id == "withFriends" then
-                -- 进入子菜单而非直接匹配
-                menuSubState_ = "friends"
-            else
-                menuButtonClicked_ = btn.id
-            end
+            menuButtonClicked_ = btn.id
         end
     end
 
@@ -1765,17 +1726,9 @@ function HUD.DrawMatching()
 
     nvgRestore(vg_)
 
-    -- ======== 匹配状态文字（根据 matchMode 区分显示） ========
+    -- ======== 匹配状态文字 ========
     local dots = string.rep(".", (math.floor(t * 2) % 4))
-    local searchText
-    local matchMode = gameManager_.matchMode or "quickStart"
-    if matchMode == "createRoom" then
-        searchText = "等待朋友加入" .. dots
-    elseif matchMode == "joinRoom" then
-        searchText = "正在加入房间" .. dots
-    else
-        searchText = "正在寻找对手" .. dots
-    end
+    local searchText = "正在准备比赛" .. dots
 
     nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, 28)
@@ -1788,42 +1741,6 @@ function HUD.DrawMatching()
     nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
     nvgText(vg_, cx, cy + 60, searchText)
 
-    -- ======== 创建房间模式：显示房间码 ========
-    if matchMode == "createRoom" and roomCode_ ~= "" then
-        -- 房间码标签
-        nvgFontFace(vg_, "sans")
-        nvgFontSize(vg_, 14)
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgFillColor(vg_, nvgRGBA(180, 150, 120, 200))
-        nvgText(vg_, cx, cy + 82, "房间码")
-
-        -- 大字房间码（4个字母框）
-        local charW = 36
-        local charH = 42
-        local charGap = 8
-        local totalCharW = charW * 4 + charGap * 3
-        local charStartX = cx - totalCharW * 0.5
-        local charY = cy + 94
-
-        for i = 1, 4 do
-            local ccx = charStartX + (i - 1) * (charW + charGap)
-            nvgBeginPath(vg_)
-            nvgRoundedRect(vg_, ccx, charY, charW, charH, 6)
-            nvgFillColor(vg_, nvgRGBA(50, 35, 25, 200))
-            nvgFill(vg_)
-            nvgStrokeColor(vg_, nvgRGBA(255, 200, 120, 150))
-            nvgStrokeWidth(vg_, 2)
-            nvgStroke(vg_)
-
-            nvgFontFace(vg_, "bold")
-            nvgFontSize(vg_, 24)
-            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-            nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
-            local ch = string.sub(roomCode_, i, i)
-            nvgText(vg_, ccx + charW * 0.5, charY + charH * 0.5, ch)
-        end
-    end
-
     -- ======== 玩家槽位（4 格，逐渐填充） ========
     local slots = gameManager_.GetMatchingSlots()
     local totalSlots = Config.NumPlayers
@@ -1831,8 +1748,7 @@ function HUD.DrawMatching()
     local slotGap = 16
     local slotTotalW = slotSize * totalSlots + slotGap * (totalSlots - 1)
     local slotStartX = cx - slotTotalW * 0.5
-    -- 创建房间模式下，槽位下移以腾出房间码空间
-    local slotY = (matchMode == "createRoom" and roomCode_ ~= "") and (cy + 155) or (cy + 110)
+    local slotY = cy + 110
 
     for i = 1, totalSlots do
         local sx = slotStartX + (i - 1) * (slotSize + slotGap)
@@ -2182,365 +2098,6 @@ function HUD.DrawTestPlayExitButton()
     -- 点击检测
     if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
         testPlayExitClicked_ = true
-    end
-end
-
--- ============================================================================
--- 「与朋友玩」子菜单系统
--- ============================================================================
-
---- 绘制暖色子菜单背景 + 标题
----@param title string
-local function drawSubMenuBackground(title)
-    -- 全屏渐变背景
-    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(250, 217, 179, 255), nvgRGBA(224, 166, 153, 255))
-    nvgBeginPath(vg_)
-    nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillPaint(vg_, bgPaint)
-    nvgFill(vg_)
-
-    -- 装饰粒子
-    local t = os.clock()
-    for i = 1, 15 do
-        local px = (math.sin(t * 0.3 + i * 1.7) * 0.5 + 0.5) * logW_
-        local py = (math.cos(t * 0.2 + i * 2.3) * 0.5 + 0.5) * logH_
-        local alpha = math.abs(math.sin(t * 0.5 + i)) * 40 + 15
-        nvgBeginPath(vg_)
-        nvgCircle(vg_, px, py, 2 + math.sin(t + i))
-        nvgFillColor(vg_, nvgRGBA(255, 255, 220, math.floor(alpha)))
-        nvgFill(vg_)
-    end
-
-    -- 标题
-    nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 36)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 100))
-    nvgText(vg_, logW_ * 0.5 + 2, 52, title)
-    nvgFillColor(vg_, nvgRGBA(180, 80, 30, 255))
-    nvgText(vg_, logW_ * 0.5, 50, title)
-end
-
---- 「与朋友玩」主子菜单：创建房间 / 加入房间 / 返回
-function HUD.DrawFriendsMenu()
-    drawSubMenuBackground("与朋友玩")
-
-    local cx = logW_ * 0.5
-    local btnW = 200
-    local btnH = 56
-    local btnGap = 16
-    local startY = logH_ * 0.35
-
-    local mx = input.mousePosition.x / dpr_
-    local my = input.mousePosition.y / dpr_
-
-    -- 创建房间按钮
-    local y1 = startY
-    local h1 = mx >= cx - btnW * 0.5 and mx <= cx + btnW * 0.5 and my >= y1 and my <= y1 + btnH
-    if HUD.DrawRubberButton(cx - btnW * 0.5, y1, btnW, btnH, "创建房间", 80, 170, 60, h1) then
-        roomCode_ = generateRoomCode()
-        aiPlayerCount_ = 3
-        menuSubState_ = "createRoom"
-    end
-
-    -- 加入房间按钮
-    local y2 = startY + btnH + btnGap
-    local h2 = mx >= cx - btnW * 0.5 and mx <= cx + btnW * 0.5 and my >= y2 and my <= y2 + btnH
-    if HUD.DrawRubberButton(cx - btnW * 0.5, y2, btnW, btnH, "加入房间", 51, 122, 242, h2) then
-        roomCodeInput_ = ""
-        menuSubState_ = "joinRoom"
-    end
-
-    -- 返回按钮
-    local y3 = startY + (btnH + btnGap) * 2
-    local h3 = mx >= cx - btnW * 0.5 and mx <= cx + btnW * 0.5 and my >= y3 and my <= y3 + btnH
-    if HUD.DrawRubberButton(cx - btnW * 0.5, y3, btnW, btnH, "返回", 120, 90, 70, h3) then
-        menuSubState_ = nil
-    end
-
-    -- ESC 返回
-    if input:GetKeyPress(KEY_ESCAPE) then
-        menuSubState_ = nil
-    end
-end
-
---- 创建房间子菜单
-function HUD.DrawCreateRoomMenu()
-    drawSubMenuBackground("创建房间")
-
-    local cx = logW_ * 0.5
-    local mx = input.mousePosition.x / dpr_
-    local my = input.mousePosition.y / dpr_
-
-    -- 房间码展示
-    local codeY = logH_ * 0.3
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 16)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
-    nvgText(vg_, cx, codeY - 20, "房间码")
-
-    -- 大字房间码（4个字母框）
-    local charW = 48
-    local charH = 56
-    local charGap = 10
-    local totalCharW = charW * 4 + charGap * 3
-    local charStartX = cx - totalCharW * 0.5
-
-    for i = 1, 4 do
-        local ccx = charStartX + (i - 1) * (charW + charGap)
-        -- 字母框背景
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, ccx, codeY, charW, charH, 8)
-        nvgFillColor(vg_, nvgRGBA(50, 35, 25, 200))
-        nvgFill(vg_)
-        nvgStrokeColor(vg_, nvgRGBA(255, 200, 120, 150))
-        nvgStrokeWidth(vg_, 2)
-        nvgStroke(vg_)
-
-        -- 字母
-        nvgFontFace(vg_, "bold")
-        nvgFontSize(vg_, 32)
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
-        local ch = string.sub(roomCode_, i, i)
-        nvgText(vg_, ccx + charW * 0.5, codeY + charH * 0.5, ch)
-    end
-
-    -- AI 数量选择
-    local aiY = codeY + charH + 40
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 16)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
-    nvgText(vg_, cx, aiY, "AI 玩家数量")
-
-    local selectorY = aiY + 24
-    local selectorBtnW = 40
-    local selectorBtnH = 40
-    local numW = 50
-
-    -- 减少按钮
-    local minusX = cx - numW * 0.5 - selectorBtnW - 10
-    local minusHover = mx >= minusX and mx <= minusX + selectorBtnW and my >= selectorY and my <= selectorY + selectorBtnH
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, minusX, selectorY, selectorBtnW, selectorBtnH, 8)
-    nvgFillColor(vg_, minusHover and nvgRGBA(180, 60, 40, 220) or nvgRGBA(120, 50, 35, 180))
-    nvgFill(vg_)
-    nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 28)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, minusHover and 255 or 200))
-    nvgText(vg_, minusX + selectorBtnW * 0.5, selectorY + selectorBtnH * 0.5, "-")
-    if input:GetMouseButtonPress(MOUSEB_LEFT) and minusHover and aiPlayerCount_ > 0 then
-        aiPlayerCount_ = aiPlayerCount_ - 1
-    end
-
-    -- 数量显示
-    nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 28)
-    nvgFillColor(vg_, nvgRGBA(60, 40, 25, 255))
-    nvgText(vg_, cx, selectorY + selectorBtnH * 0.5, tostring(aiPlayerCount_))
-
-    -- 增加按钮
-    local plusX = cx + numW * 0.5 + 10
-    local plusHover = mx >= plusX and mx <= plusX + selectorBtnW and my >= selectorY and my <= selectorY + selectorBtnH
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, plusX, selectorY, selectorBtnW, selectorBtnH, 8)
-    nvgFillColor(vg_, plusHover and nvgRGBA(60, 160, 60, 220) or nvgRGBA(40, 110, 40, 180))
-    nvgFill(vg_)
-    nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 28)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, plusHover and 255 or 200))
-    nvgText(vg_, plusX + selectorBtnW * 0.5, selectorY + selectorBtnH * 0.5, "+")
-    if input:GetMouseButtonPress(MOUSEB_LEFT) and plusHover and aiPlayerCount_ < 3 then
-        aiPlayerCount_ = aiPlayerCount_ + 1
-    end
-
-    -- 玩家槽位可视化
-    local slotY = selectorY + selectorBtnH + 20
-    local slotSize = 36
-    local slotGap = 12
-    local totalSlotW = slotSize * 4 + slotGap * 3
-    local slotStartX = cx - totalSlotW * 0.5
-
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 11)
-
-    local humanCount = 4 - aiPlayerCount_
-    for i = 1, 4 do
-        local sx = slotStartX + (i - 1) * (slotSize + slotGap)
-        local isHuman = (i <= humanCount)
-        local pc = Config.PlayerColors[i]
-        local pr = math.floor(pc.r * 255)
-        local pg = math.floor(pc.g * 255)
-        local pb = math.floor(pc.b * 255)
-
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 6)
-        nvgFillColor(vg_, isHuman and nvgRGBA(pr, pg, pb, 200) or nvgRGBA(pr, pg, pb, 80))
-        nvgFill(vg_)
-
-        nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, isHuman and 120 or 40))
-        nvgStrokeWidth(vg_, 1.5)
-        nvgStroke(vg_)
-
-        nvgFontFace(vg_, "bold")
-        nvgFontSize(vg_, 12)
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgFillColor(vg_, nvgRGBA(255, 255, 255, isHuman and 240 or 120))
-        nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, isHuman and "玩家" or "AI")
-    end
-
-    -- 开始匹配按钮
-    local startBtnW = 180
-    local startBtnH = 50
-    local startBtnY = slotY + slotSize + 30
-    local startHover = mx >= cx - startBtnW * 0.5 and mx <= cx + startBtnW * 0.5 and my >= startBtnY and my <= startBtnY + startBtnH
-    if HUD.DrawRubberButton(cx - startBtnW * 0.5, startBtnY, startBtnW, startBtnH, "开始匹配", 242, 56, 46, startHover) then
-        menuSubState_ = nil
-        menuButtonClicked_ = "withFriends"
-    end
-
-    -- 返回按钮
-    local backBtnW = 120
-    local backBtnH = 40
-    local backBtnY = startBtnY + startBtnH + 16
-    local backHover = mx >= cx - backBtnW * 0.5 and mx <= cx + backBtnW * 0.5 and my >= backBtnY and my <= backBtnY + backBtnH
-    if HUD.DrawRubberButton(cx - backBtnW * 0.5, backBtnY, backBtnW, backBtnH, "返回", 120, 90, 70, backHover) then
-        menuSubState_ = "friends"
-    end
-
-    if input:GetKeyPress(KEY_ESCAPE) then
-        menuSubState_ = "friends"
-    end
-end
-
---- 加入房间子菜单
-function HUD.DrawJoinRoomMenu()
-    drawSubMenuBackground("加入房间")
-
-    local cx = logW_ * 0.5
-    local mx = input.mousePosition.x / dpr_
-    local my = input.mousePosition.y / dpr_
-
-    -- 输入提示
-    local inputY = logH_ * 0.32
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 16)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
-    nvgText(vg_, cx, inputY - 20, "输入房间码")
-
-    -- 4个输入框
-    local charW = 48
-    local charH = 56
-    local charGap = 10
-    local totalCharW = charW * 4 + charGap * 3
-    local charStartX = cx - totalCharW * 0.5
-
-    -- 键盘输入处理
-    for k = KEY_A, KEY_Z do
-        if input:GetKeyPress(k) then
-            if #roomCodeInput_ < 4 then
-                local ch = string.char(string.byte("A") + (k - KEY_A))
-                roomCodeInput_ = roomCodeInput_ .. ch
-            end
-        end
-    end
-    for k = KEY_2, KEY_9 do
-        if input:GetKeyPress(k) then
-            if #roomCodeInput_ < 4 then
-                local ch = string.char(string.byte("2") + (k - KEY_2))
-                roomCodeInput_ = roomCodeInput_ .. ch
-            end
-        end
-    end
-    if input:GetKeyPress(KEY_BACKSPACE) then
-        if #roomCodeInput_ > 0 then
-            roomCodeInput_ = string.sub(roomCodeInput_, 1, #roomCodeInput_ - 1)
-        end
-    end
-
-    for i = 1, 4 do
-        local ccx = charStartX + (i - 1) * (charW + charGap)
-        local isFocused = (i == #roomCodeInput_ + 1 and #roomCodeInput_ < 4)
-        -- 输入框背景
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, ccx, inputY, charW, charH, 8)
-        nvgFillColor(vg_, nvgRGBA(50, 35, 25, 200))
-        nvgFill(vg_)
-
-        -- 边框（当前输入位闪烁）
-        if isFocused then
-            local pulse = math.abs(math.sin(os.clock() * 3)) * 80 + 120
-            nvgStrokeColor(vg_, nvgRGBA(255, 180, 80, math.floor(pulse)))
-        else
-            nvgStrokeColor(vg_, nvgRGBA(180, 150, 120, 100))
-        end
-        nvgStrokeWidth(vg_, 2)
-        nvgStroke(vg_)
-
-        -- 已输入的字母
-        local ch = string.sub(roomCodeInput_, i, i)
-        if ch ~= "" then
-            nvgFontFace(vg_, "bold")
-            nvgFontSize(vg_, 32)
-            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-            nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
-            nvgText(vg_, ccx + charW * 0.5, inputY + charH * 0.5, ch)
-        elseif isFocused then
-            -- 光标闪烁
-            local cursorA = math.abs(math.sin(os.clock() * 4)) * 180 + 40
-            nvgBeginPath(vg_)
-            nvgRect(vg_, ccx + charW * 0.5 - 1, inputY + 12, 2, charH - 24)
-            nvgFillColor(vg_, nvgRGBA(255, 200, 120, math.floor(cursorA)))
-            nvgFill(vg_)
-        end
-    end
-
-    -- 加入按钮（需要4位码才能点击）
-    local canJoin = #roomCodeInput_ == 4
-    local joinBtnW = 180
-    local joinBtnH = 50
-    local joinBtnY = inputY + charH + 40
-
-    if canJoin then
-        local joinHover = mx >= cx - joinBtnW * 0.5 and mx <= cx + joinBtnW * 0.5 and my >= joinBtnY and my <= joinBtnY + joinBtnH
-        if HUD.DrawRubberButton(cx - joinBtnW * 0.5, joinBtnY, joinBtnW, joinBtnH, "加入", 80, 170, 60, joinHover) then
-            menuSubState_ = nil
-            menuButtonClicked_ = "withFriends"
-        end
-    else
-        -- 禁用状态的按钮
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, cx - joinBtnW * 0.5, joinBtnY, joinBtnW, joinBtnH, joinBtnH * 0.35)
-        nvgFillColor(vg_, nvgRGBA(100, 80, 60, 120))
-        nvgFill(vg_)
-        nvgFontFace(vg_, "bold")
-        nvgFontSize(vg_, math.floor(joinBtnH * 0.42))
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgFillColor(vg_, nvgRGBA(180, 160, 140, 100))
-        nvgText(vg_, cx, joinBtnY + joinBtnH * 0.5, "加入")
-    end
-
-    -- 回车快捷键
-    if canJoin and input:GetKeyPress(KEY_RETURN) then
-        menuSubState_ = nil
-        menuButtonClicked_ = "withFriends"
-    end
-
-    -- 返回按钮
-    local backBtnW = 120
-    local backBtnH = 40
-    local backBtnY = joinBtnY + joinBtnH + 16
-    local backHover = mx >= cx - backBtnW * 0.5 and mx <= cx + backBtnW * 0.5 and my >= backBtnY and my <= backBtnY + backBtnH
-    if HUD.DrawRubberButton(cx - backBtnW * 0.5, backBtnY, backBtnW, backBtnH, "返回", 120, 90, 70, backHover) then
-        menuSubState_ = "friends"
-    end
-
-    if input:GetKeyPress(KEY_ESCAPE) then
-        menuSubState_ = "friends"
     end
 end
 

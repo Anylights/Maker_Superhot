@@ -37,8 +37,7 @@ local matchingTimer_ = 0
 local matchingSlotCount_ = 0  -- 已填入的玩家槽位数（含自己）
 local matchingComplete_ = false
 
--- 匹配模式（供 HUD 区分不同匹配 UI）
--- "quickStart" | "createRoom" | "joinRoom"
+-- 匹配模式
 GameManager.matchMode = "quickStart"
 
 -- 试玩模式
@@ -584,14 +583,12 @@ end
 -- ============================================================================
 
 --- 进入匹配状态
----@param mode string|nil "quickStart" | "createRoom" | "joinRoom"（默认 "quickStart"）
-function GameManager.EnterMatching(mode)
+function GameManager.EnterMatching()
     matchingTimer_ = 0
     matchingSlotCount_ = 1  -- 玩家自己先占一个槽
     matchingComplete_ = false
-    GameManager.matchMode = mode or "quickStart"
     GameManager.SetState(GameManager.STATE_MATCHING)
-    print("[GameManager] Entering matching (mode=" .. GameManager.matchMode .. ")...")
+    print("[GameManager] Entering matching...")
 end
 
 --- 更新匹配逻辑

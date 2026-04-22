@@ -22,7 +22,7 @@
   },
   "@runtime": {
     "multiplayer": {
-      "enabled": true,
+      "enabled": false,
       "max_players": 4,
       "match_info": {
         "desc_name": "free_match_with_ai",

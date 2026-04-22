@@ -241,7 +241,7 @@ function Standalone.HandleUpdate(dt)
     -- 主菜单
     if GameManager.state == GameManager.STATE_MENU then
         local btn = HUD.GetMenuButtonClicked()
-        if btn == "quickStart" or btn == "withFriends" then
+        if btn == "startGame" then
             GameManager.EnterMatching()
         elseif btn == "editor" then
             HUD.RefreshLevelList()

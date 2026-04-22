@@ -84,9 +84,14 @@ function HUD.Init(playerRef, gmRef, mapRef)
     fontBold_ = nvgCreateFont(vg_, "bold", "Fonts/MiSans-Regular.ttf")
 
     -- 加载标题图片
-    titleImage_ = nvgCreateImage(vg_, "image/title_logo.png", 0)
+    titleImage_ = nvgCreateImage(vg_, "image/image_20260422143231.png", 0)
     if titleImage_ > 0 then
         titleImageW_, titleImageH_ = nvgImageSize(vg_, titleImage_)
+        -- nvgImageSize 对外部图片可能返回错误值(如16x16)，用实际像素尺寸兜底
+        if titleImageW_ <= 16 or titleImageH_ <= 16 then
+            titleImageW_ = 1024
+            titleImageH_ = 434
+        end
         print("[HUD] Title image loaded: " .. titleImageW_ .. "x" .. titleImageH_)
     else
         print("[HUD] Warning: title image not found, fallback to text")
@@ -185,14 +190,43 @@ function HandleNanoVGRender(eventType, eventData)
 
     local state = gameManager_ and gameManager_.state or "racing"
 
+    -- 联机客户端：根据 clientState 路由额外界面
+    local clientMod = _G.ClientModule
+    if clientMod then
+        local cs = clientMod.GetState()
+        if cs == "quickMatching" then
+            HUD.DrawQuickMatching()
+            HUD.DrawToast()
+            nvgEndFrame(vg_)
+            return
+        elseif cs == "friendMenu" then
+            HUD.DrawFriendMenu()
+            HUD.DrawToast()
+            nvgEndFrame(vg_)
+            return
+        elseif cs == "roomWaiting" then
+            HUD.DrawRoomWaiting()
+            HUD.DrawToast()
+            nvgEndFrame(vg_)
+            return
+        elseif cs == "roomJoining" then
+            HUD.DrawRoomJoining()
+            HUD.DrawToast()
+            nvgEndFrame(vg_)
+            return
+        end
+        -- cs == "menu" or "playing" → 走下方正常路径
+    end
+
     -- 主菜单
     if state == "menu" then
         HUD.DrawMenu()
+        if clientMod then HUD.DrawToast() end
         nvgEndFrame(vg_)
         return
     end
 
-    -- 匹配界面
+    -- 匹配界面（单机）
     if state == "matching" then
         HUD.DrawMatching()
         nvgEndFrame(vg_)
@@ -1555,8 +1589,11 @@ function HUD.DrawMenu()
     local cy = logH_ * 0.38  -- 标题偏上
 
     -- ======== 标题图片 ========
+    -- titleBottom 记录标题区域底部 Y 坐标，用于后续元素布局
+    local titleBottom = cy + 40  -- 默认值（文字降级时使用）
+
     if titleImage_ > 0 and titleImageW_ > 0 then
-        -- 按宽度适配，最大不超过屏幕宽度 60%
+        -- 按宽度等比缩放，不超过屏幕宽度 55%
         local maxW = logW_ * 0.55
         local imgScale = maxW / titleImageW_
         local drawW = titleImageW_ * imgScale
@@ -1581,6 +1618,8 @@ function HUD.DrawMenu()
         nvgRect(vg_, imgX, imgY, drawW, drawH)
         nvgFillPaint(vg_, imgPaint)
         nvgFill(vg_)
+
+        titleBottom = imgY + drawH
     else
         -- 降级：文字标题
         nvgFontFace(vg_, "bold")
@@ -1593,28 +1632,40 @@ function HUD.DrawMenu()
     end
 
     -- ======== 副标题 ========
+    local subtitleY = titleBottom + 14
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 16)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg_, nvgRGBA(220, 200, 180, 180))
-    nvgText(vg_, cx, cy + 55, "2.5D 多人平台竞速派对")
+    nvgText(vg_, cx, subtitleY, "2.5D 多人平台竞速派对")
 
-    -- ======== 三个橡胶按钮（横向排列） ========
+    -- ======== 橡胶按钮（横向排列） ========
     local mx = input.mousePosition.x / dpr_
     local my = input.mousePosition.y / dpr_
 
-    local btnW = 150
+    local btnW = 140
     local btnH = 52
-    local btnGap = 18
-    local totalW = btnW * 2 + btnGap
-    local btnStartX = cx - totalW * 0.5
-    local btnY = cy + 85
+    local btnGap = 14
+    local btnY = subtitleY + 24
 
-    -- 按钮颜色（红、蓝）
-    local buttons = {
-        { label = "开始游戏",   r = 242, g = 56, b = 46,  id = "startGame" },    -- 番茄红
-        { label = "关卡编辑器", r = 51,  g = 122, b = 242, id = "editor" },      -- 宝蓝
-    }
+    -- 根据是否联机模式决定按钮列表
+    local isOnline = (_G.ClientModule ~= nil)
+    local buttons
+    if isOnline then
+        buttons = {
+            { label = "快速开始",   r = 242, g = 56, b = 46,  id = "quickStart" },   -- 番茄红
+            { label = "与朋友玩",   r = 46, g = 190, b = 86,  id = "friendPlay" },   -- 翠绿
+            { label = "关卡编辑器", r = 51,  g = 122, b = 242, id = "editor" },       -- 宝蓝
+        }
+    else
+        buttons = {
+            { label = "开始游戏",   r = 242, g = 56, b = 46,  id = "startGame" },    -- 番茄红
+            { label = "关卡编辑器", r = 51,  g = 122, b = 242, id = "editor" },       -- 宝蓝
+        }
+    end
+
+    local totalW = btnW * #buttons + btnGap * (#buttons - 1)
+    local btnStartX = cx - totalW * 0.5
 
     for idx, btn in ipairs(buttons) do
         local bx = btnStartX + (idx - 1) * (btnW + btnGap)
@@ -2099,6 +2150,480 @@ function HUD.DrawTestPlayExitButton()
     if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
         testPlayExitClicked_ = true
     end
+end
+
+-- ============================================================================
+-- 联机 UI 界面（Client 专用）
+-- ============================================================================
+
+--- 绘制全屏暗色背景（联机界面通用）
+local function drawOnlineBg()
+    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
+        nvgRGBA(35, 20, 12, 255), nvgRGBA(50, 28, 18, 255))
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillPaint(vg_, bgPaint)
+    nvgFill(vg_)
+
+    -- 装饰粒子
+    local t = os.clock()
+    for i = 1, 12 do
+        local px = (math.sin(t * 0.4 + i * 2.1) * 0.5 + 0.5) * logW_
+        local py = (math.cos(t * 0.3 + i * 1.8) * 0.5 + 0.5) * logH_
+        local alpha = math.abs(math.sin(t * 0.6 + i)) * 40 + 15
+        nvgBeginPath(vg_)
+        nvgCircle(vg_, px, py, 2 + math.sin(t + i) * 1)
+        nvgFillColor(vg_, nvgRGBA(255, 180, 80, math.floor(alpha)))
+        nvgFill(vg_)
+    end
+end
+
+--- Toast 提示（屏幕顶部，3 秒自动消失）
+function HUD.DrawToast()
+    local clientMod = _G.ClientModule
+    if not clientMod then return end
+    local msg, timer = clientMod.GetToast()
+    if not msg or msg == "" or timer <= 0 then return end
+
+    local alpha = math.min(1.0, timer) * 255
+
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 20)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+    -- 背景条
+    local tw = nvgTextBounds(vg_, 0, 0, msg)
+    local padX = 20
+    local padY = 8
+    local ty = 40
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, logW_ * 0.5 - tw * 0.5 - padX, ty - 14 - padY, tw + padX * 2, 28 + padY * 2, 10)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(alpha * 0.6)))
+    nvgFill(vg_)
+
+    nvgFillColor(vg_, nvgRGBA(255, 220, 140, math.floor(alpha)))
+    nvgText(vg_, logW_ * 0.5, ty, msg)
+end
+
+--- 快速匹配界面
+function HUD.DrawQuickMatching()
+    drawOnlineBg()
+
+    local clientMod = _G.ClientModule
+    local playerCount, humanCount = 0, 0
+    if clientMod then
+        playerCount, humanCount = clientMod.GetQuickMatchInfo()
+    end
+
+    local cx = logW_ * 0.5
+    local cy = logH_ * 0.38
+    local t = os.clock()
+
+    -- 旋转放大镜（复用匹配界面的视觉）
+    local angle = t * 2.5
+    local magR = 22
+    local handleLen = 18
+    local lineW = 4
+
+    nvgSave(vg_)
+    nvgTranslate(vg_, cx, cy)
+    nvgRotate(vg_, angle)
+
+    nvgBeginPath(vg_)
+    nvgCircle(vg_, 0, 0, magR)
+    nvgStrokeColor(vg_, nvgRGBA(255, 220, 140, 220))
+    nvgStrokeWidth(vg_, lineW)
+    nvgStroke(vg_)
+
+    nvgBeginPath(vg_)
+    nvgCircle(vg_, 0, 0, magR - lineW * 0.5)
+    nvgFillColor(vg_, nvgRGBA(255, 230, 180, 30))
+    nvgFill(vg_)
+
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, magR * 0.7, magR * 0.7)
+    nvgLineTo(vg_, magR * 0.7 + handleLen * 0.7, magR * 0.7 + handleLen * 0.7)
+    nvgStrokeColor(vg_, nvgRGBA(200, 170, 110, 220))
+    nvgStrokeWidth(vg_, lineW + 1)
+    nvgLineCap(vg_, NVG_ROUND)
+    nvgStroke(vg_)
+
+    nvgRestore(vg_)
+
+    -- 状态文字
+    local dots = string.rep(".", (math.floor(t * 2) % 4))
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 160))
+    nvgText(vg_, cx + 2, cy + 60 + 2, "正在匹配" .. dots)
+    nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+    nvgText(vg_, cx, cy + 60, "正在匹配" .. dots)
+
+    -- 玩家槽位
+    local totalSlots = Config.NumPlayers
+    local slotSize = 40
+    local slotGap = 16
+    local slotTotalW = slotSize * totalSlots + slotGap * (totalSlots - 1)
+    local slotStartX = cx - slotTotalW * 0.5
+    local slotY = cy + 110
+
+    for i = 1, totalSlots do
+        local sx = slotStartX + (i - 1) * (slotSize + slotGap)
+        local filled = i <= playerCount
+
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 8)
+        if filled then
+            local pc = Config.PlayerColors[i]
+            nvgFillColor(vg_, nvgRGBA(math.floor(pc.r * 255), math.floor(pc.g * 255), math.floor(pc.b * 255), 220))
+        else
+            nvgFillColor(vg_, nvgRGBA(180, 150, 130, 120))
+        end
+        nvgFill(vg_)
+
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 8)
+        if filled then
+            nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 120))
+        else
+            local pulse = math.abs(math.sin(t * 3 + i * 0.8)) * 60 + 40
+            nvgStrokeColor(vg_, nvgRGBA(200, 180, 140, math.floor(pulse)))
+        end
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 14)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        if filled then
+            nvgFillColor(vg_, nvgRGBA(255, 255, 255, 240))
+            local label = (i <= humanCount) and "玩家" or "AI"
+            nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, label)
+        else
+            nvgFillColor(vg_, nvgRGBA(120, 100, 80, 150))
+            nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, "?")
+        end
+    end
+
+    -- 进度文字
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 14)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(100, 80, 60, 200))
+    nvgText(vg_, cx, slotY + slotSize + 10, playerCount .. " / " .. totalSlots .. " 玩家")
+
+    -- ESC 提示
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 12)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
+    nvgText(vg_, cx, logH_ - 12, "按 ESC 取消匹配")
+end
+
+--- 与朋友玩子菜单
+function HUD.DrawFriendMenu()
+    drawOnlineBg()
+
+    local clientMod = _G.ClientModule
+    local cx = logW_ * 0.5
+    local cy = logH_ * 0.35
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 36)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
+    nvgText(vg_, cx + 2, cy + 2, "与朋友玩")
+    nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+    nvgText(vg_, cx, cy, "与朋友玩")
+
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    local btnW = 160
+    local btnH = 52
+    local btnGap = 20
+    local totalW = btnW * 2 + btnGap
+    local btnStartX = cx - totalW * 0.5
+    local btnY = cy + 60
+
+    -- 开房间
+    local bx1 = btnStartX
+    local h1 = mx >= bx1 and mx <= bx1 + btnW and my >= btnY and my <= btnY + btnH
+    if HUD.DrawRubberButton(bx1, btnY, btnW, btnH, "开房间", 242, 160, 46, h1) then
+        if clientMod then clientMod.RequestCreateRoom() end
+    end
+
+    -- 加入房间
+    local bx2 = btnStartX + btnW + btnGap
+    local h2 = mx >= bx2 and mx <= bx2 + btnW and my >= btnY and my <= btnY + btnH
+    if HUD.DrawRubberButton(bx2, btnY, btnW, btnH, "加入房间", 46, 190, 86, h2) then
+        if clientMod then clientMod.EnterJoinRoom() end
+    end
+
+    -- 返回按钮
+    local backW = 100
+    local backH = 40
+    local backX = cx - backW * 0.5
+    local backY = btnY + btnH + 30
+    local hBack = mx >= backX and mx <= backX + backW and my >= backY and my <= backY + backH
+    if HUD.DrawRubberButton(backX, backY, backW, backH, "返回", 120, 100, 90, hBack) then
+        if clientMod then clientMod.BackToMenu() end
+    end
+
+    -- ESC 提示
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 12)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
+    nvgText(vg_, cx, logH_ - 12, "按 ESC 返回主菜单")
+end
+
+--- 房间等待页（房主和普通成员共用）
+function HUD.DrawRoomWaiting()
+    drawOnlineBg()
+
+    local clientMod = _G.ClientModule
+    local roomCode, playerCount, aiCount, total, isHost = "", 0, 0, 0, false
+    if clientMod then
+        roomCode, playerCount, aiCount, total, isHost = clientMod.GetRoomInfo()
+    end
+
+    local cx = logW_ * 0.5
+    local cy = logH_ * 0.25
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+    nvgText(vg_, cx, cy, isHost and "你的房间" or "等待房主开始")
+
+    -- 房间码
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 48)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    local t = os.clock()
+    local codeAlpha = math.floor(math.abs(math.sin(t * 1.5)) * 30 + 225)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, codeAlpha))
+    nvgText(vg_, cx, cy + 50, roomCode)
+
+    -- 房间码提示
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 14)
+    nvgFillColor(vg_, nvgRGBA(200, 180, 140, 180))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgText(vg_, cx, cy + 78, "分享房间码给朋友")
+
+    -- 玩家槽位
+    local totalSlots = Config.NumPlayers
+    local slotSize = 40
+    local slotGap = 16
+    local slotTotalW = slotSize * totalSlots + slotGap * (totalSlots - 1)
+    local slotStartX = cx - slotTotalW * 0.5
+    local slotY = cy + 110
+
+    for i = 1, totalSlots do
+        local sx = slotStartX + (i - 1) * (slotSize + slotGap)
+        local filled = (i <= playerCount + aiCount)
+        local isAI = (i > playerCount and filled)
+
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 8)
+        if filled then
+            local pc = Config.PlayerColors[i]
+            nvgFillColor(vg_, nvgRGBA(math.floor(pc.r * 255), math.floor(pc.g * 255), math.floor(pc.b * 255), 220))
+        else
+            nvgFillColor(vg_, nvgRGBA(80, 60, 50, 120))
+        end
+        nvgFill(vg_)
+
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 8)
+        nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, filled and 120 or 60))
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 13)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        if filled then
+            nvgFillColor(vg_, nvgRGBA(255, 255, 255, 240))
+            nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, isAI and "AI" or "P" .. i)
+        else
+            nvgFillColor(vg_, nvgRGBA(120, 100, 80, 150))
+            nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, "空位")
+        end
+    end
+
+    -- 状态文字
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 14)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(100, 80, 60, 200))
+    nvgText(vg_, cx, slotY + slotSize + 10, total .. " / " .. totalSlots .. " 玩家")
+
+    -- 按钮区域
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    local btnY2 = slotY + slotSize + 40
+
+    if isHost then
+        -- 房主：开始游戏 / 添加 AI / 解散房间
+        local btnW = 120
+        local btnH = 44
+        local btnGap2 = 14
+        local totalBtnW = btnW * 3 + btnGap2 * 2
+        local bsx = cx - totalBtnW * 0.5
+
+        local b1x = bsx
+        local b1h = mx >= b1x and mx <= b1x + btnW and my >= btnY2 and my <= btnY2 + btnH
+        if HUD.DrawRubberButton(b1x, btnY2, btnW, btnH, "开始游戏", 242, 56, 46, b1h) then
+            if clientMod then clientMod.RequestStartGame() end
+        end
+
+        local b2x = bsx + btnW + btnGap2
+        local canAddAI = (total < Config.NumPlayers)
+        local b2h = canAddAI and mx >= b2x and mx <= b2x + btnW and my >= btnY2 and my <= btnY2 + btnH
+        if canAddAI then
+            if HUD.DrawRubberButton(b2x, btnY2, btnW, btnH, "添加AI", 46, 190, 86, b2h) then
+                if clientMod then clientMod.RequestAddAI() end
+            end
+        else
+            HUD.DrawRubberButton(b2x, btnY2, btnW, btnH, "已满", 80, 70, 60, false)
+        end
+
+        local b3x = bsx + (btnW + btnGap2) * 2
+        local b3h = mx >= b3x and mx <= b3x + btnW and my >= btnY2 and my <= btnY2 + btnH
+        if HUD.DrawRubberButton(b3x, btnY2, btnW, btnH, "解散房间", 120, 100, 90, b3h) then
+            if clientMod then clientMod.RequestDismissRoom() end
+        end
+    else
+        -- 普通成员：离开房间
+        local btnW = 120
+        local btnH = 44
+        local bx = cx - btnW * 0.5
+        local bh = mx >= bx and mx <= bx + btnW and my >= btnY2 and my <= btnY2 + btnH
+        if HUD.DrawRubberButton(bx, btnY2, btnW, btnH, "离开房间", 120, 100, 90, bh) then
+            if clientMod then clientMod.RequestLeaveRoom() end
+        end
+    end
+
+    -- ESC 提示
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 12)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
+    local escHint = isHost and "按 ESC 解散房间" or "按 ESC 离开房间"
+    nvgText(vg_, cx, logH_ - 12, escHint)
+end
+
+--- 加入房间页（输入房间码）
+function HUD.DrawRoomJoining()
+    drawOnlineBg()
+
+    local clientMod = _G.ClientModule
+    local roomInput = ""
+    if clientMod then
+        roomInput = clientMod.GetRoomCodeInput()
+    end
+
+    local cx = logW_ * 0.5
+    local cy = logH_ * 0.35
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+    nvgText(vg_, cx, cy, "输入房间码")
+
+    -- 输入框区域
+    local codeLen = Config.RoomCodeLength
+    local boxSize = 44
+    local boxGap = 10
+    local totalBoxW = boxSize * codeLen + boxGap * (codeLen - 1)
+    local boxStartX = cx - totalBoxW * 0.5
+    local boxY = cy + 50
+
+    local t = os.clock()
+
+    for i = 1, codeLen do
+        local bx = boxStartX + (i - 1) * (boxSize + boxGap)
+        local ch = i <= #roomInput and string.sub(roomInput, i, i) or ""
+        local hasCh = (ch ~= "")
+        local isCursor = (i == #roomInput + 1)
+
+        -- 框背景
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, bx, boxY, boxSize, boxSize, 8)
+        nvgFillColor(vg_, nvgRGBA(60, 45, 35, 200))
+        nvgFill(vg_)
+
+        -- 框边框（当前输入位闪烁）
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, bx, boxY, boxSize, boxSize, 8)
+        if isCursor then
+            local cursorA = math.floor(math.abs(math.sin(t * 4)) * 150 + 100)
+            nvgStrokeColor(vg_, nvgRGBA(255, 220, 140, cursorA))
+        elseif hasCh then
+            nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 150))
+        else
+            nvgStrokeColor(vg_, nvgRGBA(120, 100, 80, 100))
+        end
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+
+        -- 字符
+        if hasCh then
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, 28)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+            nvgFillColor(vg_, nvgRGBA(255, 255, 255, 255))
+            nvgText(vg_, bx + boxSize * 0.5, boxY + boxSize * 0.5, ch)
+        end
+    end
+
+    -- 提示文字
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 14)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(200, 180, 140, 180))
+    nvgText(vg_, cx, boxY + boxSize + 12, "输入数字键，Backspace 删除，Enter 确认")
+
+    -- 按钮
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    local btnW = 120
+    local btnH = 44
+    local btnGap2 = 16
+    local totalBtnW = btnW * 2 + btnGap2
+    local btnStartX = cx - totalBtnW * 0.5
+    local btnY = boxY + boxSize + 44
+
+    -- 加入
+    local b1x = btnStartX
+    local b1h = mx >= b1x and mx <= b1x + btnW and my >= btnY and my <= btnY + btnH
+    if HUD.DrawRubberButton(b1x, btnY, btnW, btnH, "加入", 46, 190, 86, b1h) then
+        if clientMod then clientMod.RequestJoinRoom() end
+    end
+
+    -- 返回
+    local b2x = btnStartX + btnW + btnGap2
+    local b2h = mx >= b2x and mx <= b2x + btnW and my >= btnY and my <= btnY + btnH
+    if HUD.DrawRubberButton(b2x, btnY, btnW, btnH, "返回", 120, 100, 90, b2h) then
+        if clientMod then clientMod.EnterFriendMenu() end
+    end
+
+    -- ESC 提示
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 12)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
+    nvgText(vg_, cx, logH_ - 12, "按 ESC 返回")
 end
 
 return HUD

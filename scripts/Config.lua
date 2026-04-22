@@ -151,6 +151,12 @@ Config.IntroSpawnOrtho       = 10.0  -- 聚焦起点时的正交尺寸
 -- 匹配系统
 Config.MatchingTimeout   = 10.0    -- 匹配超时（秒），超时后 AI 静默补齐
 
+-- 联机配置
+Config.RoomCodeLength    = 6       -- 房间码长度（位数）
+Config.QuickAIInterval   = 10.0    -- 快速匹配中 AI 填充间隔（秒）
+Config.MaxRoomPlayers    = 4       -- 房间最大玩家数
+Config.RoomStartDelay    = 1.5     -- 点击开始后延迟（秒），给客户端准备时间
+
 -- 相机
 Config.CameraZ           = -40.0   -- 相机 Z 位置（侧视）
 Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸

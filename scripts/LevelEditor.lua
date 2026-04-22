@@ -38,6 +38,7 @@ local isDragging_ = false
 local lastPlacedGX_ = -1
 local lastPlacedGY_ = -1
 local isErasing_ = false  -- 右键擦除模式
+local isPanning_ = false  -- 中键平移模式
 
 -- NanoVG 上下文和分辨率（由 HUD 共享传入）
 local vg_ = nil
@@ -223,6 +224,20 @@ function LevelEditor.HandleCameraInput(dt)
     camX_ = camX_ + dx * speed
     camY_ = camY_ + dy * speed
 
+    -- 鼠标中键平移
+    if input:GetMouseButtonDown(MOUSEB_MIDDLE) then
+        isPanning_ = true
+        local dpr = graphics:GetDPR()
+        local mdx = input:GetMouseMoveX() / dpr  -- 物理像素 → 逻辑像素
+        local mdy = input:GetMouseMoveY() / dpr
+        -- 逻辑像素 → 世界单位：camZoom_ 是视野高度（米），logH_ 是逻辑像素高度
+        local worldPerPx = camZoom_ / logH_
+        camX_ = camX_ - mdx * worldPerPx  -- 拖右 → 相机左移
+        camY_ = camY_ + mdy * worldPerPx  -- 拖下 → 相机上移（屏幕 Y 与世界 Y 相反）
+    else
+        isPanning_ = false
+    end
+
     -- 限制范围
     camX_ = math.max(-5, math.min(MapData.Width + 5, camX_))
     camY_ = math.max(-5, math.min(MapData.Height + 5, camY_))
@@ -240,6 +255,12 @@ end
 
 --- 处理方块编辑（鼠标点击/拖拽放置）
 function LevelEditor.HandleEditing()
+    -- 中键平移时不处理编辑
+    if isPanning_ then
+        isDragging_ = false
+        return
+    end
+
     local mx = input:GetMousePosition().x
     local my = input:GetMousePosition().y
 

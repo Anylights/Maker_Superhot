@@ -40,6 +40,11 @@ local lastPlacedGY_ = -1
 local isErasing_ = false  -- 右键擦除模式
 local isPanning_ = false  -- 中键平移模式
 
+-- 每帧缓存的鼠标按下状态（Update 中采集，Draw 中使用）
+local cachedMousePress_ = false
+local cachedMouseLogX_ = 0
+local cachedMouseLogY_ = 0
+
 -- NanoVG 上下文和分辨率（由 HUD 共享传入）
 local vg_ = nil
 local logW_, logH_ = 0, 0
@@ -203,6 +208,14 @@ function LevelEditor.Update(dt)
         if toastTimer_ <= 0 then
             toastMessage_ = nil
         end
+    end
+
+    -- 缓存鼠标单击状态（GetMouseButtonPress 是一次性的，必须在 Update 中采集）
+    cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
+    if cachedMousePress_ then
+        local dpr = graphics:GetDPR()
+        cachedMouseLogX_ = input:GetMousePosition().x / dpr
+        cachedMouseLogY_ = input:GetMousePosition().y / dpr
     end
 
     LevelEditor.HandleCameraInput(dt)
@@ -451,13 +464,10 @@ function LevelEditor.DrawToolbar()
         nvgFillColor(vg_, nvgRGBA(160, 140, 120, 160))
         nvgText(vg_, bx + bw - 4, by + bh * 0.5, tostring(i))
 
-        -- 点击检测
-        if input:GetMouseButtonPress(MOUSEB_LEFT) then
-            local dpr = graphics:GetDPR()
-            local mouseLogX = input:GetMousePosition().x / dpr
-            local mouseLogY = input:GetMousePosition().y / dpr
-            if mouseLogX >= bx and mouseLogX <= bx + bw and
-               mouseLogY >= by and mouseLogY <= by + bh then
+        -- 点击检测（使用 Update 中缓存的鼠标按下状态）
+        if cachedMousePress_ then
+            if cachedMouseLogX_ >= bx and cachedMouseLogX_ <= bx + bw and
+               cachedMouseLogY_ >= by and cachedMouseLogY_ <= by + bh then
                 selectedType_ = tool.type
             end
         end
@@ -520,13 +530,10 @@ function LevelEditor.DrawBottomBar()
         nvgFillColor(vg_, nvgRGBA(240, 230, 220, 240))
         nvgText(vg_, bx + bw * 0.5, by + bh * 0.5, btn.label)
 
-        -- 点击检测
-        if input:GetMouseButtonPress(MOUSEB_LEFT) then
-            local dpr = graphics:GetDPR()
-            local mouseLogX = input:GetMousePosition().x / dpr
-            local mouseLogY = input:GetMousePosition().y / dpr
-            if mouseLogX >= bx and mouseLogX <= bx + bw and
-               mouseLogY >= by and mouseLogY <= by + bh then
+        -- 点击检测（使用 Update 中缓存的鼠标按下状态）
+        if cachedMousePress_ then
+            if cachedMouseLogX_ >= bx and cachedMouseLogX_ <= bx + bw and
+               cachedMouseLogY_ >= by and cachedMouseLogY_ <= by + bh then
                 LevelEditor.OnButtonClick(btn.key)
             end
         end

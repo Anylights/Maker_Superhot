@@ -72,6 +72,9 @@ local debugDraw_ = false
 -- Connection Helper (must be defined before Start so Start can call it)
 -- ============================================================================
 
+--- 是否需要发送 CLIENT_READY（延迟到下一帧 Update 中发送）
+local needSendReady_ = false
+
 --- 公共：获取到服务器连接后的初始化
 local function OnServerConnectionReady()
     if serverConnection_ ~= nil then
@@ -86,9 +89,12 @@ local function OnServerConnectionReady()
     end
 
     serverConnection_ = conn
+    -- 客户端先设置自己的 scene，让引擎知道接收哪个场景的同步数据
     serverConnection_.scene = scene_
+    -- 标记需要发送 CLIENT_READY（在下一帧 Update 中发送，确保场景分配完成）
+    needSendReady_ = true
 
-    print("[Client] Server connection established and scene assigned")
+    print("[Client] Server connection established, scene assigned, will send CLIENT_READY next frame")
 end
 
 -- ============================================================================
@@ -477,10 +483,11 @@ function HandleKillEvent(eventType, eventData)
     local killStreak = eventData["KillStreak"]:GetInt()
 
     -- 推入 GameManager 击杀事件队列（供 HUD 消费）
+    -- 字段名必须与 GameManager.OnPlayerKill 一致：killerIndex, victimIndex, multiKillCount, killStreak
     table.insert(GameManager.killEvents, {
-        killer = killerIdx,
-        victim = victimIdx,
-        multiKill = multiKill,
+        killerIndex = killerIdx,
+        victimIndex = victimIdx,
+        multiKillCount = multiKill,
         killStreak = killStreak,
     })
 end
@@ -737,6 +744,16 @@ end
 
 ---@param dt number
 function Client.HandleUpdate(dt)
+    -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
+    HUD.CacheInput()
+
+    -- 发送 CLIENT_READY（连接建立后的下一帧）
+    if needSendReady_ and serverConnection_ then
+        needSendReady_ = false
+        serverConnection_:SendRemoteEvent(EVENTS.CLIENT_READY, true)
+        print("[Client] CLIENT_READY sent to server")
+    end
+
     -- 延迟回调
     Shared.UpdateDelayed()
 

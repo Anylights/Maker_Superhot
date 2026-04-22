@@ -238,6 +238,9 @@ end
 
 ---@param dt number
 function Standalone.HandleUpdate(dt)
+    -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
+    HUD.CacheInput()
+
     -- 主菜单
     if GameManager.state == GameManager.STATE_MENU then
         local btn = HUD.GetMenuButtonClicked()

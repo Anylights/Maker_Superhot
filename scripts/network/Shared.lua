@@ -37,6 +37,7 @@ Shared.EVENTS = {
     KILL_EVENT       = "E_KillEvent",           -- 击杀事件广播
 
     -- 客户端 → 服务端
+    CLIENT_READY     = "E_ClientReady",         -- 客户端场景准备完毕
     REQUEST_CREATE   = "E_RequestCreate",       -- 请求创建房间
     REQUEST_JOIN     = "E_RequestJoin",         -- 请求加入房间（含房间码）
     REQUEST_LEAVE    = "E_RequestLeave",        -- 请求离开房间

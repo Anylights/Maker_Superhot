@@ -49,6 +49,21 @@ local levelListScroll_ = 0       -- 滚动偏移
 local testPlayExitClicked_ = false  -- 试玩退出按钮是否被点击
 local persistClicked_ = false  -- "保存到工程"按钮是否被点击
 
+-- 帧缓存：鼠标点击状态（在 Update 阶段缓存，供 NanoVG 渲染阶段的按钮使用）
+local cachedMousePress_ = false
+local cachedMouseLogX_ = 0
+local cachedMouseLogY_ = 0
+
+--- 在 Update 阶段缓存鼠标输入状态（GetMouseButtonPress 在渲染阶段不可靠）
+--- 必须由 Client.HandleUpdate / Standalone.HandleUpdate 在每帧开头调用
+function HUD.CacheInput()
+    cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
+    if cachedMousePress_ then
+        cachedMouseLogX_ = input.mousePosition.x / dpr_
+        cachedMouseLogY_ = input.mousePosition.y / dpr_
+    end
+end
+
 -- 动画
 local countdownScale_ = 1.0
 local flashAlpha_ = 0
@@ -176,6 +191,9 @@ end
 
 function HandleNanoVGRender(eventType, eventData)
     if vg_ == nil then return end
+
+    -- 注意：鼠标点击状态已在 HUD.CacheInput()（Update 阶段）中缓存
+    -- GetMouseButtonPress 在渲染阶段不可靠，不要在此调用
 
     -- 计算帧间隔（用于浮动文字动画）
     local now = os.clock()
@@ -1554,8 +1572,8 @@ function HUD.DrawRubberButton(x, y, w, h, label, baseR, baseG, baseB, hovered)
     nvgFillColor(vg_, nvgRGBA(255, 255, 255, 255))
     nvgText(vg_, x + w * 0.5, y + h * 0.52, label)
 
-    -- 点击检测
-    if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
+    -- 点击检测（使用帧缓存的鼠标状态）
+    if cachedMousePress_ and hovered then
         return true
     end
     return false
@@ -1963,10 +1981,10 @@ function HUD.DrawLevelList()
         local bx = listX + listW - 12
         local by = iy + (itemH - btnH) * 0.5
 
-        -- 鼠标逻辑坐标
-        local mx = input.mousePosition.x / dpr_
-        local my = input.mousePosition.y / dpr_
-        local clicked = input:GetMouseButtonPress(MOUSEB_LEFT)
+        -- 鼠标逻辑坐标（使用帧缓存）
+        local mx = cachedMousePress_ and cachedMouseLogX_ or (input.mousePosition.x / dpr_)
+        local my = cachedMousePress_ and cachedMouseLogY_ or (input.mousePosition.y / dpr_)
+        local clicked = cachedMousePress_
 
         -- 删除按钮
         bx = bx - btnW
@@ -2040,9 +2058,10 @@ function HUD.DrawLevelList()
     local totalBtnW = bbtnW * 3 + bbtnGap * 2
     local btnStartX = cx - totalBtnW * 0.5
 
-    local mx = input.mousePosition.x / dpr_
-    local my = input.mousePosition.y / dpr_
-    local clicked = input:GetMouseButtonPress(MOUSEB_LEFT)
+    -- 鼠标逻辑坐标（使用帧缓存）
+    local mx = cachedMousePress_ and cachedMouseLogX_ or (input.mousePosition.x / dpr_)
+    local my = cachedMousePress_ and cachedMouseLogY_ or (input.mousePosition.y / dpr_)
+    local clicked = cachedMousePress_
 
     -- "新建关卡" 按钮
     local newX = btnStartX
@@ -2146,8 +2165,8 @@ function HUD.DrawTestPlayExitButton()
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     nvgText(vg_, btnX, btnY + btnH + 4, "试玩模式")
 
-    -- 点击检测
-    if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
+    -- 点击检测（使用帧缓存的鼠标状态）
+    if cachedMousePress_ and hovered then
         testPlayExitClicked_ = true
     end
 end

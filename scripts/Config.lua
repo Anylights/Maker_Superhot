@@ -124,6 +124,33 @@ Config.WinScore          = 15      -- 胜利积分目标
 Config.PlaceScores       = { 5, 3, 2, 1 }  -- 名次对应积分
 Config.CountdownTime     = 3.0     -- 开局倒计时（秒）
 
+-- 击杀积分
+Config.KillScore         = 1       -- 每次击杀得分
+Config.MultiKillWindow   = 2.0     -- 连续击杀判定窗口（秒）
+Config.MultiKillTexts    = {       -- 连杀文字（按连续击杀数索引）
+    [1] = "击杀!",
+    [2] = "双杀!",
+    [3] = "三杀!",
+    [4] = "四杀!",
+    [5] = "超神!",
+}
+Config.KillStreakTexts    = {       -- 连杀文字（按连续不死击杀数索引，≥3 显示）
+    [3] = "连杀中!",
+    [5] = "杀疯了!",
+    [7] = "无人能挡!",
+}
+
+-- 开场镜头动画
+Config.IntroFocusFinishTime  = 1.5   -- 聚焦终点持续时间（秒）
+Config.IntroPanToSpawnTime   = 1.5   -- 平移到起点持续时间（秒）
+Config.IntroZoomTextTime     = 1.5   -- 放大+文字显示持续时间（秒）
+Config.IntroZoomOutTime      = 1.0   -- 拉远回全景过渡时间（秒）
+Config.IntroFinishOrtho      = 8.0   -- 聚焦终点时的正交尺寸（拉近）
+Config.IntroSpawnOrtho       = 10.0  -- 聚焦起点时的正交尺寸
+
+-- 匹配系统
+Config.MatchingTimeout   = 10.0    -- 匹配超时（秒），超时后 AI 静默补齐
+
 -- 相机
 Config.CameraZ           = -40.0   -- 相机 Z 位置（侧视）
 Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸

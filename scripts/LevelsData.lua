@@ -93,9 +93,9 @@ do
     addPlatform(b, 19, 17, 5, N)    -- x=19-23 右可破坏桥
 
     -- Y=20: 终点层 (+3)
-    addPlatform(b, 12, 20, 2, N)    -- x=12-13 左跳台
-    addPlatform(b, 14, 20, 4, FI)   -- x=14-17 终点
-    addPlatform(b, 18, 20, 2, N)    -- x=18-19 右跳台
+    addPlatform(b, 12, 20, 3, N)    -- x=12-14 左跳台
+    addBlock(b, 15, 20, FI)         -- x=15 终点（单格）
+    addPlatform(b, 16, 20, 4, N)    -- x=16-19 右跳台
 
     LevelsData.levels["level_001"] = {
         version = 1,
@@ -151,9 +151,9 @@ do
     addPlatform(b, 22, 17, 4, N)    -- x=22-25 右桥
 
     -- Y=20: 终点层 (+3)
-    addPlatform(b, 12, 20, 2, N)    -- x=12-13
-    addPlatform(b, 14, 20, 4, FI)   -- x=14-17 终点
-    addPlatform(b, 18, 20, 2, N)    -- x=18-19
+    addPlatform(b, 12, 20, 3, N)    -- x=12-14 左跳台
+    addBlock(b, 15, 20, FI)         -- x=15 终点（单格）
+    addPlatform(b, 16, 20, 4, N)    -- x=16-19 右跳台
 
     LevelsData.levels["level_002"] = {
         version = 1,
@@ -207,9 +207,9 @@ do
     addPlatform(b, 19, 17, 6, N)    -- x=19-24 右桥
 
     -- Y=20: 终点层 (+3)
-    addPlatform(b, 12, 20, 2, N)    -- x=12-13
-    addPlatform(b, 14, 20, 4, FI)   -- x=14-17 终点
-    addPlatform(b, 18, 20, 2, N)    -- x=18-19
+    addPlatform(b, 12, 20, 3, N)    -- x=12-14 左跳台
+    addBlock(b, 15, 20, FI)         -- x=15 终点（单格）
+    addPlatform(b, 16, 20, 4, N)    -- x=16-19 右跳台
 
     LevelsData.levels["level_003"] = {
         version = 1,
@@ -262,9 +262,9 @@ do
     addPlatform(b, 27, 17, 3, S)    -- x=27-29 右远旁路
 
     -- Y=20: 终点层 (+3)
-    addPlatform(b, 12, 20, 2, N)    -- x=12-13
-    addPlatform(b, 14, 20, 4, FI)   -- x=14-17 终点
-    addPlatform(b, 18, 20, 2, N)    -- x=18-19
+    addPlatform(b, 12, 20, 3, N)    -- x=12-14 左跳台
+    addBlock(b, 15, 20, FI)         -- x=15 终点（单格）
+    addPlatform(b, 16, 20, 4, N)    -- x=16-19 右跳台
 
     LevelsData.levels["level_004"] = {
         version = 1,

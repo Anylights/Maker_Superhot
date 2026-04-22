@@ -479,6 +479,15 @@ function AIController.Register(playerData)
           string.format("%.2f", personality.aggression) .. ")")
 end
 
+--- 取消 AI 注册（玩家切为人类控制时调用）
+---@param playerData table
+function AIController.Unregister(playerData)
+    if playerData and aiStates_[playerData.index] then
+        aiStates_[playerData.index] = nil
+        print("[AI] Player " .. playerData.index .. " unregistered")
+    end
+end
+
 -- ============================================================================
 -- 主更新
 -- ============================================================================

@@ -4,17 +4,20 @@
 -- ============================================================================
 
 local Config = require("Config")
+local MapData = require("MapData")
 local SFX = require("SFX")
 
 local GameManager = {}
 
 -- 游戏状态
 GameManager.STATE_MENU       = "menu"
+GameManager.STATE_INTRO      = "intro"
 GameManager.STATE_COUNTDOWN  = "countdown"
 GameManager.STATE_RACING     = "racing"
 GameManager.STATE_ROUND_END  = "roundEnd"
 GameManager.STATE_SCORE      = "score"
 GameManager.STATE_MATCH_END  = "matchEnd"
+GameManager.STATE_MATCHING   = "matching"
 GameManager.STATE_EDITOR     = "editor"
 GameManager.STATE_LEVEL_LIST = "levelList"
 
@@ -29,6 +32,15 @@ GameManager.scores = { 0, 0, 0, 0 }
 GameManager.finishCount = 0      -- 当前回合已到达终点的人数
 GameManager.roundResults = {}     -- 当前回合名次
 
+-- 匹配系统
+local matchingTimer_ = 0
+local matchingSlotCount_ = 0  -- 已填入的玩家槽位数（含自己）
+local matchingComplete_ = false
+
+-- 匹配模式（供 HUD 区分不同匹配 UI）
+-- "quickStart" | "createRoom" | "joinRoom"
+GameManager.matchMode = "quickStart"
+
 -- 试玩模式
 GameManager.testPlayMode = false
 GameManager.testPlayLevelFile = nil
@@ -39,12 +51,29 @@ local mapModule_ = nil
 local pickupModule_ = nil
 local aiModule_ = nil
 local randomPickupModule_ = nil
+local cameraModule_ = nil
+
+-- 击杀统计（每回合）
+GameManager.killScores = { 0, 0, 0, 0 }  -- 每个玩家的击杀积分
+
+-- 击杀事件队列（供 HUD 消费，每帧清空）
+GameManager.killEvents = {}
 
 -- 状态转换回调
 local onStateChange_ = nil
+-- 击杀事件回调（网络广播用）
+local onKill_ = nil
 
 -- 倒计时音效跟踪
 local lastCountdownNum_ = 0
+
+-- 开场镜头动画子阶段
+-- 1 = 聚焦终点, 2 = 平移到起点, 3 = 放大+文字
+local introPhase_ = 0
+local introPhaseTimer_ = 0
+local introTextAlpha_ = 0  -- "更快到达终点!" 文字透明度（0~1）
+local introSpawnCenterX_ = 0  -- 出生点中心（阶段2计算，阶段3复用）
+local introSpawnCenterY_ = 0
 
 -- ============================================================================
 -- 初始化
@@ -54,16 +83,28 @@ local lastCountdownNum_ = 0
 ---@param mapRef table
 ---@param pickupRef table
 ---@param aiRef table
-function GameManager.Init(playerRef, mapRef, pickupRef, aiRef, randomPickupRef)
+---@param randomPickupRef table
+---@param cameraRef table|nil
+function GameManager.Init(playerRef, mapRef, pickupRef, aiRef, randomPickupRef, cameraRef)
     playerModule_ = playerRef
     mapModule_ = mapRef
     pickupModule_ = pickupRef
     aiModule_ = aiRef
     randomPickupModule_ = randomPickupRef
+    cameraModule_ = cameraRef
 
     GameManager.scores = {}
+    GameManager.killScores = {}
     for i = 1, Config.NumPlayers do
         GameManager.scores[i] = 0
+        GameManager.killScores[i] = 0
+    end
+
+    -- 注册击杀事件回调
+    if playerModule_ then
+        playerModule_.onKill = function(killerIndex, victimIndex, multiKillCount, killStreak)
+            GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, killStreak)
+        end
     end
 
     print("[GameManager] Initialized")
@@ -73,6 +114,12 @@ end
 ---@param callback function
 function GameManager.OnStateChange(callback)
     onStateChange_ = callback
+end
+
+--- 设置击杀事件回调（服务端广播用）
+---@param callback function(killerIndex, victimIndex, multiKillCount, killStreak)
+function GameManager.OnKill(callback)
+    onKill_ = callback
 end
 
 --- 进入主菜单
@@ -96,6 +143,12 @@ function GameManager.StartRound()
     GameManager.finishCount = 0
     GameManager.roundResults = {}
 
+    -- 重置击杀积分
+    for i = 1, Config.NumPlayers do
+        GameManager.killScores[i] = 0
+    end
+    GameManager.killEvents = {}
+
     -- 重置地图和玩家
     if mapModule_ then mapModule_.Reset() end
     if playerModule_ then playerModule_.ResetAll() end
@@ -105,10 +158,14 @@ function GameManager.StartRound()
     -- 重置倒计时音效跟踪
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
 
-    -- 进入倒计时
-    GameManager.SetState(GameManager.STATE_COUNTDOWN, Config.CountdownTime)
+    -- 进入开场镜头动画
+    introPhase_ = 0
+    introPhaseTimer_ = 0
+    introTextAlpha_ = 0
+    local totalIntroTime = Config.IntroFocusFinishTime + Config.IntroPanToSpawnTime + Config.IntroZoomTextTime + Config.IntroZoomOutTime
+    GameManager.SetState(GameManager.STATE_INTRO, totalIntroTime)
 
-    print("[GameManager] Round " .. GameManager.round .. " starting")
+    print("[GameManager] Round " .. GameManager.round .. " starting (intro)")
 end
 
 --- 设置状态
@@ -137,6 +194,10 @@ function GameManager.Update(dt)
     if state == GameManager.STATE_MENU then
         -- 菜单状态不做任何更新，等待外部调用 StartMatch
         return
+    elseif state == GameManager.STATE_MATCHING then
+        GameManager.UpdateMatching(dt)
+    elseif state == GameManager.STATE_INTRO then
+        GameManager.UpdateIntro(dt)
     elseif state == GameManager.STATE_COUNTDOWN then
         GameManager.UpdateCountdown(dt)
     elseif state == GameManager.STATE_RACING then
@@ -170,6 +231,182 @@ function GameManager.UpdateCountdown(dt)
         SFX.Play("go", 0.8)
         GameManager.SetState(GameManager.STATE_RACING)
     end
+end
+
+--- 更新开场镜头动画（3个子阶段）
+function GameManager.UpdateIntro(dt)
+    GameManager.stateTimer = GameManager.stateTimer - dt
+
+    -- 阶段 0 → 1：初始化，聚焦终点
+    if introPhase_ == 0 then
+        introPhase_ = 1
+        introPhaseTimer_ = Config.IntroFocusFinishTime
+
+        -- 计算终点中心位置
+        local fx, fy = 0, 0
+        if #MapData.FinishBlocks > 0 then
+            for _, fb in ipairs(MapData.FinishBlocks) do
+                fx = fx + fb.x
+                fy = fy + fb.y
+            end
+            fx = fx / #MapData.FinishBlocks
+            fy = fy / #MapData.FinishBlocks
+        else
+            fx = MapData.Width * Config.BlockSize * 0.5
+            fy = MapData.Height * Config.BlockSize * 0.5
+        end
+
+        if cameraModule_ then
+            -- 先瞬移到全局视角，然后动画缩放到终点
+            cameraModule_.SetFixedForMap(MapData.Width, MapData.Height, 2)
+            cameraModule_.AnimateTo(Vector3(fx, fy, 0), Config.IntroFinishOrtho, Config.IntroFocusFinishTime * 0.8)
+        end
+        print("[GameManager] Intro phase 1: focus finish at (" .. string.format("%.1f,%.1f", fx, fy) .. ")")
+        return
+    end
+
+    -- 阶段 1：聚焦终点
+    if introPhase_ == 1 then
+        introPhaseTimer_ = introPhaseTimer_ - dt
+        if cameraModule_ then
+            cameraModule_.UpdateAnimation(dt)
+        end
+        if introPhaseTimer_ <= 0 then
+            introPhase_ = 2
+            introPhaseTimer_ = Config.IntroPanToSpawnTime
+
+            -- 计算所有出生点的中心
+            local sx, sy = 0, 0
+            local count = 0
+            for i = 1, Config.NumPlayers do
+                local sp = MapData.SpawnPositions[i]
+                if sp then
+                    sx = sx + sp.x
+                    sy = sy + sp.y
+                    count = count + 1
+                end
+            end
+            if count > 0 then
+                sx = sx / count
+                sy = sy / count
+            else
+                sx = MapData.SpawnX
+                sy = MapData.SpawnY
+            end
+
+            -- 保存出生点中心供阶段3复用
+            introSpawnCenterX_ = sx
+            introSpawnCenterY_ = sy
+
+            if cameraModule_ then
+                cameraModule_.AnimateTo(Vector3(sx, sy, 0), Config.IntroSpawnOrtho, Config.IntroPanToSpawnTime * 0.9)
+            end
+            print("[GameManager] Intro phase 2: pan to spawn at (" .. string.format("%.1f,%.1f", sx, sy) .. ")")
+        end
+        return
+    end
+
+    -- 阶段 2：平移到起点
+    if introPhase_ == 2 then
+        introPhaseTimer_ = introPhaseTimer_ - dt
+        if cameraModule_ then
+            cameraModule_.UpdateAnimation(dt)
+        end
+        if introPhaseTimer_ <= 0 then
+            introPhase_ = 3
+            introPhaseTimer_ = Config.IntroZoomTextTime
+            introTextAlpha_ = 0
+
+            -- 稍微拉近镜头聚焦出生区
+            if cameraModule_ then
+                cameraModule_.AnimateTo(
+                    Vector3(introSpawnCenterX_, introSpawnCenterY_, 0),
+                    Config.IntroSpawnOrtho * 0.85,
+                    Config.IntroZoomTextTime * 0.5
+                )
+            end
+            print("[GameManager] Intro phase 3: zoom + text")
+        end
+        return
+    end
+
+    -- 阶段 3：放大 + 显示文字
+    if introPhase_ == 3 then
+        introPhaseTimer_ = introPhaseTimer_ - dt
+        if cameraModule_ then
+            cameraModule_.UpdateAnimation(dt)
+        end
+
+        -- 文字淡入（前半段淡入，后半段保持）
+        local progress = 1.0 - (introPhaseTimer_ / Config.IntroZoomTextTime)
+        if progress < 0.3 then
+            introTextAlpha_ = progress / 0.3
+        else
+            introTextAlpha_ = 1.0
+        end
+
+        if introPhaseTimer_ <= 0 then
+            -- 进入阶段 4：平滑拉远回全景
+            introPhase_ = 4
+            introPhaseTimer_ = Config.IntroZoomOutTime
+
+            -- 计算全景目标参数（与 SetFixedForMap 相同逻辑）
+            local bs = Config.BlockSize
+            local padding = 2
+            local totalW = MapData.Width * bs + padding * 2
+            local totalH = MapData.Height * bs + padding * 2
+            local mapCx = MapData.Width * bs * 0.5
+            local mapCy = MapData.Height * bs * 0.5
+            local aspect = cameraModule_ and cameraModule_.camera and cameraModule_.camera.aspectRatio or (16.0 / 9.0)
+            if aspect <= 0 then aspect = 16.0 / 9.0 end
+            local orthoFromW = totalW / aspect
+            local orthoFromH = totalH
+            local fullOrtho = math.max(orthoFromW, orthoFromH)
+
+            if cameraModule_ then
+                cameraModule_.AnimateTo(Vector3(mapCx, mapCy, 0), fullOrtho, Config.IntroZoomOutTime * 0.9)
+            end
+            print("[GameManager] Intro phase 4: zoom out to full map")
+        end
+        return
+    end
+
+    -- 阶段 4：拉远回全景
+    if introPhase_ == 4 then
+        introPhaseTimer_ = introPhaseTimer_ - dt
+        if cameraModule_ then
+            cameraModule_.UpdateAnimation(dt)
+        end
+
+        -- 文字淡出
+        local progress = 1.0 - (introPhaseTimer_ / Config.IntroZoomOutTime)
+        introTextAlpha_ = math.max(0, 1.0 - progress * 2.0)  -- 前半段快速淡出
+
+        if introPhaseTimer_ <= 0 then
+            -- 过渡完成，设置固定全景并进入倒计时
+            if cameraModule_ then
+                cameraModule_.StopAnimation()
+                cameraModule_.SetFixedForMap(MapData.Width, MapData.Height, 2)
+            end
+            introPhase_ = 0
+            introTextAlpha_ = 0
+            lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
+            GameManager.SetState(GameManager.STATE_COUNTDOWN, Config.CountdownTime)
+            print("[GameManager] Intro complete → countdown")
+        end
+    end
+end
+
+--- 获取开场动画当前阶段（供 HUD 使用）
+---@return number -- 0=未开始, 1=聚焦终点, 2=平移起点, 3=文字显示
+function GameManager.GetIntroPhase()
+    return introPhase_
+end
+
+--- 获取开场文字透明度（供 HUD 使用）
+---@return number -- 0~1
+function GameManager.GetIntroTextAlpha()
+    return introTextAlpha_
 end
 
 function GameManager.UpdateRacing(dt)
@@ -233,6 +470,37 @@ function GameManager.UpdateMatchEnd(dt)
             GameManager.EnterMenu()
         end
     end
+end
+
+--- 处理击杀事件（由 Player.onKill 回调触发）
+---@param killerIndex number
+---@param victimIndex number
+---@param multiKillCount number
+---@param killStreak number
+function GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, killStreak)
+    -- 击杀加分
+    local killPts = Config.KillScore
+    GameManager.scores[killerIndex] = GameManager.scores[killerIndex] + killPts
+    GameManager.killScores[killerIndex] = GameManager.killScores[killerIndex] + killPts
+
+    -- 生成击杀事件（供 HUD 显示）
+    local event = {
+        killerIndex = killerIndex,
+        victimIndex = victimIndex,
+        multiKillCount = multiKillCount,
+        killStreak = killStreak,
+        time = os.clock(),
+    }
+    table.insert(GameManager.killEvents, event)
+
+    -- 网络回调
+    if onKill_ then
+        onKill_(killerIndex, victimIndex, multiKillCount, killStreak)
+    end
+
+    print("[GameManager] Kill event: P" .. killerIndex .. " killed P" .. victimIndex
+        .. " (multi=" .. multiKillCount .. ", streak=" .. killStreak
+        .. ", score=" .. GameManager.scores[killerIndex] .. ")")
 end
 
 --- 结束当前回合，计算积分
@@ -309,6 +577,93 @@ end
 ---@return boolean
 function GameManager.CanPlayersMove()
     return GameManager.state == GameManager.STATE_RACING
+end
+
+-- ============================================================================
+-- 匹配状态
+-- ============================================================================
+
+--- 进入匹配状态
+---@param mode string|nil "quickStart" | "createRoom" | "joinRoom"（默认 "quickStart"）
+function GameManager.EnterMatching(mode)
+    matchingTimer_ = 0
+    matchingSlotCount_ = 1  -- 玩家自己先占一个槽
+    matchingComplete_ = false
+    GameManager.matchMode = mode or "quickStart"
+    GameManager.SetState(GameManager.STATE_MATCHING)
+    print("[GameManager] Entering matching (mode=" .. GameManager.matchMode .. ")...")
+end
+
+--- 更新匹配逻辑
+---@param dt number
+function GameManager.UpdateMatching(dt)
+    matchingTimer_ = matchingTimer_ + dt
+
+    -- 模拟逐个玩家加入（间隔 0.6~1.2 秒随机加一个）
+    local slotsNeeded = Config.NumPlayers
+    if matchingSlotCount_ < slotsNeeded then
+        -- 根据时间进度模拟填充
+        local fillInterval = Config.MatchingTimeout / (slotsNeeded - 1)
+        local expectedSlots = 1 + math.floor(matchingTimer_ / fillInterval)
+        if expectedSlots > matchingSlotCount_ and matchingSlotCount_ < slotsNeeded then
+            matchingSlotCount_ = math.min(expectedSlots, slotsNeeded)
+        end
+    end
+
+    -- 超时 → 全部就绪
+    if matchingTimer_ >= Config.MatchingTimeout then
+        matchingSlotCount_ = slotsNeeded
+        if not matchingComplete_ then
+            matchingComplete_ = true
+            SFX.Play("match_ready", 0.8)
+            print("[GameManager] Matching complete! All players ready.")
+        end
+    end
+end
+
+--- 仅更新匹配计时器（客户端联机模式专用，不做本地槽位模拟）
+---@param dt number
+function GameManager.UpdateMatchingTimer(dt)
+    matchingTimer_ = matchingTimer_ + dt
+end
+
+--- 取消匹配，返回菜单
+function GameManager.CancelMatching()
+    GameManager.SetState(GameManager.STATE_MENU)
+    print("[GameManager] Matching cancelled")
+end
+
+--- 获取匹配计时
+---@return number
+function GameManager.GetMatchingTime()
+    return matchingTimer_
+end
+
+--- 获取已匹配玩家数
+---@return number
+function GameManager.GetMatchingSlots()
+    return matchingSlotCount_
+end
+
+--- 匹配是否完成
+---@return boolean
+function GameManager.IsMatchingComplete()
+    return matchingComplete_
+end
+
+--- 强制匹配完成（服务端分配角色后调用，用于视觉反馈）
+function GameManager.ForceMatchingComplete()
+    matchingSlotCount_ = Config.NumPlayers
+    matchingComplete_ = true
+    matchingTimer_ = Config.MatchingTimeout
+    SFX.Play("match_ready", 0.8)
+    print("[GameManager] Matching force-completed (server assigned role)")
+end
+
+--- 设置匹配槽位数（外部通知玩家加入时更新 UI）
+---@param count number
+function GameManager.SetMatchingSlots(count)
+    matchingSlotCount_ = math.min(count, Config.NumPlayers)
 end
 
 -- ============================================================================

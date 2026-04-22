@@ -30,6 +30,15 @@ local shakeTimer_ = 0
 local shakeDuration_ = 0
 local shakeIntensity_ = 0
 
+-- 动画过渡状态
+local animating_ = false
+local animStartCenter_ = Vector3(0, 0, 0)
+local animEndCenter_ = Vector3(0, 0, 0)
+local animStartOrtho_ = 12.0
+local animEndOrtho_ = 12.0
+local animTimer_ = 0
+local animDuration_ = 1.0
+
 --- 初始化相机
 ---@param scene Scene
 function Camera.Init(scene)
@@ -57,8 +66,12 @@ function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
     if Camera.manualMode then return end
 
-    -- 固定模式：仍需处理屏幕震动
+    -- 固定模式：仍需处理屏幕震动（但动画中不覆盖位置）
     if Camera.fixedMode then
+        if animating_ then
+            -- 动画过渡中，位置由 UpdateAnimation 控制，这里不干预
+            return
+        end
         if shakeTimer_ > 0 then
             shakeTimer_ = shakeTimer_ - dt
             local progress = shakeTimer_ / shakeDuration_
@@ -264,6 +277,84 @@ function Camera.SetFixedForMap(mapWidth, mapHeight, padding)
     print("[Camera] Fixed mode: center=(" .. string.format("%.1f,%.1f", cx, cy) ..
           ") ortho=" .. string.format("%.1f", ortho) ..
           " map=" .. mapWidth .. "x" .. mapHeight)
+end
+
+-- ============================================================================
+-- 动画过渡（开场镜头等）
+-- ============================================================================
+
+--- 平滑缓动函数（ease in-out cubic）
+---@param t number 0~1
+---@return number
+local function easeInOutCubic(t)
+    if t < 0.5 then
+        return 4 * t * t * t
+    else
+        local f = (2 * t - 2)
+        return 0.5 * f * f * f + 1
+    end
+end
+
+--- 启动动画过渡：从当前位置平滑移动到目标位置
+---@param center Vector3 目标中心
+---@param orthoSize number 目标正交尺寸
+---@param duration number 过渡时间（秒）
+function Camera.AnimateTo(center, orthoSize, duration)
+    animating_ = true
+    animStartCenter_ = Vector3(currentCenter_.x, currentCenter_.y, 0)
+    animEndCenter_ = Vector3(center.x, center.y, 0)
+    animStartOrtho_ = currentOrtho_
+    animEndOrtho_ = orthoSize
+    animTimer_ = 0
+    animDuration_ = math.max(0.01, duration)
+    print("[Camera] AnimateTo: (" .. string.format("%.1f,%.1f", center.x, center.y) ..
+          ") ortho=" .. string.format("%.1f", orthoSize) ..
+          " dur=" .. string.format("%.1f", duration) .. "s")
+end
+
+--- 更新动画过渡（每帧调用）
+---@param dt number
+---@return boolean -- 动画是否仍在进行
+function Camera.UpdateAnimation(dt)
+    if not animating_ then return false end
+
+    animTimer_ = animTimer_ + dt
+    local t = math.min(animTimer_ / animDuration_, 1.0)
+    local eased = easeInOutCubic(t)
+
+    -- 插值位置和正交尺寸
+    local cx = animStartCenter_.x + (animEndCenter_.x - animStartCenter_.x) * eased
+    local cy = animStartCenter_.y + (animEndCenter_.y - animStartCenter_.y) * eased
+    local ortho = animStartOrtho_ + (animEndOrtho_ - animStartOrtho_) * eased
+
+    currentCenter_ = Vector3(cx, cy, 0)
+    currentOrtho_ = ortho
+    targetCenter_ = currentCenter_
+    targetOrtho_ = currentOrtho_
+
+    if Camera.node then
+        Camera.node.position = Vector3(cx, cy, Config.CameraZ)
+    end
+    if Camera.camera then
+        Camera.camera.orthoSize = ortho
+    end
+
+    if t >= 1.0 then
+        animating_ = false
+        return false
+    end
+    return true
+end
+
+--- 是否正在动画中
+---@return boolean
+function Camera.IsAnimating()
+    return animating_
+end
+
+--- 停止动画
+function Camera.StopAnimation()
+    animating_ = false
 end
 
 --- 触发屏幕震动

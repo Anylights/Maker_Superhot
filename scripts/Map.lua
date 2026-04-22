@@ -283,6 +283,11 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         outlineGeom:SetMaterial(outlineMat_)
     end
 
+    -- 终点方块：添加旗帜视觉效果（旗杆+三角旗）
+    if blockType == Config.BLOCK_FINISH then
+        Map.CreateFlag(node, bs)
+    end
+
     -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
     local body = node:CreateComponent("RigidBody")
     body.collisionLayer = 1
@@ -291,6 +296,73 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     shape:SetBox(Vector3(bs, bs, bs))
 
     return node
+end
+
+--- 在终点方块上方创建旗帜（旗杆+三角旗）
+---@param parentNode Node 终点方块节点
+---@param bs number 方块边长
+function Map.CreateFlag(parentNode, bs)
+    local halfBS = bs * 0.5
+
+    -- 旗杆（细长圆柱）
+    local poleNode = parentNode:CreateChild("FlagPole")
+    local poleHeight = bs * 2.0
+    local poleRadius = bs * 0.04
+    poleNode.position = Vector3(0, halfBS + poleHeight * 0.5, -0.05)
+    poleNode.scale = Vector3(poleRadius * 2, poleHeight, poleRadius * 2)
+    local poleModel = poleNode:CreateComponent("StaticModel")
+    poleModel:SetModel(cache:GetResource("Model", "Models/Cylinder.mdl"))
+    -- 白色旗杆
+    local poleMat = Material:new()
+    poleMat:SetTechnique(0, pbrTechnique_)
+    poleMat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.95, 0.95)))
+    poleMat:SetShaderParameter("Metallic", Variant(0.6))
+    poleMat:SetShaderParameter("Roughness", Variant(0.3))
+    poleModel:SetMaterial(poleMat)
+
+    -- 三角旗（使用 CustomGeometry）
+    local flagNode = parentNode:CreateChild("Flag")
+    flagNode.position = Vector3(0, halfBS + poleHeight * 0.75, -0.06)
+    local flagGeom = flagNode:CreateComponent("CustomGeometry")
+    flagGeom:SetNumGeometries(1)
+    flagGeom:BeginGeometry(0, TRIANGLE_LIST)
+
+    -- 三角旗尺寸
+    local flagW = bs * 0.7   -- 旗帜宽度（向右伸出）
+    local flagH = bs * 0.5   -- 旗帜高度
+
+    -- 正面三角形（右侧展开）
+    local p1 = Vector3(0, flagH * 0.5, 0)            -- 左上（旗杆顶部附近）
+    local p2 = Vector3(0, -flagH * 0.5, 0)           -- 左下
+    local p3 = Vector3(flagW, 0, 0)                   -- 右侧尖端
+    local nF = Vector3(0, 0, -1)
+
+    flagGeom:DefineVertex(p1)
+    flagGeom:DefineNormal(nF)
+    flagGeom:DefineVertex(p2)
+    flagGeom:DefineNormal(nF)
+    flagGeom:DefineVertex(p3)
+    flagGeom:DefineNormal(nF)
+
+    -- 背面三角形（反转绕序）
+    local nB = Vector3(0, 0, 1)
+    flagGeom:DefineVertex(p1)
+    flagGeom:DefineNormal(nB)
+    flagGeom:DefineVertex(p3)
+    flagGeom:DefineNormal(nB)
+    flagGeom:DefineVertex(p2)
+    flagGeom:DefineNormal(nB)
+
+    flagGeom:Commit()
+
+    -- 旗帜材质：金色/黄色，高发光
+    local flagMat = Material:new()
+    flagMat:SetTechnique(0, pbrTechnique_)
+    flagMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.85, 0.1)))
+    flagMat:SetShaderParameter("Metallic", Variant(0.1))
+    flagMat:SetShaderParameter("Roughness", Variant(0.6))
+    flagMat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.5, 0.4, 0.02)))
+    flagGeom:SetMaterial(flagMat)
 end
 
 -- ============================================================================

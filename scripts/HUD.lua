@@ -32,10 +32,20 @@ local playerModule_ = nil
 local gameManager_ = nil
 local levelEditorRef_ = nil
 
--- 编辑器按钮区域（菜单内点击检测用）
-local editorBtnRect_ = { x = 0, y = 0, w = 0, h = 0 }
--- 我的关卡按钮区域
-local levelListBtnRect_ = { x = 0, y = 0, w = 0, h = 0 }
+-- 菜单按钮点击结果（每帧检测后存储，获取后清除）
+local menuButtonClicked_ = nil  -- "quickStart" | "withFriends" | "editor" | nil
+
+-- 「与朋友玩」子菜单状态
+local menuSubState_ = nil          -- nil | "friends" | "createRoom" | "joinRoom"
+local roomCode_ = ""               -- 创建房间时生成的房间码
+local aiPlayerCount_ = 3           -- 房主选择的 AI 数量（默认3）
+local roomCodeInput_ = ""          -- 加入房间时输入的房间码
+local ROOM_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+-- 标题图片句柄
+local titleImage_ = -1
+local titleImageW_ = 0
+local titleImageH_ = 0
 
 -- 关卡列表状态
 local levelListCache_ = {}       -- 缓存的关卡列表
@@ -47,6 +57,14 @@ local persistClicked_ = false  -- "保存到工程"按钮是否被点击
 -- 动画
 local countdownScale_ = 1.0
 local flashAlpha_ = 0
+
+-- 击杀动效系统
+local killFloatTexts_ = {}           -- 屏幕中央浮动文字（双杀/三杀等大文字）
+local KILL_FLOAT_DURATION = 2.0      -- 浮动文字持续时间（秒）
+local lastRenderTime_ = 0            -- 上一帧时间（用于计算 dt）
+-- 每个玩家的 "+1" 弹跳动画状态
+local killBounceTimers_ = { 0, 0, 0, 0 }  -- 弹跳计时器
+local KILL_BOUNCE_DURATION = 0.8           -- +1 弹跳动画时长
 
 -- ============================================================================
 -- 初始化
@@ -69,6 +87,15 @@ function HUD.Init(playerRef, gmRef, mapRef)
     -- 创建字体（只调用一次）
     fontNormal_ = nvgCreateFont(vg_, "sans", "Fonts/MiSans-Regular.ttf")
     fontBold_ = nvgCreateFont(vg_, "bold", "Fonts/MiSans-Regular.ttf")
+
+    -- 加载标题图片
+    titleImage_ = nvgCreateImage(vg_, "image/title_logo.png", 0)
+    if titleImage_ > 0 then
+        titleImageW_, titleImageH_ = nvgImageSize(vg_, titleImage_)
+        print("[HUD] Title image loaded: " .. titleImageW_ .. "x" .. titleImageH_)
+    else
+        print("[HUD] Warning: title image not found, fallback to text")
+    end
 
     -- 订阅渲染事件（NanoVG 事件需要以 vg_ 为事件源）
     SubscribeToEvent(vg_, "NanoVGRender", "HandleNanoVGRender")
@@ -95,18 +122,12 @@ function HUD.GetLogicalSize()
     return logW_, logH_
 end
 
---- 检测菜单中编辑器按钮是否被点击
----@return boolean
-function HUD.IsEditorButtonClicked()
-    if input:GetMouseButtonPress(MOUSEB_LEFT) then
-        local mx = input.mousePosition.x / dpr_
-        local my = input.mousePosition.y / dpr_
-        if mx >= editorBtnRect_.x and mx <= editorBtnRect_.x + editorBtnRect_.w
-           and my >= editorBtnRect_.y and my <= editorBtnRect_.y + editorBtnRect_.h then
-            return true
-        end
-    end
-    return false
+--- 获取菜单中哪个按钮被点击（获取后自动清除）
+---@return string|nil -- "quickStart" | "withFriends" | "editor" | nil
+function HUD.GetMenuButtonClicked()
+    local v = menuButtonClicked_
+    menuButtonClicked_ = nil
+    return v
 end
 
 --- 刷新关卡列表缓存
@@ -121,20 +142,6 @@ function HUD.GetLevelListAction()
     local a = levelListAction_
     levelListAction_ = nil
     return a
-end
-
---- 检查菜单中"我的关卡"按钮是否被点击
----@return boolean
-function HUD.IsLevelListButtonClicked()
-    if input:GetMouseButtonPress(MOUSEB_LEFT) then
-        local mx = input.mousePosition.x / dpr_
-        local my = input.mousePosition.y / dpr_
-        if mx >= levelListBtnRect_.x and mx <= levelListBtnRect_.x + levelListBtnRect_.w
-           and my >= levelListBtnRect_.y and my <= levelListBtnRect_.y + levelListBtnRect_.h then
-            return true
-        end
-    end
-    return false
 end
 
 --- 检查试玩退出按钮是否被点击（获取后自动清除）
@@ -162,12 +169,39 @@ function HUD.RefreshResolution()
     logH_ = physH_ / dpr_
 end
 
+--- 重置菜单子状态（返回主菜单时调用）
+function HUD.ResetMenuState()
+    menuSubState_ = nil
+    roomCode_ = ""
+    roomCodeInput_ = ""
+    aiPlayerCount_ = 3
+end
+
+--- 生成4位随机房间码
+local function generateRoomCode()
+    local code = ""
+    for _ = 1, 4 do
+        local idx = math.random(1, #ROOM_CODE_CHARS)
+        code = code .. string.sub(ROOM_CODE_CHARS, idx, idx)
+    end
+    return code
+end
+
 -- ============================================================================
 -- 渲染
 -- ============================================================================
 
 function HandleNanoVGRender(eventType, eventData)
     if vg_ == nil then return end
+
+    -- 计算帧间隔（用于浮动文字动画）
+    local now = os.clock()
+    local renderDt = now - lastRenderTime_
+    if renderDt > 0.1 then renderDt = 0.016 end  -- 首帧/异常保护
+    lastRenderTime_ = now
+
+    -- 更新浮动文字计时
+    HUD.UpdateKillFloats(renderDt)
 
     nvgBeginFrame(vg_, logW_, logH_, dpr_)
 
@@ -176,6 +210,13 @@ function HandleNanoVGRender(eventType, eventData)
     -- 主菜单
     if state == "menu" then
         HUD.DrawMenu()
+        nvgEndFrame(vg_)
+        return
+    end
+
+    -- 匹配界面
+    if state == "matching" then
+        HUD.DrawMatching()
         nvgEndFrame(vg_)
         return
     end
@@ -197,6 +238,14 @@ function HandleNanoVGRender(eventType, eventData)
         return
     end
 
+    -- 开场镜头动画（intro 状态单独处理）
+    if state == "intro" then
+        HUD.DrawBackground()
+        HUD.DrawIntro()
+        nvgEndFrame(vg_)
+        return
+    end
+
     -- 温暖渐变背景（所有游戏状态共用）
     HUD.DrawBackground()
 
@@ -213,6 +262,15 @@ function HandleNanoVGRender(eventType, eventData)
     end
 
     HUD.DrawRoundInfo()
+
+    -- 击杀分值面板（比赛进行时显示）
+    if state == "racing" or state == "countdown" then
+        HUD.DrawKillScorePanel()
+    end
+
+    -- 消费击杀事件 + 绘制浮动文字
+    HUD.ConsumeKillEvents()
+    HUD.DrawKillFloatTexts()
 
     -- 试玩模式下绘制退出按钮
     if gameManager_ and gameManager_.testPlayMode then
@@ -830,8 +888,390 @@ function HUD.DrawRoundInfo()
 end
 
 -- ============================================================================
+-- 击杀分值面板 + 浮动文字动效
+-- ============================================================================
+
+--- 消费 GameManager 击杀事件，生成动效
+function HUD.ConsumeKillEvents()
+    if gameManager_ == nil then return end
+
+    for _, evt in ipairs(gameManager_.killEvents) do
+        local killerIdx = evt.killerIndex
+        local multiKill = evt.multiKillCount
+        local streak = evt.killStreak
+
+        -- 触发该玩家的 "+1" 弹跳
+        killBounceTimers_[killerIdx] = KILL_BOUNCE_DURATION
+
+        -- 玩家颜色
+        local pc = Config.PlayerColors[killerIdx]
+        local cr = math.floor(pc.r * 255)
+        local cg = math.floor(pc.g * 255)
+        local cb = math.floor(pc.b * 255)
+
+        -- 双杀及以上 → 屏幕中央大字动效
+        if multiKill >= 2 then
+            local mainText = Config.MultiKillTexts[multiKill] or Config.MultiKillTexts[5]
+            if multiKill > 5 then mainText = Config.MultiKillTexts[5] end
+            table.insert(killFloatTexts_, {
+                text = mainText,
+                r = cr, g = cg, b = cb,
+                timer = KILL_FLOAT_DURATION,
+                duration = KILL_FLOAT_DURATION,
+                kind = "multi",  -- 类型标记
+            })
+        end
+
+        -- 连杀 ≥3 → 额外大字
+        if streak >= 3 then
+            local streakText = nil
+            for s = streak, 3, -1 do
+                if Config.KillStreakTexts[s] then
+                    streakText = Config.KillStreakTexts[s]
+                    break
+                end
+            end
+            if streakText then
+                table.insert(killFloatTexts_, {
+                    text = streakText,
+                    r = 255, g = 210, b = 50,
+                    timer = KILL_FLOAT_DURATION,
+                    duration = KILL_FLOAT_DURATION,
+                    kind = "streak",
+                })
+            end
+        end
+    end
+
+    -- 清空事件队列
+    gameManager_.killEvents = {}
+end
+
+--- 更新动效计时器
+---@param dt number
+function HUD.UpdateKillFloats(dt)
+    -- 更新浮动文字
+    local i = 1
+    while i <= #killFloatTexts_ do
+        local ft = killFloatTexts_[i]
+        ft.timer = ft.timer - dt
+        if ft.timer <= 0 then
+            table.remove(killFloatTexts_, i)
+        else
+            i = i + 1
+        end
+    end
+
+    -- 更新 +1 弹跳计时
+    for p = 1, Config.NumPlayers do
+        if killBounceTimers_[p] > 0 then
+            killBounceTimers_[p] = killBounceTimers_[p] - dt
+            if killBounceTimers_[p] < 0 then killBounceTimers_[p] = 0 end
+        end
+    end
+end
+
+--- 绘制左上角击杀面板
+function HUD.DrawKillScorePanel()
+    if gameManager_ == nil or playerModule_ == nil then return end
+
+    -- 试玩模式下退出按钮占用左上角，面板下移
+    local panelX = 12
+    local panelY = 12
+    if gameManager_.testPlayMode then
+        panelY = 60
+    end
+
+    local lineH = 24
+    local headerH = 22
+    local panelW = 130
+
+    -- 半透明背景
+    local totalH = headerH + Config.NumPlayers * lineH + 4
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, panelX - 4, panelY - 4, panelW + 8, totalH + 8, 6)
+    nvgFillColor(vg_, nvgRGBA(20, 12, 8, 150))
+    nvgFill(vg_)
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 12)
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, 160))
+    nvgText(vg_, panelX, panelY, "KILLS")
+
+    for i = 1, Config.NumPlayers do
+        local y = panelY + headerH + (i - 1) * lineH
+        local pc = Config.PlayerColors[i]
+        local r = math.floor(pc.r * 255)
+        local g = math.floor(pc.g * 255)
+        local b = math.floor(pc.b * 255)
+
+        local kills = gameManager_.killScores[i] or 0
+
+        -- 玩家色块
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, panelX, y + 4, 10, 10, 2)
+        nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
+        nvgFill(vg_)
+
+        -- 击杀数
+        local bounceT = killBounceTimers_[i]
+        local isAnimating = bounceT > 0
+
+        -- 击杀数字：有弹跳时放大
+        local numScale = 1.0
+        if isAnimating then
+            local bp = 1.0 - (bounceT / KILL_BOUNCE_DURATION)  -- 0→1
+            -- 弹性缓动：先急速放大到1.6x，再弹回，带两次反弹
+            local elastic = 1.0 + math.sin(bp * math.pi * 3) * math.exp(-bp * 4) * 0.6
+            numScale = elastic
+        end
+
+        nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+
+        -- 基础文字 "P1 击杀"
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 14)
+        local label = "P" .. i
+        nvgFillColor(vg_, nvgRGBA(r, g, b, 220))
+        nvgText(vg_, panelX + 14, y + 10, label)
+
+        -- 击杀数字（带弹跳缩放）
+        local numX = panelX + 38
+        local numY = y + 10
+        local numSize = math.floor(16 * numScale)
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, numSize)
+        nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+
+        -- 数字上下抖动偏移
+        local shakeY = 0
+        if isAnimating then
+            local bp = 1.0 - (bounceT / KILL_BOUNCE_DURATION)
+            shakeY = math.sin(bp * math.pi * 5) * math.exp(-bp * 3) * 4
+        end
+
+        -- 阴影
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, 160))
+        nvgText(vg_, numX + 1, numY + 1 - shakeY, tostring(kills))
+        -- 数字
+        if isAnimating then
+            -- 动画中用更亮的颜色
+            nvgFillColor(vg_, nvgRGBA(math.min(255, r + 60), math.min(255, g + 60), math.min(255, b + 60), 255))
+        else
+            nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
+        end
+        nvgText(vg_, numX, numY - shakeY, tostring(kills))
+
+        -- "+1" 浮出动画
+        if isAnimating then
+            local bp = 1.0 - (bounceT / KILL_BOUNCE_DURATION)  -- 0→1
+            -- 快速淡入，慢淡出
+            local plusAlpha
+            if bp < 0.1 then
+                plusAlpha = bp / 0.1
+            elseif bp > 0.5 then
+                plusAlpha = (1.0 - bp) / 0.5
+            else
+                plusAlpha = 1.0
+            end
+            plusAlpha = math.max(0, math.min(1, plusAlpha))
+
+            -- 向右上方飘出
+            local plusOffX = bp * 25
+            local plusOffY = -bp * 18
+            -- 初始弹跳放大
+            local plusScale = 1.0
+            if bp < 0.2 then
+                plusScale = 1.0 + (1.0 - bp / 0.2) * 0.8  -- 1.8x→1x
+            end
+
+            local plusSize = math.floor(18 * plusScale)
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, plusSize)
+            nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+
+            -- 发光
+            nvgFillColor(vg_, nvgRGBA(255, 255, 100, math.floor(plusAlpha * 80)))
+            nvgText(vg_, numX + 22 + plusOffX + 1, numY + plusOffY + 1, "+1")
+            -- 主文字
+            nvgFillColor(vg_, nvgRGBA(255, 255, 80, math.floor(plusAlpha * 255)))
+            nvgText(vg_, numX + 22 + plusOffX, numY + plusOffY, "+1")
+        end
+    end
+end
+
+--- 绘制屏幕中央击杀浮动大字（双杀/三杀/连杀等）
+function HUD.DrawKillFloatTexts()
+    local cx = logW_ * 0.5
+    local baseY = logH_ * 0.35
+
+    -- 从上往下堆叠多条消息
+    local slot = 0
+    for _, ft in ipairs(killFloatTexts_) do
+        local progress = 1.0 - (ft.timer / ft.duration)  -- 0→1
+
+        -- 淡入淡出
+        local alpha
+        if progress < 0.08 then
+            alpha = progress / 0.08
+        elseif progress > 0.55 then
+            alpha = (1.0 - progress) / 0.45
+        else
+            alpha = 1.0
+        end
+        alpha = math.max(0, math.min(1, alpha))
+
+        -- 弹性缩放：入场弹大→稳定→出场缩小
+        local scale
+        if progress < 0.15 then
+            -- 入场：从 2.0x 弹性回到 1.0x
+            local t = progress / 0.15
+            scale = 2.0 - t * 1.0 + math.sin(t * math.pi * 2) * (1.0 - t) * 0.3
+        elseif progress > 0.7 then
+            -- 出场缩小
+            local t = (progress - 0.7) / 0.3
+            scale = 1.0 - t * 0.3
+        else
+            scale = 1.0
+        end
+
+        -- 抖动（入场时强烈，逐渐平息）
+        local shakeX, shakeY = 0, 0
+        if progress < 0.3 then
+            local intensity = (1.0 - progress / 0.3) * 3
+            shakeX = math.sin(progress * 80) * intensity
+            shakeY = math.cos(progress * 60) * intensity * 0.7
+        end
+
+        local y = baseY + slot * 50
+
+        -- 字号
+        local baseFontSize = 36
+        if ft.kind == "streak" then baseFontSize = 30 end
+        local fontSize = math.floor(baseFontSize * scale)
+
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, fontSize)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+        local drawX = cx + shakeX
+        local drawY = y + shakeY
+
+        -- 多层发光
+        local glowA = math.floor(alpha * 60)
+        nvgFillColor(vg_, nvgRGBA(ft.r, ft.g, ft.b, glowA))
+        nvgText(vg_, drawX, drawY + 3, ft.text)
+        nvgText(vg_, drawX, drawY - 3, ft.text)
+        nvgText(vg_, drawX + 3, drawY, ft.text)
+        nvgText(vg_, drawX - 3, drawY, ft.text)
+
+        -- 黑色描边
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(alpha * 200)))
+        nvgText(vg_, drawX + 2, drawY + 2, ft.text)
+
+        -- 主文字
+        nvgFillColor(vg_, nvgRGBA(ft.r, ft.g, ft.b, math.floor(alpha * 255)))
+        nvgText(vg_, drawX, drawY, ft.text)
+
+        -- 白色高光（上半部分）
+        local hlA = math.floor(alpha * 60)
+        nvgFillColor(vg_, nvgRGBA(255, 255, 255, hlA))
+        nvgText(vg_, drawX, drawY - 1, ft.text)
+
+        slot = slot + 1
+    end
+end
+
+-- ============================================================================
 -- 状态覆盖层
 -- ============================================================================
+
+--- 开场镜头动画覆盖层
+function HUD.DrawIntro()
+    if gameManager_ == nil then return end
+
+    local phase = gameManager_.GetIntroPhase()
+    local textAlpha = gameManager_.GetIntroTextAlpha()
+
+    -- 半透明暗角（轻微，不遮挡地图观看）
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillColor(vg_, nvgRGBA(20, 12, 8, 60))
+    nvgFill(vg_)
+
+    -- 阶段 1：聚焦终点 → 显示 "终点" 提示
+    if phase == 1 then
+        -- 底部居中提示标签
+        local labelAlpha = 220
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 28)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+        -- 阴影
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+        nvgText(vg_, logW_ * 0.5 + 2, logH_ * 0.82 + 2, "终点")
+
+        -- 金色文字
+        nvgFillColor(vg_, nvgRGBA(255, 200, 50, labelAlpha))
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.82, "终点")
+
+        -- 小箭头指示（向上三角）
+        local arrowX = logW_ * 0.5
+        local arrowY = logH_ * 0.77
+        local arrowSize = 8
+        nvgBeginPath(vg_)
+        nvgMoveTo(vg_, arrowX, arrowY - arrowSize)
+        nvgLineTo(vg_, arrowX - arrowSize, arrowY + arrowSize * 0.5)
+        nvgLineTo(vg_, arrowX + arrowSize, arrowY + arrowSize * 0.5)
+        nvgClosePath(vg_)
+        nvgFillColor(vg_, nvgRGBA(255, 200, 50, 180))
+        nvgFill(vg_)
+    end
+
+    -- 阶段 2：平移到起点 → 显示 "起点" 提示
+    if phase == 2 then
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 28)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+        nvgText(vg_, logW_ * 0.5 + 2, logH_ * 0.82 + 2, "起点")
+
+        nvgFillColor(vg_, nvgRGBA(100, 255, 120, 220))
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.82, "起点")
+    end
+
+    -- 阶段 3/4：放大 + 显示 "更快到达终点!" 文字（阶段4拉远时淡出）
+    if phase >= 3 and textAlpha > 0.01 then
+        local alpha = math.floor(textAlpha * 255)
+
+        -- 大号主题文字（居中）
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 52)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+        -- 发光效果（模糊阴影）
+        local glowAlpha = math.floor(textAlpha * 80)
+        nvgFillColor(vg_, nvgRGBA(255, 100, 30, glowAlpha))
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.45 + 3, "更快到达终点!")
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.45 - 3, "更快到达终点!")
+
+        -- 阴影
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(textAlpha * 180)))
+        nvgText(vg_, logW_ * 0.5 + 3, logH_ * 0.45 + 3, "更快到达终点!")
+
+        -- 主文字（火红色）
+        nvgFillColor(vg_, nvgRGBA(255, 90, 40, alpha))
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.45, "更快到达终点!")
+
+        -- 副标题
+        nvgFontSize(vg_, 20)
+        nvgFillColor(vg_, nvgRGBA(255, 255, 255, math.floor(textAlpha * 180)))
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.55, "ROUND " .. (gameManager_.round or 1))
+    end
+end
 
 --- 倒计时覆盖层
 function HUD.DrawCountdown()
@@ -1036,11 +1476,96 @@ function HUD.DrawMatchEnd()
     nvgText(vg_, logW_ * 0.5, logH_ - 30, "New match starting soon...")
 end
 
+--- 绘制橡胶材质按钮（5 层 NanoVG 效果）
+---@param x number 左上角 X
+---@param y number 左上角 Y
+---@param w number 宽度
+---@param h number 高度
+---@param label string 按钮文字
+---@param baseR number 基色 R (0-255)
+---@param baseG number 基色 G (0-255)
+---@param baseB number 基色 B (0-255)
+---@param hovered boolean 鼠标悬停
+---@return boolean clicked 是否被点击
+function HUD.DrawRubberButton(x, y, w, h, label, baseR, baseG, baseB, hovered)
+    local cornerR = h * 0.35
+
+    -- 1) 阴影
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, x + 2, y + 4, w, h, cornerR)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, hovered and 100 or 70))
+    nvgFill(vg_)
+
+    -- 2) 基色填充（悬停时稍亮）
+    local br = hovered and math.min(255, baseR + 30) or baseR
+    local bg = hovered and math.min(255, baseG + 30) or baseG
+    local bb = hovered and math.min(255, baseB + 30) or baseB
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, x, y, w, h, cornerR)
+    nvgFillColor(vg_, nvgRGBA(br, bg, bb, 255))
+    nvgFill(vg_)
+
+    -- 3) 底部暗色渐变（橡胶深度感）
+    local darkPaint = nvgLinearGradient(vg_, x, y + h * 0.6, x, y + h,
+        nvgRGBA(0, 0, 0, 0), nvgRGBA(0, 0, 0, 80))
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, x, y, w, h, cornerR)
+    nvgFillPaint(vg_, darkPaint)
+    nvgFill(vg_)
+
+    -- 4) 顶部高光（橡胶光泽）
+    local glossPaint = nvgLinearGradient(vg_, x, y, x, y + h * 0.45,
+        nvgRGBA(255, 255, 255, hovered and 110 or 80), nvgRGBA(255, 255, 255, 0))
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, x, y, w, h, cornerR)
+    nvgFillPaint(vg_, glossPaint)
+    nvgFill(vg_)
+
+    -- 5) 边框描边
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, x, y, w, h, cornerR)
+    local darkR = math.floor(baseR * 0.5)
+    local darkG = math.floor(baseG * 0.5)
+    local darkB = math.floor(baseB * 0.5)
+    nvgStrokeColor(vg_, nvgRGBA(darkR, darkG, darkB, hovered and 200 or 140))
+    nvgStrokeWidth(vg_, 2)
+    nvgStroke(vg_)
+
+    -- 文字阴影
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, math.floor(h * 0.42))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
+    nvgText(vg_, x + w * 0.5 + 1, y + h * 0.52 + 1, label)
+
+    -- 文字
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, 255))
+    nvgText(vg_, x + w * 0.5, y + h * 0.52, label)
+
+    -- 点击检测
+    if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
+        return true
+    end
+    return false
+end
+
 --- 主菜单界面
 function HUD.DrawMenu()
-    -- 全屏背景渐变（温暖深棕到暖橙）
+    -- 子菜单拦截
+    if menuSubState_ == "friends" then
+        HUD.DrawFriendsMenu()
+        return
+    elseif menuSubState_ == "createRoom" then
+        HUD.DrawCreateRoomMenu()
+        return
+    elseif menuSubState_ == "joinRoom" then
+        HUD.DrawJoinRoomMenu()
+        return
+    end
+
+    -- 全屏背景渐变（暖色日落）
     local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(45, 25, 15, 255), nvgRGBA(60, 30, 20, 255))
+        nvgRGBA(250, 217, 179, 255), nvgRGBA(224, 166, 153, 255))
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
     nvgFillPaint(vg_, bgPaint)
@@ -1055,83 +1580,92 @@ function HUD.DrawMenu()
         local radius = 2 + math.sin(t + i) * 1.5
         nvgBeginPath(vg_)
         nvgCircle(vg_, px, py, radius)
-        nvgFillColor(vg_, nvgRGBA(255, 200, 100, math.floor(alpha)))
+        nvgFillColor(vg_, nvgRGBA(255, 255, 220, math.floor(alpha)))
         nvgFill(vg_)
     end
 
     local cx = logW_ * 0.5
-    local cy = logH_ * 0.5
+    local cy = logH_ * 0.38  -- 标题偏上
 
-    -- ======== 标题 ========
-    -- 标题光晕
-    local glowAlpha = math.abs(math.sin(t * 1.5)) * 30 + 15
-    nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 72)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 80, 40, math.floor(glowAlpha)))
-    nvgText(vg_, cx, cy - 90, Config.Title)
+    -- ======== 标题图片 ========
+    if titleImage_ > 0 and titleImageW_ > 0 then
+        -- 按宽度适配，最大不超过屏幕宽度 60%
+        local maxW = logW_ * 0.55
+        local imgScale = maxW / titleImageW_
+        local drawW = titleImageW_ * imgScale
+        local drawH = titleImageH_ * imgScale
+        local imgX = cx - drawW * 0.5
+        local imgY = cy - drawH * 0.5
 
-    -- 标题阴影
-    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
-    nvgText(vg_, cx + 3, cy - 87, Config.Title)
+        -- 轻微浮动动画
+        local floatY = math.sin(t * 1.2) * 4
+        imgY = imgY + floatY
 
-    -- 标题文字（火红色渐变感）
-    nvgFillColor(vg_, nvgRGBA(255, 90, 40, 255))
-    nvgText(vg_, cx, cy - 90, Config.Title)
+        -- 发光底衬
+        local glowA = math.floor(math.abs(math.sin(t * 1.5)) * 30 + 20)
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, imgX - 10, imgY - 6, drawW + 20, drawH + 12, 16)
+        nvgFillColor(vg_, nvgRGBA(255, 80, 40, glowA))
+        nvgFill(vg_)
+
+        -- 绘制图片
+        local imgPaint = nvgImagePattern(vg_, imgX, imgY, drawW, drawH, 0, titleImage_, 1.0)
+        nvgBeginPath(vg_)
+        nvgRect(vg_, imgX, imgY, drawW, drawH)
+        nvgFillPaint(vg_, imgPaint)
+        nvgFill(vg_)
+    else
+        -- 降级：文字标题
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 72)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
+        nvgText(vg_, cx + 3, cy + 3, Config.Title)
+        nvgFillColor(vg_, nvgRGBA(255, 90, 40, 255))
+        nvgText(vg_, cx, cy, Config.Title)
+    end
 
     -- ======== 副标题 ========
     nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 18)
-    nvgFillColor(vg_, nvgRGBA(220, 200, 180, 200))
-    nvgText(vg_, cx, cy - 45, "2.5D 多人平台竞速派对")
-
-    -- ======== 开始提示（闪烁） ========
-    local blink = math.abs(math.sin(t * 2.5))
-    nvgFontSize(vg_, 26)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, math.floor(blink * 200 + 55)))
-    nvgText(vg_, cx, cy + 20, "按 空格 / Enter 开始游戏")
-
-    -- ======== 操作说明面板 ========
-    local panelW = 320
-    local panelH = 160
-    local panelX = cx - panelW * 0.5
-    local panelY = cy + 55
-
-    -- 面板背景（暖棕半透明）
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, panelX, panelY, panelW, panelH, 10)
-    nvgFillColor(vg_, nvgRGBA(30, 18, 10, 140))
-    nvgFill(vg_)
-
-    -- 面板边框（暖色）
-    nvgStrokeColor(vg_, nvgRGBA(220, 180, 130, 50))
-    nvgStrokeWidth(vg_, 1)
-    nvgStroke(vg_)
-
-    -- 操作说明标题
-    nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, 16)
-    nvgFillColor(vg_, nvgRGBA(255, 200, 80, 240))
-    nvgText(vg_, cx, panelY + 22, "操作说明")
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(220, 200, 180, 180))
+    nvgText(vg_, cx, cy + 55, "2.5D 多人平台竞速派对")
 
-    -- 操作说明内容
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 14)
-    nvgFillColor(vg_, nvgRGBA(220, 200, 180, 220))
-    local instructions = {
-        "A / D  或  ← / →    移动",
-        "空格                  跳跃",
-        "Shift                 冲刺（无视重力！）",
-        "鼠标左键（按住蓄力）  爆炸（消耗能量）",
-        "P                     调参面板",
+    -- ======== 三个橡胶按钮（横向排列） ========
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    local btnW = 150
+    local btnH = 52
+    local btnGap = 18
+    local totalW = btnW * 3 + btnGap * 2
+    local btnStartX = cx - totalW * 0.5
+    local btnY = cy + 85
+
+    -- 按钮颜色（红、黄、蓝 — 与玩家色一致）
+    local buttons = {
+        { label = "快速开始",   r = 242, g = 56, b = 46,  id = "quickStart" },   -- 番茄红
+        { label = "与朋友玩",   r = 250, g = 199, b = 31, id = "withFriends" },  -- 鲜黄
+        { label = "关卡编辑器", r = 51,  g = 122, b = 242, id = "editor" },      -- 宝蓝
     }
-    for i, line in ipairs(instructions) do
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgText(vg_, cx, panelY + 44 + (i - 1) * 22, line)
+
+    for idx, btn in ipairs(buttons) do
+        local bx = btnStartX + (idx - 1) * (btnW + btnGap)
+        local hovered = mx >= bx and mx <= bx + btnW and my >= btnY and my <= btnY + btnH
+        local clicked = HUD.DrawRubberButton(bx, btnY, btnW, btnH, btn.label, btn.r, btn.g, btn.b, hovered)
+        if clicked then
+            if btn.id == "withFriends" then
+                -- 进入子菜单而非直接匹配
+                menuSubState_ = "friends"
+            else
+                menuButtonClicked_ = btn.id
+            end
+        end
     end
 
     -- ======== 底部玩家颜色指示 ========
-    local dotY = panelY + panelH + 25
+    local dotY = btnY + btnH + 30
     local dotSpacing = 50
     local dotStartX = cx - dotSpacing * 1.5
     nvgFontSize(vg_, 12)
@@ -1149,72 +1683,225 @@ function HUD.DrawMenu()
         nvgFill(vg_)
 
         -- 玩家标签
-        nvgFillColor(vg_, nvgRGBA(210, 190, 170, 200))
+        nvgFillColor(vg_, nvgRGBA(100, 70, 50, 200))
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-        local label = i == 1 and "P1 你" or ("P" .. i .. " AI")
+        local label = i == 1 and "P1 你" or ("P" .. i)
         nvgText(vg_, dx, dotY + 12, label)
     end
 
-    -- ======== 底部按钮区域 ========
-    local mx = input.mousePosition.x / dpr_
-    local my = input.mousePosition.y / dpr_
-
-    local ebtnW = 180
-    local ebtnH = 36
-    local ebtnGap = 10
-    local ebtnX = cx - ebtnW * 0.5
-    local ebtnY = dotY + 38
-
-    -- ---- "我的关卡 (L)" 按钮 ----
-    levelListBtnRect_.x = ebtnX
-    levelListBtnRect_.y = ebtnY
-    levelListBtnRect_.w = ebtnW
-    levelListBtnRect_.h = ebtnH
-
-    local lhovered = mx >= ebtnX and mx <= ebtnX + ebtnW and my >= ebtnY and my <= ebtnY + ebtnH
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, ebtnX, ebtnY, ebtnW, ebtnH, 8)
-    nvgFillColor(vg_, lhovered and nvgRGBA(60, 80, 120, 200) or nvgRGBA(35, 50, 75, 160))
-    nvgFill(vg_)
-    nvgStrokeColor(vg_, nvgRGBA(120, 170, 220, lhovered and 150 or 80))
-    nvgStrokeWidth(vg_, 1.5)
-    nvgStroke(vg_)
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 16)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(200, 220, 255, lhovered and 255 or 200))
-    nvgText(vg_, cx, ebtnY + ebtnH * 0.5, "我的关卡 (L)")
-
-    -- ---- "关卡编辑器 (E)" 按钮 ----
-    local edBtnY = ebtnY + ebtnH + ebtnGap
-
-    editorBtnRect_.x = ebtnX
-    editorBtnRect_.y = edBtnY
-    editorBtnRect_.w = ebtnW
-    editorBtnRect_.h = ebtnH
-
-    local hovered = mx >= ebtnX and mx <= ebtnX + ebtnW and my >= edBtnY and my <= edBtnY + ebtnH
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, ebtnX, edBtnY, ebtnW, ebtnH, 8)
-    nvgFillColor(vg_, hovered and nvgRGBA(80, 60, 40, 200) or nvgRGBA(50, 35, 22, 160))
-    nvgFill(vg_)
-    nvgStrokeColor(vg_, nvgRGBA(220, 180, 100, hovered and 150 or 80))
-    nvgStrokeWidth(vg_, 1.5)
-    nvgStroke(vg_)
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 16)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 220, 160, hovered and 255 or 200))
-    nvgText(vg_, cx, edBtnY + ebtnH * 0.5, "关卡编辑器 (E)")
-end
-
---- 绘制控制提示（底部）
-function HUD.DrawControls()
+    -- ======== 操作说明（紧凑版） ========
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 12)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(vg_, nvgRGBA(160, 140, 120, 140))
-    nvgText(vg_, logW_ * 0.5, logH_ - 8, "A/D: Move  SPACE: Jump  SHIFT: Dash  E: Explode  TAB: Debug")
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
+    nvgText(vg_, cx, logH_ - 10, "A/D:移动  空格:跳跃  Shift:冲刺  鼠标左键:蓄力爆炸")
+end
+
+--- 匹配界面（正在寻找对手 + 旋转放大镜 + 玩家槽位）
+function HUD.DrawMatching()
+    if gameManager_ == nil then return end
+
+    -- 全屏背景
+    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
+        nvgRGBA(35, 20, 12, 255), nvgRGBA(50, 28, 18, 255))
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillPaint(vg_, bgPaint)
+    nvgFill(vg_)
+
+    -- 装饰粒子
+    local t = os.clock()
+    for i = 1, 12 do
+        local px = (math.sin(t * 0.4 + i * 2.1) * 0.5 + 0.5) * logW_
+        local py = (math.cos(t * 0.3 + i * 1.8) * 0.5 + 0.5) * logH_
+        local alpha = math.abs(math.sin(t * 0.6 + i)) * 40 + 15
+        nvgBeginPath(vg_)
+        nvgCircle(vg_, px, py, 2 + math.sin(t + i) * 1)
+        nvgFillColor(vg_, nvgRGBA(255, 180, 80, math.floor(alpha)))
+        nvgFill(vg_)
+    end
+
+    local cx = logW_ * 0.5
+    local cy = logH_ * 0.38
+
+    -- ======== 旋转放大镜图标 ========
+    local angle = t * 2.5  -- 旋转速度
+    local magR = 22         -- 放大镜圆半径
+    local handleLen = 18    -- 手柄长度
+    local lineW = 4
+
+    nvgSave(vg_)
+    nvgTranslate(vg_, cx, cy)
+    nvgRotate(vg_, angle)
+
+    -- 镜片圆
+    nvgBeginPath(vg_)
+    nvgCircle(vg_, 0, 0, magR)
+    nvgStrokeColor(vg_, nvgRGBA(255, 220, 140, 220))
+    nvgStrokeWidth(vg_, lineW)
+    nvgStroke(vg_)
+
+    -- 镜片内半透明填充
+    nvgBeginPath(vg_)
+    nvgCircle(vg_, 0, 0, magR - lineW * 0.5)
+    nvgFillColor(vg_, nvgRGBA(255, 230, 180, 30))
+    nvgFill(vg_)
+
+    -- 镜片高光弧
+    nvgBeginPath(vg_)
+    nvgArc(vg_, 0, 0, magR * 0.65, -math.pi * 0.8, -math.pi * 0.2, NVG_CW)
+    nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 80))
+    nvgStrokeWidth(vg_, 2)
+    nvgStroke(vg_)
+
+    -- 手柄
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, magR * 0.7, magR * 0.7)
+    nvgLineTo(vg_, magR * 0.7 + handleLen * 0.7, magR * 0.7 + handleLen * 0.7)
+    nvgStrokeColor(vg_, nvgRGBA(200, 170, 110, 220))
+    nvgStrokeWidth(vg_, lineW + 1)
+    nvgLineCap(vg_, NVG_ROUND)
+    nvgStroke(vg_)
+
+    nvgRestore(vg_)
+
+    -- ======== 匹配状态文字（根据 matchMode 区分显示） ========
+    local dots = string.rep(".", (math.floor(t * 2) % 4))
+    local searchText
+    local matchMode = gameManager_.matchMode or "quickStart"
+    if matchMode == "createRoom" then
+        searchText = "等待朋友加入" .. dots
+    elseif matchMode == "joinRoom" then
+        searchText = "正在加入房间" .. dots
+    else
+        searchText = "正在寻找对手" .. dots
+    end
+
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+    -- 阴影
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 160))
+    nvgText(vg_, cx + 2, cy + 60 + 2, searchText)
+    -- 主文字
+    nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+    nvgText(vg_, cx, cy + 60, searchText)
+
+    -- ======== 创建房间模式：显示房间码 ========
+    if matchMode == "createRoom" and roomCode_ ~= "" then
+        -- 房间码标签
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 14)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(180, 150, 120, 200))
+        nvgText(vg_, cx, cy + 82, "房间码")
+
+        -- 大字房间码（4个字母框）
+        local charW = 36
+        local charH = 42
+        local charGap = 8
+        local totalCharW = charW * 4 + charGap * 3
+        local charStartX = cx - totalCharW * 0.5
+        local charY = cy + 94
+
+        for i = 1, 4 do
+            local ccx = charStartX + (i - 1) * (charW + charGap)
+            nvgBeginPath(vg_)
+            nvgRoundedRect(vg_, ccx, charY, charW, charH, 6)
+            nvgFillColor(vg_, nvgRGBA(50, 35, 25, 200))
+            nvgFill(vg_)
+            nvgStrokeColor(vg_, nvgRGBA(255, 200, 120, 150))
+            nvgStrokeWidth(vg_, 2)
+            nvgStroke(vg_)
+
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, 24)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+            nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+            local ch = string.sub(roomCode_, i, i)
+            nvgText(vg_, ccx + charW * 0.5, charY + charH * 0.5, ch)
+        end
+    end
+
+    -- ======== 玩家槽位（4 格，逐渐填充） ========
+    local slots = gameManager_.GetMatchingSlots()
+    local totalSlots = Config.NumPlayers
+    local slotSize = 40
+    local slotGap = 16
+    local slotTotalW = slotSize * totalSlots + slotGap * (totalSlots - 1)
+    local slotStartX = cx - slotTotalW * 0.5
+    -- 创建房间模式下，槽位下移以腾出房间码空间
+    local slotY = (matchMode == "createRoom" and roomCode_ ~= "") and (cy + 155) or (cy + 110)
+
+    for i = 1, totalSlots do
+        local sx = slotStartX + (i - 1) * (slotSize + slotGap)
+        local filled = i <= slots
+
+        -- 槽位背景
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 8)
+        if filled then
+            local pc = Config.PlayerColors[i]
+            local pr = math.floor(pc.r * 255)
+            local pg = math.floor(pc.g * 255)
+            local pb = math.floor(pc.b * 255)
+            nvgFillColor(vg_, nvgRGBA(pr, pg, pb, 220))
+        else
+            nvgFillColor(vg_, nvgRGBA(180, 150, 130, 120))
+        end
+        nvgFill(vg_)
+
+        -- 边框
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 8)
+        if filled then
+            nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 120))
+        else
+            -- 未填充的槽位边框闪烁
+            local pulse = math.abs(math.sin(t * 3 + i * 0.8)) * 60 + 40
+            nvgStrokeColor(vg_, nvgRGBA(200, 180, 140, math.floor(pulse)))
+        end
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+
+        -- 标签
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 14)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        if filled then
+            nvgFillColor(vg_, nvgRGBA(255, 255, 255, 240))
+            local label = i == 1 and "你" or "玩家"
+            nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, label)
+        else
+            nvgFillColor(vg_, nvgRGBA(120, 100, 80, 150))
+            nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, "?")
+        end
+    end
+
+    -- 槽位进度文字
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 14)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(100, 80, 60, 200))
+    nvgText(vg_, cx, slotY + slotSize + 10, slots .. " / " .. totalSlots .. " 玩家")
+
+    -- ======== 匹配完成提示 ========
+    if gameManager_.IsMatchingComplete() then
+        local flashA = math.floor(math.abs(math.sin(t * 5)) * 100 + 155)
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 24)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(80, 255, 120, flashA))
+        nvgText(vg_, cx, slotY + slotSize + 40, "匹配成功！即将开始...")
+    end
+
+    -- ======== ESC 提示 ========
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 12)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
+    nvgText(vg_, cx, logH_ - 12, "按 ESC 取消匹配")
 end
 
 -- ============================================================================
@@ -1223,9 +1910,9 @@ end
 
 --- 绘制关卡列表界面
 function HUD.DrawLevelList()
-    -- 全屏背景
+    -- 全屏背景（与主菜单统一）
     local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(45, 25, 15, 255), nvgRGBA(60, 30, 20, 255))
+        nvgRGBA(250, 217, 179, 255), nvgRGBA(224, 166, 153, 255))
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
     nvgFillPaint(vg_, bgPaint)
@@ -1237,13 +1924,13 @@ function HUD.DrawLevelList()
     nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, 36)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 200, 80, 255))
-    nvgText(vg_, cx, 40, "我的关卡")
+    nvgFillColor(vg_, nvgRGBA(180, 100, 30, 255))
+    nvgText(vg_, cx, 40, "关卡编辑器")
 
     -- 关卡数量提示
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 14)
-    nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
     nvgText(vg_, cx, 65, "共 " .. #levelListCache_ .. " 个关卡")
 
     -- 列表区域
@@ -1257,7 +1944,7 @@ function HUD.DrawLevelList()
     -- 列表背景
     nvgBeginPath(vg_)
     nvgRoundedRect(vg_, listX - 10, listY - 5, listW + 20, listMaxH + 10, 8)
-    nvgFillColor(vg_, nvgRGBA(25, 15, 10, 120))
+    nvgFillColor(vg_, nvgRGBA(60, 40, 30, 140))
     nvgFill(vg_)
 
     -- 滚轮控制滚动
@@ -1370,7 +2057,7 @@ function HUD.DrawLevelList()
         nvgFontFace(vg_, "sans")
         nvgFontSize(vg_, 18)
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgFillColor(vg_, nvgRGBA(180, 160, 140, 150))
+        nvgFillColor(vg_, nvgRGBA(200, 190, 180, 200))
         nvgText(vg_, cx, listY + listMaxH * 0.4, "还没有保存的关卡")
         nvgFontSize(vg_, 14)
         nvgText(vg_, cx, listY + listMaxH * 0.4 + 28, "点击下方\"新建关卡\"开始创作！")
@@ -1495,6 +2182,365 @@ function HUD.DrawTestPlayExitButton()
     -- 点击检测
     if input:GetMouseButtonPress(MOUSEB_LEFT) and hovered then
         testPlayExitClicked_ = true
+    end
+end
+
+-- ============================================================================
+-- 「与朋友玩」子菜单系统
+-- ============================================================================
+
+--- 绘制暖色子菜单背景 + 标题
+---@param title string
+local function drawSubMenuBackground(title)
+    -- 全屏渐变背景
+    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
+        nvgRGBA(250, 217, 179, 255), nvgRGBA(224, 166, 153, 255))
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillPaint(vg_, bgPaint)
+    nvgFill(vg_)
+
+    -- 装饰粒子
+    local t = os.clock()
+    for i = 1, 15 do
+        local px = (math.sin(t * 0.3 + i * 1.7) * 0.5 + 0.5) * logW_
+        local py = (math.cos(t * 0.2 + i * 2.3) * 0.5 + 0.5) * logH_
+        local alpha = math.abs(math.sin(t * 0.5 + i)) * 40 + 15
+        nvgBeginPath(vg_)
+        nvgCircle(vg_, px, py, 2 + math.sin(t + i))
+        nvgFillColor(vg_, nvgRGBA(255, 255, 220, math.floor(alpha)))
+        nvgFill(vg_)
+    end
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 36)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 100))
+    nvgText(vg_, logW_ * 0.5 + 2, 52, title)
+    nvgFillColor(vg_, nvgRGBA(180, 80, 30, 255))
+    nvgText(vg_, logW_ * 0.5, 50, title)
+end
+
+--- 「与朋友玩」主子菜单：创建房间 / 加入房间 / 返回
+function HUD.DrawFriendsMenu()
+    drawSubMenuBackground("与朋友玩")
+
+    local cx = logW_ * 0.5
+    local btnW = 200
+    local btnH = 56
+    local btnGap = 16
+    local startY = logH_ * 0.35
+
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    -- 创建房间按钮
+    local y1 = startY
+    local h1 = mx >= cx - btnW * 0.5 and mx <= cx + btnW * 0.5 and my >= y1 and my <= y1 + btnH
+    if HUD.DrawRubberButton(cx - btnW * 0.5, y1, btnW, btnH, "创建房间", 80, 170, 60, h1) then
+        roomCode_ = generateRoomCode()
+        aiPlayerCount_ = 3
+        menuSubState_ = "createRoom"
+    end
+
+    -- 加入房间按钮
+    local y2 = startY + btnH + btnGap
+    local h2 = mx >= cx - btnW * 0.5 and mx <= cx + btnW * 0.5 and my >= y2 and my <= y2 + btnH
+    if HUD.DrawRubberButton(cx - btnW * 0.5, y2, btnW, btnH, "加入房间", 51, 122, 242, h2) then
+        roomCodeInput_ = ""
+        menuSubState_ = "joinRoom"
+    end
+
+    -- 返回按钮
+    local y3 = startY + (btnH + btnGap) * 2
+    local h3 = mx >= cx - btnW * 0.5 and mx <= cx + btnW * 0.5 and my >= y3 and my <= y3 + btnH
+    if HUD.DrawRubberButton(cx - btnW * 0.5, y3, btnW, btnH, "返回", 120, 90, 70, h3) then
+        menuSubState_ = nil
+    end
+
+    -- ESC 返回
+    if input:GetKeyPress(KEY_ESCAPE) then
+        menuSubState_ = nil
+    end
+end
+
+--- 创建房间子菜单
+function HUD.DrawCreateRoomMenu()
+    drawSubMenuBackground("创建房间")
+
+    local cx = logW_ * 0.5
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    -- 房间码展示
+    local codeY = logH_ * 0.3
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
+    nvgText(vg_, cx, codeY - 20, "房间码")
+
+    -- 大字房间码（4个字母框）
+    local charW = 48
+    local charH = 56
+    local charGap = 10
+    local totalCharW = charW * 4 + charGap * 3
+    local charStartX = cx - totalCharW * 0.5
+
+    for i = 1, 4 do
+        local ccx = charStartX + (i - 1) * (charW + charGap)
+        -- 字母框背景
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, ccx, codeY, charW, charH, 8)
+        nvgFillColor(vg_, nvgRGBA(50, 35, 25, 200))
+        nvgFill(vg_)
+        nvgStrokeColor(vg_, nvgRGBA(255, 200, 120, 150))
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+
+        -- 字母
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 32)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+        local ch = string.sub(roomCode_, i, i)
+        nvgText(vg_, ccx + charW * 0.5, codeY + charH * 0.5, ch)
+    end
+
+    -- AI 数量选择
+    local aiY = codeY + charH + 40
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
+    nvgText(vg_, cx, aiY, "AI 玩家数量")
+
+    local selectorY = aiY + 24
+    local selectorBtnW = 40
+    local selectorBtnH = 40
+    local numW = 50
+
+    -- 减少按钮
+    local minusX = cx - numW * 0.5 - selectorBtnW - 10
+    local minusHover = mx >= minusX and mx <= minusX + selectorBtnW and my >= selectorY and my <= selectorY + selectorBtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, minusX, selectorY, selectorBtnW, selectorBtnH, 8)
+    nvgFillColor(vg_, minusHover and nvgRGBA(180, 60, 40, 220) or nvgRGBA(120, 50, 35, 180))
+    nvgFill(vg_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, minusHover and 255 or 200))
+    nvgText(vg_, minusX + selectorBtnW * 0.5, selectorY + selectorBtnH * 0.5, "-")
+    if input:GetMouseButtonPress(MOUSEB_LEFT) and minusHover and aiPlayerCount_ > 0 then
+        aiPlayerCount_ = aiPlayerCount_ - 1
+    end
+
+    -- 数量显示
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgFillColor(vg_, nvgRGBA(60, 40, 25, 255))
+    nvgText(vg_, cx, selectorY + selectorBtnH * 0.5, tostring(aiPlayerCount_))
+
+    -- 增加按钮
+    local plusX = cx + numW * 0.5 + 10
+    local plusHover = mx >= plusX and mx <= plusX + selectorBtnW and my >= selectorY and my <= selectorY + selectorBtnH
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, plusX, selectorY, selectorBtnW, selectorBtnH, 8)
+    nvgFillColor(vg_, plusHover and nvgRGBA(60, 160, 60, 220) or nvgRGBA(40, 110, 40, 180))
+    nvgFill(vg_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 28)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, plusHover and 255 or 200))
+    nvgText(vg_, plusX + selectorBtnW * 0.5, selectorY + selectorBtnH * 0.5, "+")
+    if input:GetMouseButtonPress(MOUSEB_LEFT) and plusHover and aiPlayerCount_ < 3 then
+        aiPlayerCount_ = aiPlayerCount_ + 1
+    end
+
+    -- 玩家槽位可视化
+    local slotY = selectorY + selectorBtnH + 20
+    local slotSize = 36
+    local slotGap = 12
+    local totalSlotW = slotSize * 4 + slotGap * 3
+    local slotStartX = cx - totalSlotW * 0.5
+
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 11)
+
+    local humanCount = 4 - aiPlayerCount_
+    for i = 1, 4 do
+        local sx = slotStartX + (i - 1) * (slotSize + slotGap)
+        local isHuman = (i <= humanCount)
+        local pc = Config.PlayerColors[i]
+        local pr = math.floor(pc.r * 255)
+        local pg = math.floor(pc.g * 255)
+        local pb = math.floor(pc.b * 255)
+
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, sx, slotY, slotSize, slotSize, 6)
+        nvgFillColor(vg_, isHuman and nvgRGBA(pr, pg, pb, 200) or nvgRGBA(pr, pg, pb, 80))
+        nvgFill(vg_)
+
+        nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, isHuman and 120 or 40))
+        nvgStrokeWidth(vg_, 1.5)
+        nvgStroke(vg_)
+
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 12)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(255, 255, 255, isHuman and 240 or 120))
+        nvgText(vg_, sx + slotSize * 0.5, slotY + slotSize * 0.5, isHuman and "玩家" or "AI")
+    end
+
+    -- 开始匹配按钮
+    local startBtnW = 180
+    local startBtnH = 50
+    local startBtnY = slotY + slotSize + 30
+    local startHover = mx >= cx - startBtnW * 0.5 and mx <= cx + startBtnW * 0.5 and my >= startBtnY and my <= startBtnY + startBtnH
+    if HUD.DrawRubberButton(cx - startBtnW * 0.5, startBtnY, startBtnW, startBtnH, "开始匹配", 242, 56, 46, startHover) then
+        menuSubState_ = nil
+        menuButtonClicked_ = "withFriends"
+    end
+
+    -- 返回按钮
+    local backBtnW = 120
+    local backBtnH = 40
+    local backBtnY = startBtnY + startBtnH + 16
+    local backHover = mx >= cx - backBtnW * 0.5 and mx <= cx + backBtnW * 0.5 and my >= backBtnY and my <= backBtnY + backBtnH
+    if HUD.DrawRubberButton(cx - backBtnW * 0.5, backBtnY, backBtnW, backBtnH, "返回", 120, 90, 70, backHover) then
+        menuSubState_ = "friends"
+    end
+
+    if input:GetKeyPress(KEY_ESCAPE) then
+        menuSubState_ = "friends"
+    end
+end
+
+--- 加入房间子菜单
+function HUD.DrawJoinRoomMenu()
+    drawSubMenuBackground("加入房间")
+
+    local cx = logW_ * 0.5
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    -- 输入提示
+    local inputY = logH_ * 0.32
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 16)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
+    nvgText(vg_, cx, inputY - 20, "输入房间码")
+
+    -- 4个输入框
+    local charW = 48
+    local charH = 56
+    local charGap = 10
+    local totalCharW = charW * 4 + charGap * 3
+    local charStartX = cx - totalCharW * 0.5
+
+    -- 键盘输入处理
+    for k = KEY_A, KEY_Z do
+        if input:GetKeyPress(k) then
+            if #roomCodeInput_ < 4 then
+                local ch = string.char(string.byte("A") + (k - KEY_A))
+                roomCodeInput_ = roomCodeInput_ .. ch
+            end
+        end
+    end
+    for k = KEY_2, KEY_9 do
+        if input:GetKeyPress(k) then
+            if #roomCodeInput_ < 4 then
+                local ch = string.char(string.byte("2") + (k - KEY_2))
+                roomCodeInput_ = roomCodeInput_ .. ch
+            end
+        end
+    end
+    if input:GetKeyPress(KEY_BACKSPACE) then
+        if #roomCodeInput_ > 0 then
+            roomCodeInput_ = string.sub(roomCodeInput_, 1, #roomCodeInput_ - 1)
+        end
+    end
+
+    for i = 1, 4 do
+        local ccx = charStartX + (i - 1) * (charW + charGap)
+        local isFocused = (i == #roomCodeInput_ + 1 and #roomCodeInput_ < 4)
+        -- 输入框背景
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, ccx, inputY, charW, charH, 8)
+        nvgFillColor(vg_, nvgRGBA(50, 35, 25, 200))
+        nvgFill(vg_)
+
+        -- 边框（当前输入位闪烁）
+        if isFocused then
+            local pulse = math.abs(math.sin(os.clock() * 3)) * 80 + 120
+            nvgStrokeColor(vg_, nvgRGBA(255, 180, 80, math.floor(pulse)))
+        else
+            nvgStrokeColor(vg_, nvgRGBA(180, 150, 120, 100))
+        end
+        nvgStrokeWidth(vg_, 2)
+        nvgStroke(vg_)
+
+        -- 已输入的字母
+        local ch = string.sub(roomCodeInput_, i, i)
+        if ch ~= "" then
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, 32)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+            nvgFillColor(vg_, nvgRGBA(255, 220, 140, 255))
+            nvgText(vg_, ccx + charW * 0.5, inputY + charH * 0.5, ch)
+        elseif isFocused then
+            -- 光标闪烁
+            local cursorA = math.abs(math.sin(os.clock() * 4)) * 180 + 40
+            nvgBeginPath(vg_)
+            nvgRect(vg_, ccx + charW * 0.5 - 1, inputY + 12, 2, charH - 24)
+            nvgFillColor(vg_, nvgRGBA(255, 200, 120, math.floor(cursorA)))
+            nvgFill(vg_)
+        end
+    end
+
+    -- 加入按钮（需要4位码才能点击）
+    local canJoin = #roomCodeInput_ == 4
+    local joinBtnW = 180
+    local joinBtnH = 50
+    local joinBtnY = inputY + charH + 40
+
+    if canJoin then
+        local joinHover = mx >= cx - joinBtnW * 0.5 and mx <= cx + joinBtnW * 0.5 and my >= joinBtnY and my <= joinBtnY + joinBtnH
+        if HUD.DrawRubberButton(cx - joinBtnW * 0.5, joinBtnY, joinBtnW, joinBtnH, "加入", 80, 170, 60, joinHover) then
+            menuSubState_ = nil
+            menuButtonClicked_ = "withFriends"
+        end
+    else
+        -- 禁用状态的按钮
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, cx - joinBtnW * 0.5, joinBtnY, joinBtnW, joinBtnH, joinBtnH * 0.35)
+        nvgFillColor(vg_, nvgRGBA(100, 80, 60, 120))
+        nvgFill(vg_)
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, math.floor(joinBtnH * 0.42))
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(180, 160, 140, 100))
+        nvgText(vg_, cx, joinBtnY + joinBtnH * 0.5, "加入")
+    end
+
+    -- 回车快捷键
+    if canJoin and input:GetKeyPress(KEY_RETURN) then
+        menuSubState_ = nil
+        menuButtonClicked_ = "withFriends"
+    end
+
+    -- 返回按钮
+    local backBtnW = 120
+    local backBtnH = 40
+    local backBtnY = joinBtnY + joinBtnH + 16
+    local backHover = mx >= cx - backBtnW * 0.5 and mx <= cx + backBtnW * 0.5 and my >= backBtnY and my <= backBtnY + backBtnH
+    if HUD.DrawRubberButton(cx - backBtnW * 0.5, backBtnY, backBtnW, backBtnH, "返回", 120, 90, 70, backHover) then
+        menuSubState_ = "friends"
+    end
+
+    if input:GetKeyPress(KEY_ESCAPE) then
+        menuSubState_ = "friends"
     end
 end
 

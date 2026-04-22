@@ -22,6 +22,7 @@ local SFX_FILES = {
     countdown    = "audio/sfx/countdown_tick.ogg",
     go           = "audio/sfx/countdown_go.ogg",
     round_end    = "audio/sfx/round_end.ogg",
+    match_ready  = "audio/sfx/match_ready.ogg",
 }
 
 --- 初始化音效系统

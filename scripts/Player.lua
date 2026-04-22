@@ -38,21 +38,16 @@ function Player.Init(scene, mapRef)
     print("[Player] Initialized")
 end
 
---- 创建一个玩家
+--- 在节点上创建视觉组件（模型、描边、眼睛）
+--- 用于单机模式的 Create 以及客户端的延迟挂载
+---@param node Node 父节点
 ---@param index number 玩家编号 1~4
----@param isHuman boolean 是否人类控制
----@return table 玩家数据
-function Player.Create(index, isHuman)
-    local spawnX, spawnY = MapData.GetSpawnPosition(index)
-
-    local node = scene_:CreateChild("Player_" .. index)
-    node.position = Vector3(spawnX, spawnY, 0)
-
-    -- 视觉子节点（模型挂在子节点上，方便做缩放/旋转动效而不影响物理碰撞体）
+---@return Node visualNode, Material mat, Material outlineMat
+function Player.CreateVisuals(node, index)
     local visualNode = node:CreateChild("Visual")
     visualNode.scale = Vector3(0.9, 0.9, 0.9)
 
-    -- 方块外观（圆角矩形，与地图方块统一风格）
+    -- 方块外观（圆角矩形）
     local geom = visualNode:CreateComponent("CustomGeometry")
     mapModule_.BuildRoundedBox(geom, Config.BlockSize, 0.1)
     geom.castShadows = true
@@ -65,7 +60,7 @@ function Player.Create(index, isHuman)
     mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
     geom:SetMaterial(mat)
 
-    -- 描边子节点（在角色后面 Z+0.1，略大）
+    -- 描边子节点
     local outlineNode = visualNode:CreateChild("Outline")
     outlineNode.position = Vector3(0, 0, 0.1)
     outlineNode.scale = Vector3(1.15, 1.15, 1.0)
@@ -79,18 +74,17 @@ function Player.Create(index, isHuman)
     outlineMat:SetShaderParameter("Roughness", Variant(1.0))
     outlineGeom:SetMaterial(outlineMat)
 
-    -- 眼睛（两个扁圆片，无光照纯色，颜色与描边相同）
+    -- 眼睛
     local sphereModel = cache:GetResource("Model", "Models/Sphere.mdl")
     local unlitTechnique = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
     local eyeMat = Material:new()
     eyeMat:SetTechnique(0, unlitTechnique)
     eyeMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[index]))
 
-    -- 眼睛基础参数（记录到 p 数据表用于动画）
-    local eyeBaseX = 0.16        -- 眼睛到中心的水平距离
-    local eyeBaseY = 0.06        -- 眼睛垂直偏移
-    local eyeBaseZ = -0.48       -- 前表面
-    local eyeRadius = 0.22       -- 眼睛半径（直径≈0.44，占体宽~44%）
+    local eyeBaseX = 0.16
+    local eyeBaseY = 0.06
+    local eyeBaseZ = -0.48
+    local eyeRadius = 0.22
 
     local eyeL = visualNode:CreateChild("EyeL")
     eyeL.position = Vector3(-eyeBaseX, eyeBaseY, eyeBaseZ)
@@ -108,8 +102,52 @@ function Player.Create(index, isHuman)
     eyeRModel.castShadows = false
     eyeRModel:SetMaterial(eyeMat)
 
-    -- 动态刚体
-    local body = node:CreateComponent("RigidBody")
+    return visualNode, mat, outlineMat
+end
+
+--- 为已有玩家数据补挂视觉组件（客户端收到 REPLICATED 节点后调用）
+---@param p table 玩家数据
+function Player.AttachVisuals(p)
+    if p.visualNode then return end  -- 已有视觉
+    local visualNode, mat, outlineMat = Player.CreateVisuals(p.node, p.index)
+    p.visualNode = visualNode
+    p.material = mat
+    p.outlineMat = outlineMat
+    print("[Player] Visuals attached to player " .. p.index)
+end
+
+--- 创建一个玩家
+---@param index number 玩家编号 1~4
+---@param isHuman boolean 是否人类控制
+---@param opts table|nil 可选参数 { existingNode=Node, skipVisuals=bool }
+---@return table 玩家数据
+function Player.Create(index, isHuman, opts)
+    opts = opts or {}
+    local spawnX, spawnY = MapData.GetSpawnPosition(index)
+
+    local node
+    if opts.existingNode then
+        node = opts.existingNode
+    else
+        node = scene_:CreateChild("Player_" .. index)
+        node.position = Vector3(spawnX, spawnY, 0)
+    end
+
+    -- 视觉组件（服务端跳过）
+    local visualNode = nil
+    local mat = nil
+    local outlineMat = nil
+    local eyeBaseX = 0.16
+    local eyeBaseY = 0.06
+    local eyeBaseZ = -0.48
+    local eyeRadius = 0.22
+
+    if not opts.skipVisuals then
+        visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
+    end
+
+    -- 动态刚体（服务端也需要物理）
+    local body = node:GetComponent("RigidBody") or node:CreateComponent("RigidBody")
     body.mass = 1.0
     body.friction = 0.3  -- 降低摩擦：移动由代码直接设置速度，低摩擦避免被地面约束卡住
     body.linearDamping = 0.05
@@ -121,7 +159,7 @@ function Player.Create(index, isHuman)
     body.linearFactor = Vector3(1, 1, 0)
     body.angularFactor = Vector3(0, 0, 0)
 
-    local shape = node:CreateComponent("CollisionShape")
+    local shape = node:GetComponent("CollisionShape") or node:CreateComponent("CollisionShape")
     -- 使用胶囊体代替方盒：底部圆弧可滑过方块接缝，避免边缘卡顿
     -- 直径0.9 高度1.0（缩放0.9后有效尺寸: 直径0.81 高度0.9）
     shape:SetCapsule(0.9, 1.0)
@@ -171,6 +209,12 @@ function Player.Create(index, isHuman)
         -- 比赛
         finished = false,      -- 是否已到达终点
         finishOrder = 0,       -- 到达终点的名次
+
+        -- 击杀统计（每回合重置）
+        kills = 0,             -- 本回合击杀数
+        killStreak = 0,        -- 连续击杀数（死亡重置）
+        multiKillCount = 0,    -- 短时间内连续击杀数
+        multiKillTimer = 0,    -- 连杀判定计时器
 
         -- 输入缓存（AI 或人类写入）
         inputMoveX = 0,
@@ -301,6 +345,23 @@ function Player.UpdateOne(p, dt)
         if p.respawnTimer <= 0 then
             Player.Respawn(p)
         end
+        -- 哭脸弹出动画（弹性缩放 0→过冲→稳定）
+        if p.deathFacePlane and p.deathFaceTimer ~= nil then
+            p.deathFaceTimer = p.deathFaceTimer + dt
+            local dur = 0.2
+            local t = math.min(p.deathFaceTimer / dur, 1.0)
+            -- 弹性缓动：过冲后回弹
+            local s
+            if t < 1.0 then
+                s = 1.0 - math.cos(t * math.pi * 0.5)  -- 先快速增长
+                s = s + math.sin(t * math.pi * 2.5) * (1.0 - t) * 0.35  -- 弹性振荡
+                s = s * 1.15  -- 过冲
+            else
+                s = 1.0
+            end
+            local sz = p.deathFaceTargetSize * s
+            p.deathFacePlane.scale = Vector3(sz, 1.0, sz)
+        end
         return
     end
 
@@ -349,6 +410,14 @@ function Player.UpdateOne(p, dt)
         if p.jumpBufferTimer > 0 then
             p.jumpBufferTimer = 0
             Player.DoJump(p)
+        end
+    end
+
+    -- 连杀窗口计时递减
+    if p.multiKillTimer > 0 then
+        p.multiKillTimer = p.multiKillTimer - dt
+        if p.multiKillTimer <= 0 then
+            p.multiKillCount = 0
         end
     end
 
@@ -961,7 +1030,7 @@ function Player.DoExplode(p, progress)
                 local diff = other.node.position - pos
                 local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
                 if dist <= killRadius then
-                    Player.Kill(other, "explosion")
+                    Player.Kill(other, "explosion", p.index)
                     print("[Player] Player " .. p.index .. " killed Player " .. other.index .. "!")
                 end
             end
@@ -1106,15 +1175,44 @@ end
 -- 死亡与重生
 -- ============================================================================
 
+--- 击杀事件回调（由 GameManager 注册）
+---@type fun(killerIndex: number, victimIndex: number, multiKillCount: number, killStreak: number)|nil
+Player.onKill = nil
+
 --- 击杀玩家
 ---@param p table
 ---@param reason string "explosion"|"fall"
-function Player.Kill(p, reason)
+---@param killerIndex number|nil 击杀者玩家编号（爆炸击杀时提供）
+function Player.Kill(p, reason, killerIndex)
     if not p.alive then return end
     if p.invincibleTimer > 0 then return end
 
     p.alive = false
     p.respawnTimer = Config.RespawnDelay
+
+    -- 击杀者统计
+    if killerIndex and killerIndex ~= p.index then
+        for _, killer in ipairs(Player.list) do
+            if killer.index == killerIndex then
+                killer.kills = killer.kills + 1
+                killer.killStreak = killer.killStreak + 1
+
+                -- 短时间连杀判定
+                if killer.multiKillTimer > 0 then
+                    killer.multiKillCount = killer.multiKillCount + 1
+                else
+                    killer.multiKillCount = 1
+                end
+                killer.multiKillTimer = Config.MultiKillWindow
+
+                -- 通知 GameManager
+                if Player.onKill then
+                    Player.onKill(killerIndex, p.index, killer.multiKillCount, killer.killStreak)
+                end
+                break
+            end
+        end
+    end
 
     -- 隐藏玩家节点 + 停止物理
     if p.node then
@@ -1140,12 +1238,15 @@ function Player.Kill(p, reason)
         end
     end
 
+    -- 死亡重置连杀
+    p.killStreak = 0
+
     SFX.Play("death", 0.7)
 
     print("[Player] Player " .. p.index .. " died (" .. reason .. ")")
 end
 
---- 生成玩家被炸死的喷溅特效
+--- 生成玩家被炸死的喷溅特效（夸张版）
 ---@param pos Vector3 死亡位置
 ---@param playerIndex number 玩家编号（用于颜色）
 function Player.SpawnSplatFX(pos, playerIndex)
@@ -1154,63 +1255,153 @@ function Player.SpawnSplatFX(pos, playerIndex)
     local color = Config.PlayerColors[playerIndex]
     local r, g, b = color.r, color.g, color.b
 
-    -- 主喷溅粒子：大量碎片向四周飞散
+    -- === 第 1 层：大量碎片向四周飞散（主体喷溅） ===
     local fxNode = scene_:CreateChild("SplatFX")
     fxNode.position = Vector3(pos.x, pos.y, -0.3)
 
     local effect = ParticleEffect:new()
-
     local mat = Material:new()
     mat:SetTechnique(0, pbrAlphaTechnique_)
-    mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 0.9)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.3, g * 0.3, b * 0.3)))
+    mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
+    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.5, g * 0.5, b * 0.5)))
     mat:SetShaderParameter("Metallic", Variant(0.05))
-    mat:SetShaderParameter("Roughness", Variant(0.6))
+    mat:SetShaderParameter("Roughness", Variant(0.5))
     effect:SetMaterial(mat)
 
-    effect:SetNumParticles(50)
+    effect:SetNumParticles(120)
     effect:SetEmitterType(EMITTER_SPHERE)
-    effect:SetEmitterSize(Vector3(0.15, 0.15, 0.05))
+    effect:SetEmitterSize(Vector3(0.2, 0.2, 0.05))
 
-    -- 向四周飞散（偏 2D 平面）
-    effect:SetMinDirection(Vector3(-1, -0.5, -0.05))
-    effect:SetMaxDirection(Vector3(1, 1.2, 0.05))
-    effect:SetMinVelocity(5.0)
-    effect:SetMaxVelocity(12.0)
-    effect:SetDampingForce(3.0)
-    effect:SetConstantForce(Vector3(0, -10, 0))  -- 重力让碎片下坠
+    effect:SetMinDirection(Vector3(-1, -0.6, -0.05))
+    effect:SetMaxDirection(Vector3(1, 1.5, 0.05))
+    effect:SetMinVelocity(6.0)
+    effect:SetMaxVelocity(18.0)
+    effect:SetDampingForce(2.5)
+    effect:SetConstantForce(Vector3(0, -12, 0))
 
-    -- 粒子大小（小颗粒碎片感）
-    effect:SetMinParticleSize(Vector2(0.03, 0.03))
-    effect:SetMaxParticleSize(Vector2(0.1, 0.1))
+    effect:SetMinParticleSize(Vector2(0.04, 0.04))
+    effect:SetMaxParticleSize(Vector2(0.18, 0.18))
 
-    -- 生命期
-    effect:SetMinTimeToLive(0.2)
-    effect:SetMaxTimeToLive(0.5)
+    effect:SetMinTimeToLive(0.3)
+    effect:SetMaxTimeToLive(0.9)
 
-    -- 旋转
-    effect:SetMinRotationSpeed(-300)
-    effect:SetMaxRotationSpeed(300)
+    effect:SetMinRotationSpeed(-400)
+    effect:SetMaxRotationSpeed(400)
 
-    -- 短暂爆发
-    effect:SetMinEmissionRate(300)
-    effect:SetMaxEmissionRate(400)
-    effect:SetActiveTime(0.08)
+    effect:SetMinEmissionRate(600)
+    effect:SetMaxEmissionRate(800)
+    effect:SetActiveTime(0.1)
     effect:SetInactiveTime(999)
 
-    -- 颜色渐变：玩家色 → 深色 → 消失
     effect:SetNumColorFrames(3)
     effect:SetColorFrame(0, ColorFrame(Color(r, g, b, 1.0), 0.0))
-    effect:SetColorFrame(1, ColorFrame(Color(r * 0.6, g * 0.6, b * 0.6, 0.8), 0.4))
+    effect:SetColorFrame(1, ColorFrame(Color(r * 0.7, g * 0.7, b * 0.7, 0.9), 0.35))
     effect:SetColorFrame(2, ColorFrame(Color(r * 0.2, g * 0.2, b * 0.2, 0.0), 1.0))
 
     local emitter = fxNode:CreateComponent("ParticleEmitter")
     emitter.effect = effect
     emitter.emitting = true
     emitter.autoRemoveMode = REMOVE_NODE
+
+    -- === 第 2 层：中心闪光爆裂（白→玩家色，大粒子快速膨胀消失） ===
+    local flashNode = scene_:CreateChild("SplatFlash")
+    flashNode.position = Vector3(pos.x, pos.y, -0.35)
+
+    local flashEffect = ParticleEffect:new()
+    local flashMat = Material:new()
+    flashMat:SetTechnique(0, pbrAlphaTechnique_)
+    flashMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1.0)))
+    flashMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.8)))
+    flashMat:SetShaderParameter("Metallic", Variant(0.0))
+    flashMat:SetShaderParameter("Roughness", Variant(0.2))
+    flashEffect:SetMaterial(flashMat)
+
+    flashEffect:SetNumParticles(8)
+    flashEffect:SetEmitterType(EMITTER_SPHERE)
+    flashEffect:SetEmitterSize(Vector3(0.05, 0.05, 0.01))
+
+    flashEffect:SetMinDirection(Vector3(-0.5, -0.5, 0))
+    flashEffect:SetMaxDirection(Vector3(0.5, 0.5, 0))
+    flashEffect:SetMinVelocity(0.5)
+    flashEffect:SetMaxVelocity(2.0)
+    flashEffect:SetDampingForce(4.0)
+
+    flashEffect:SetMinParticleSize(Vector2(0.4, 0.4))
+    flashEffect:SetMaxParticleSize(Vector2(0.8, 0.8))
+    flashEffect:SetSizeAdd(1.5)
+
+    flashEffect:SetMinTimeToLive(0.1)
+    flashEffect:SetMaxTimeToLive(0.25)
+
+    flashEffect:SetMinEmissionRate(200)
+    flashEffect:SetMaxEmissionRate(200)
+    flashEffect:SetActiveTime(0.03)
+    flashEffect:SetInactiveTime(999)
+
+    flashEffect:SetNumColorFrames(3)
+    flashEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))
+    flashEffect:SetColorFrame(1, ColorFrame(Color(r, g, b, 0.7), 0.3))
+    flashEffect:SetColorFrame(2, ColorFrame(Color(r, g, b, 0.0), 1.0))
+
+    local flashEmitter = flashNode:CreateComponent("ParticleEmitter")
+    flashEmitter.effect = flashEffect
+    flashEmitter.emitting = true
+    flashEmitter.autoRemoveMode = REMOVE_NODE
+
+    -- === 第 3 层：彩色星星/碎屑飞散（白色小亮点） ===
+    local starNode = scene_:CreateChild("SplatStars")
+    starNode.position = Vector3(pos.x, pos.y, -0.32)
+
+    local starEffect = ParticleEffect:new()
+    local starMat = Material:new()
+    starMat:SetTechnique(0, pbrAlphaTechnique_)
+    starMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 0.9, 1.0)))
+    starMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.7)))
+    starMat:SetShaderParameter("Metallic", Variant(0.0))
+    starMat:SetShaderParameter("Roughness", Variant(0.3))
+    starEffect:SetMaterial(starMat)
+
+    starEffect:SetNumParticles(30)
+    starEffect:SetEmitterType(EMITTER_SPHERE)
+    starEffect:SetEmitterSize(Vector3(0.1, 0.1, 0.02))
+
+    starEffect:SetMinDirection(Vector3(-1, -0.2, -0.02))
+    starEffect:SetMaxDirection(Vector3(1, 1.8, 0.02))
+    starEffect:SetMinVelocity(8.0)
+    starEffect:SetMaxVelocity(22.0)
+    starEffect:SetDampingForce(3.0)
+    starEffect:SetConstantForce(Vector3(0, -15, 0))
+
+    starEffect:SetMinParticleSize(Vector2(0.02, 0.02))
+    starEffect:SetMaxParticleSize(Vector2(0.06, 0.06))
+
+    starEffect:SetMinTimeToLive(0.4)
+    starEffect:SetMaxTimeToLive(1.0)
+
+    starEffect:SetMinRotationSpeed(-500)
+    starEffect:SetMaxRotationSpeed(500)
+
+    starEffect:SetMinEmissionRate(400)
+    starEffect:SetMaxEmissionRate(500)
+    starEffect:SetActiveTime(0.06)
+    starEffect:SetInactiveTime(999)
+
+    starEffect:SetNumColorFrames(3)
+    starEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.8, 1.0), 0.0))
+    starEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.9, 0.3, 0.8), 0.3))
+    starEffect:SetColorFrame(2, ColorFrame(Color(r * 0.5, g * 0.5, b * 0.5, 0.0), 1.0))
+
+    local starEmitter = starNode:CreateComponent("ParticleEmitter")
+    starEmitter.effect = starEffect
+    starEmitter.emitting = true
+    starEmitter.autoRemoveMode = REMOVE_NODE
+
+    -- === 屏幕震动 ===
+    Camera.Shake(0.3, 0.3)
 end
 
 --- 在死亡位置生成哭脸贴图（替代角色形象，直到重生时移除）
+--- 带弹出动画：从 0 弹性缩放到正常大小
 ---@param p table 玩家数据
 ---@param pos Vector3 死亡位置
 function Player.SpawnDeathFace(p, pos)
@@ -1220,19 +1411,15 @@ function Player.SpawnDeathFace(p, pos)
     Player.RemoveDeathFace(p)
 
     -- 与角色完全重合：角色 visualNode 的 scale 是 0.9，BlockSize 是 1.0
-    -- 角色实际视觉尺寸 = BlockSize * 0.9 = 0.9 x 0.9
     local charSize = Config.BlockSize * 0.9
 
     local fxNode = scene_:CreateChild("DeathFace_" .. p.index)
-    -- 位置与角色节点位置完全一致（角色的 node.position 就是中心点）
     fxNode.position = Vector3(pos.x, pos.y, 0)
 
-    -- 用平面模型贴图，面朝摄像机（摄像机在 Z=-40 看向 +Z）
-    -- Plane 默认在 XZ 平面，法线 +Y；左手坐标系绕 X 轴旋转 -90° 使法线指向 -Z（面向摄像机）
     local planeNode = fxNode:CreateChild("FacePlane")
-    planeNode.position = Vector3(0, 0, -0.5)  -- 角色正面 z 偏移
-    planeNode.scale = Vector3(charSize, 1.0, charSize) -- Plane 默认 1x1，缩放到角色大小
-    planeNode.rotation = Quaternion(-90, Vector3.RIGHT) -- 法线从 +Y 转到 -Z，面向摄像机
+    planeNode.position = Vector3(0, 0, -0.5)
+    planeNode.scale = Vector3(0, 1.0, 0) -- 从 0 开始，动画弹出
+    planeNode.rotation = Quaternion(-90, Vector3.RIGHT)
 
     local planeModel = planeNode:CreateComponent("StaticModel")
     planeModel.model = cache:GetResource("Model", "Models/Plane.mdl")
@@ -1246,9 +1433,10 @@ function Player.SpawnDeathFace(p, pos)
     faceMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1)))
     planeModel:SetMaterial(faceMat)
 
-    print("[Player] SpawnDeathFace for player " .. p.index .. " at (" .. pos.x .. ", " .. pos.y .. ")")
-
     p.deathFaceNode = fxNode
+    p.deathFacePlane = planeNode
+    p.deathFaceTimer = 0
+    p.deathFaceTargetSize = charSize
 end
 
 --- 移除哭脸贴图
@@ -1258,6 +1446,9 @@ function Player.RemoveDeathFace(p)
         p.deathFaceNode:Remove()
         p.deathFaceNode = nil
     end
+    p.deathFacePlane = nil
+    p.deathFaceTimer = nil
+    p.deathFaceTargetSize = nil
 end
 
 --- 重生玩家
@@ -1311,6 +1502,10 @@ function Player.ResetAll()
         p.alive = true
         p.finished = false
         p.finishOrder = 0
+        p.kills = 0
+        p.killStreak = 0
+        p.multiKillCount = 0
+        p.multiKillTimer = 0
         p.energy = 0
         p.charging = false
         p.chargeTimer = 0

@@ -6,6 +6,7 @@
 local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
+local BGM = require("BGM")
 
 local GameManager = {}
 
@@ -174,6 +175,15 @@ function GameManager.SetState(newState, timer)
     local oldState = GameManager.state
     GameManager.state = newState
     GameManager.stateTimer = timer or 0
+
+    -- BGM 状态联动
+    if newState == GameManager.STATE_INTRO then
+        BGM.PlayGameplay()
+    elseif newState == GameManager.STATE_EDITOR or newState == GameManager.STATE_LEVEL_LIST then
+        BGM.Stop()
+    elseif newState == GameManager.STATE_MENU then
+        BGM.PlayMenu()
+    end
 
     if onStateChange_ then
         onStateChange_(oldState, newState)

@@ -16,6 +16,7 @@ local AIController = require("AIController")
 local GameManager = require("GameManager")
 local HUD    = require("HUD")
 local SFX    = require("SFX")
+local BGM    = require("BGM")
 local RandomPickup = require("RandomPickup")
 local LevelManager = require("LevelManager")
 local LevelEditor  = require("LevelEditor")
@@ -143,6 +144,8 @@ function Client.Start()
     Pickup.Init(scene_, Player)
     AIController.Init(Player, Map)
     SFX.Init(scene_)
+    BGM.Init(scene_)
+    BGM.PlayMenu()  -- 启动后即在主菜单，播放菜单 BGM
     -- 客户端不传 RandomPickup：道具节点由服务端创建并复制到客户端
     -- 传 nil 可防止 StartRound() 中 RandomPickup.Reset() 在客户端创建重复的本地道具节点
     GameManager.Init(Player, Map, Pickup, AIController, nil, Camera)
@@ -948,10 +951,29 @@ end
 -- Update Loop
 -- ============================================================================
 
+-- BGM 状态联动：监听 clientState_ 与 GameManager.state 变化
+local prevClientState_ = nil
+local prevGameState_ = nil
+
 ---@param dt number
 function Client.HandleUpdate(dt)
     -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
     HUD.CacheInput()
+
+    -- BGM 状态分发（仅在状态变化时触发）
+    if clientState_ ~= prevClientState_ or GameManager.state ~= prevGameState_ then
+        if GameManager.state == GameManager.STATE_EDITOR
+            or GameManager.state == GameManager.STATE_LEVEL_LIST then
+            BGM.Stop()
+        elseif clientState_ == "playing" then
+            -- 对局曲由 GameManager.SetState(STATE_INTRO) 内部联动触发，此处不重复
+        else
+            -- 所有非 playing/editor 客户端状态都使用菜单 BGM
+            BGM.PlayMenu()
+        end
+        prevClientState_ = clientState_
+        prevGameState_ = GameManager.state
+    end
 
     -- 兜底扫描：补挂 REPLICATED 节点视觉（防 NodeAdded 事件未触发）
     lastScanTime_ = lastScanTime_ + dt

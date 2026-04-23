@@ -15,6 +15,10 @@ local networkMode_ = "standalone"  -- "standalone" | "server" | "client"
 -- 活跃拾取物列表
 local pickups_ = {}
 
+-- 客户端：已拾取的 NodeID 黑名单（防止 ScanReplicatedNodes 在服务端 REPLICATED 节点
+-- 同步删除到达之前重新挂载视觉）
+local collectedNodeIds_ = {}
+
 --- 设置网络模式（必须在 Init 之前或之后立即调用）
 ---@param mode string "standalone" | "server" | "client"
 function Pickup.SetNetworkMode(mode)
@@ -201,6 +205,9 @@ function Pickup.AttachClientVisualsForNode(node)
     elseif name == "Pickup_large" then size = "large"
     else return end
 
+    -- 已拾取黑名单：服务端 Remove 同步未到达期间，禁止重新挂载视觉
+    if collectedNodeIds_[node.ID] then return end
+
     -- 防重复
     if node:GetChild("Visual", false) then return end
     attachVisualsTo(node, size)
@@ -333,6 +340,8 @@ end
 ---@return boolean removed 是否成功移除
 function Pickup.RemoveByNodeID(nodeId)
     if not nodeId or nodeId == 0 then return false end
+    -- 加入黑名单（无论 pickups_ 是否找到，都要标记，避免 Scan 重新 attach）
+    collectedNodeIds_[nodeId] = true
     for i = #pickups_, 1, -1 do
         local pk = pickups_[i]
         if pk.node and pk.node.ID == nodeId then
@@ -352,6 +361,7 @@ function Pickup.ClearAll()
     -- 仅清空本地索引；节点自身由服务端 Remove 后通过同步消失
     if networkMode_ == "client" then
         pickups_ = {}
+        collectedNodeIds_ = {}  -- 新回合开始，重置已拾取黑名单
         return
     end
     for _, pk in ipairs(pickups_) do
@@ -360,6 +370,7 @@ function Pickup.ClearAll()
         end
     end
     pickups_ = {}
+    collectedNodeIds_ = {}
 end
 
 --- 重置所有拾取物

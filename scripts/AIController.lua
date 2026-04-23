@@ -73,6 +73,9 @@ local BOMB_RECHECK_INTERVAL  = 0.25   -- 蓄力中每 0.25s 重新评估
 local BOMB_SAFE_RADIUS       = 3      -- 自身脚下"安全保留区"格数
 -- 道具捡取
 local PICKUP_DETOUR_MAX_DX   = 4.0    -- 道具与主路径横向偏离上限（米）
+
+-- 调试日志开关（首次交付时打开，确认行为后可关）
+local VERBOSE_JUMP_LOG       = true
 local PICKUP_DETOUR_MAX_DY   = 2.0    -- 道具与当前高度的垂直差上限
 local PICKUP_TARGET_TIMEOUT  = 4.0    -- 单次道具目标追踪上限
 
@@ -677,21 +680,50 @@ function AIController.Think(p, state)
             -- 需要跳跃：先对准起跳点（容差宽松，靠空中制导修正）
             local launchX = jumpInfo.launchX or px
             local dx = launchX - px
+            local absDx = math.abs(dx)
 
-            if math.abs(dx) > 1.0 then
-                -- 离起跳点较远，走过去
-                state.moveDir = dx > 0 and 1 or -1
+            -- 必须在当前平台上才考虑起跳（防止悬空乱跳）
+            local onCurPlat = curPlat and (px >= curPlat.x1 - 0.3 and px <= curPlat.x2 + 0.3)
+
+            -- 把 launchX 限制在当前平台范围内（避免追到平台外）
+            local clampedLaunchX = launchX
+            if curPlat then
+                clampedLaunchX = math.max(curPlat.x1 + 0.3, math.min(curPlat.x2 - 0.3, launchX))
+            end
+            local dxClamped = clampedLaunchX - px
+
+            -- 起跳方向：斜跳用 jumpInfo.dir；垂直跳根据目标 X 偏移决定（容差 0.3m 内才真正垂直）
+            local jumpMoveDir
+            if jumpInfo.dir and jumpInfo.dir ~= 0 then
+                jumpMoveDir = jumpInfo.dir
+            else
+                local cxDx = targetPlat.cx - px
+                if math.abs(cxDx) < 0.3 then
+                    jumpMoveDir = 0  -- 真垂直跳
+                else
+                    jumpMoveDir = cxDx > 0 and 1 or -1
+                end
+            end
+
+            -- 容差放宽到 1.5m，到位就跳（不要追求完美）
+            if math.abs(dxClamped) > 1.5 then
+                state.moveDir = dxClamped > 0 and 1 or -1
                 state.aiState = STATE_APPROACH
             else
-                -- 接近起跳点，立即起跳（不要追求完美对齐）
-                state.moveDir = (jumpInfo.dir ~= 0) and jumpInfo.dir
-                                or (targetPlat.cx > px and 1 or -1)
-                if p.onGround then
+                -- 接近起跳点
+                state.moveDir = jumpMoveDir
+                if p.onGround and onCurPlat then
                     state.wantJump = true
                     state.aiState = STATE_JUMP
                     state.jumpTarget = targetPlat
                     state.jumpLandX = jumpInfo.landX or targetPlat.cx
                     state.jumpDir = jumpInfo.dir or state.moveDir
+                    if VERBOSE_JUMP_LOG then
+                        print(string.format(
+                            "[AI#%d] JUMP %s px=%.2f launchX=%.2f landX=%.2f targetY=%.2f dy=%.2f dir=%d",
+                            p.index, jtype, px, launchX, state.jumpLandX,
+                            targetPlat.charY, jumpInfo.dy or 0, state.jumpDir or 0))
+                    end
                 end
             end
 
@@ -992,17 +1024,32 @@ end
 -- ============================================================================
 
 function AIController.ThinkInAir(p, state, px, py, vx, vy)
-    -- 如果有跳跃目标，朝目标落点修正
-    if state.jumpTarget and state.jumpLandX then
-        local landX = state.jumpLandX
-        local dx = landX - px
-        local absDx = math.abs(dx)
+    -- 如果有跳跃目标，朝目标平台修正
+    if state.jumpTarget then
+        local tp = state.jumpTarget
+        -- 目标"安全落区"：平台中段，避免落到边缘掉下去
+        local safeL = tp.x1 + math.min(0.6, tp.width * 0.2)
+        local safeR = tp.x2 - math.min(0.6, tp.width * 0.2)
+        if safeL > safeR then  -- 平台太窄
+            safeL, safeR = tp.cx - 0.2, tp.cx + 0.2
+        end
 
-        if absDx > 0.3 then
-            state.moveDir = dx > 0 and 1 or -1
-        elseif absDx < 0.3 then
-            -- 接近目标 X，减速
-            state.moveDir = 0
+        -- 还没到安全区 → 持续朝平台方向飞
+        if px < safeL then
+            state.moveDir = 1
+        elseif px > safeR then
+            state.moveDir = -1
+        else
+            -- 已经在安全区上方：根据水平速度决定是否反向制动
+            -- 如果还在快速向某方向飞，会冲出安全区 → 反向减速
+            if vx > 2.0 and px > tp.cx + 0.3 then
+                state.moveDir = -1
+            elseif vx < -2.0 and px < tp.cx - 0.3 then
+                state.moveDir = 1
+            else
+                -- 维持轻微水平输入保持位置
+                state.moveDir = (tp.cx > px) and 1 or -1
+            end
         end
     else
         -- 没有明确跳跃目标，尝试找最近的可落地平台
@@ -1043,10 +1090,22 @@ function AIController.ThinkInAir(p, state, px, py, vx, vy)
         -- 检查是否落到了目标平台附近
         if state.jumpTarget then
             local tp = state.jumpTarget
-            if px >= tp.x1 - 1.0 and px <= tp.x2 + 1.0 and
-               math.abs(py - tp.charY) < 2.0 then
-                -- 成功着陆到目标！推进路径
+            local hit = (px >= tp.x1 - 1.0 and px <= tp.x2 + 1.0 and
+                         math.abs(py - tp.charY) < 2.0)
+            if hit then
                 state.pathIdx = state.pathIdx + 1
+                if VERBOSE_JUMP_LOG then
+                    print(string.format("[AI#%d] LAND OK  px=%.2f py=%.2f targetY=%.2f",
+                        p.index, px, py, tp.charY))
+                end
+            else
+                if VERBOSE_JUMP_LOG then
+                    print(string.format("[AI#%d] LAND MISS px=%.2f py=%.2f target [%.2f~%.2f]@%.2f -> repath",
+                        p.index, px, py, tp.x1, tp.x2, tp.charY))
+                end
+                -- 没落到目标 → 强制重寻路，避免反复尝试同一失败跳跃
+                state.path = nil
+                state.repathTimer = 0
             end
         end
         state.jumpTarget = nil

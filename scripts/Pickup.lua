@@ -232,6 +232,23 @@ function Pickup.GetActiveCount()
     return count
 end
 
+--- 列出所有当前活跃（未被收集）的拾取物位置（供 AI 决策使用）
+---@return table list 每项 { x, y, size, amount }
+function Pickup.GetActivePickups()
+    local list = {}
+    for _, pk in ipairs(pickups_) do
+        if pk.active and not pk.collected then
+            table.insert(list, {
+                x = pk.spawnX,
+                y = pk.spawnY,
+                size = pk.size,
+                amount = pk.amount,
+            })
+        end
+    end
+    return list
+end
+
 --- 检查指定位置附近是否已有拾取物
 ---@param x number 世界 X
 ---@param y number 世界 Y

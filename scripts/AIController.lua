@@ -14,6 +14,19 @@ local MapData = require("MapData")
 
 local AIController = {}
 
+-- Forward declarations（解决 local function 前向引用问题）
+local findDetourPickup
+
+-- 可选模块（懒加载，避免循环依赖）
+local pickupModule_lazy_ = nil
+local function getPickupModule()
+    if pickupModule_lazy_ == nil then
+        local ok, mod = pcall(require, "Pickup")
+        if ok then pickupModule_lazy_ = mod else pickupModule_lazy_ = false end
+    end
+    return pickupModule_lazy_ or nil
+end
+
 -- ============================================================================
 -- 物理常量
 -- ============================================================================
@@ -48,6 +61,20 @@ local STATE_JUMP         = 3   -- 已起跳，空中制导
 local STATE_FALLING      = 4   -- 自由下落（不是主动跳跃）
 local STATE_DASH         = 5   -- 冲刺中
 local STATE_STUCK        = 6   -- 卡住恢复
+
+-- ============================================================================
+-- 战术参数（炸弹/道具决策）
+-- ============================================================================
+-- 炸弹决策
+local BOMB_KILL_RANGE        = 5.0    -- 敌人在此距离内才考虑炸（< 爆炸最大半径 7）
+local BOMB_KILL_VERTICAL     = 3.0    -- 垂直距离限制
+local BOMB_CHARGE_TIME       = 1.4    -- 蓄力 1.4s（约 7 * 1.4/2.5 ≈ 4 格半径）
+local BOMB_RECHECK_INTERVAL  = 0.25   -- 蓄力中每 0.25s 重新评估
+local BOMB_SAFE_RADIUS       = 3      -- 自身脚下"安全保留区"格数
+-- 道具捡取
+local PICKUP_DETOUR_MAX_DX   = 4.0    -- 道具与主路径横向偏离上限（米）
+local PICKUP_DETOUR_MAX_DY   = 2.0    -- 道具与当前高度的垂直差上限
+local PICKUP_TARGET_TIMEOUT  = 4.0    -- 单次道具目标追踪上限
 
 -- ============================================================================
 -- 平台扫描
@@ -450,8 +477,17 @@ function AIController.Register(playerData)
         stuckJumps     = 0,
 
         lastPlatform   = nil,
+
+        -- 战术：炸弹
+        chargeTimer    = 0,         -- 已蓄力时间（仅 AI 内部估算）
+        bombRecheck    = 0,         -- 蓄力期间下次重评估倒计时
+        bombTargetIdx  = nil,       -- 当前炸弹目标的玩家索引
+
+        -- 战术：道具
+        pickupTarget   = nil,       -- { x, y } 当前正在追的道具
+        pickupTimer    = 0,         -- 追道具的剩余时长
     }
-    print("[AI] Player " .. playerData.index .. " registered (race-to-finish)")
+    print("[AI] Player " .. playerData.index .. " registered (race+combat v7)")
 end
 
 --- 取消 AI 注册（玩家切为人类控制时调用）
@@ -491,13 +527,16 @@ function AIController.UpdateOne(p, dt)
         state = aiStates_[p.index]
     end
 
+    -- 战术决策（每帧检查，炸弹/道具时序敏感）
+    AIController.UpdateBomb(p, state, dt)
+
     state.thinkTimer = state.thinkTimer - dt
     if state.thinkTimer <= 0 then
         state.thinkTimer = THINK_INTERVAL + math.random() * 0.03
         AIController.Think(p, state)
     end
 
-    -- 应用输入（纯导航：只用移动/跳/冲刺）
+    -- 应用输入
     p.inputMoveX = state.moveDir
 
     if state.wantJump then
@@ -507,6 +546,14 @@ function AIController.UpdateOne(p, dt)
     if state.wantDash then
         p.inputDash = true
         state.wantDash = false
+    end
+    -- 炸弹输入（持续 / 一次性）
+    if state.wantCharging then
+        p.inputCharging = true
+    end
+    if state.wantExplodeRelease then
+        p.inputExplodeRelease = true
+        state.wantExplodeRelease = false
     end
 end
 
@@ -683,11 +730,244 @@ function AIController.Think(p, state)
         AIController.CheckGapAndJump(p, state, px, py)
     end
 
-    -- 4) 直线疾跑：在长平台上同向冲刺加速
+    -- 4) 顺路捡道具：在不破坏导航主干的前提下，微调 moveDir 朝道具方向
+    AIController.ThinkPickupDetour(p, state, px, py, curPlat, targetPlat)
+
+    -- 5) 直线疾跑：在长平台上同向冲刺加速
     AIController.ThinkSprintDash(p, state, px, py, curPlat, targetPlat)
 
-    -- 5) 卡住检测
+    -- 6) 卡住检测
     AIController.UpdateStuck(p, state, px, py)
+end
+
+-- ============================================================================
+-- 顺路捡道具：仅当 (1) 当前在地面、(2) 道具与目标平台同侧、(3) 偏离很小 时生效
+-- ============================================================================
+function AIController.ThinkPickupDetour(p, state, px, py, curPlat, targetPlat)
+    if not p.onGround or not curPlat or not targetPlat then return end
+    if p.energy >= 0.95 then return end  -- 满能量不绕
+
+    -- 道具目标维护
+    state.pickupTimer = (state.pickupTimer or 0) - THINK_INTERVAL
+    if not state.pickupTarget or state.pickupTimer <= 0 then
+        state.pickupTarget = findDetourPickup(p, state)
+        state.pickupTimer = PICKUP_TARGET_TIMEOUT
+    end
+
+    if not state.pickupTarget then return end
+
+    local pk = state.pickupTarget
+    local toPickup = pk.x - px
+
+    -- 道具必须在当前平台横向范围内，否则别绕（避免冲下悬崖去捡）
+    if pk.x < curPlat.x1 - 0.5 or pk.x > curPlat.x2 + 0.5 then
+        state.pickupTarget = nil
+        return
+    end
+    -- 道具必须大致在当前高度（避免向下/向上绕远）
+    if math.abs(pk.y - py) > 1.8 then
+        state.pickupTarget = nil
+        return
+    end
+
+    -- 道具方向必须与主路径目标方向一致或非常近
+    local toTarget = targetPlat.cx - px
+    if (toTarget >= 0) ~= (toPickup >= -0.5) and math.abs(toPickup) > 0.5 then
+        -- 反向道具，放弃
+        state.pickupTarget = nil
+        return
+    end
+
+    -- 微调方向朝道具
+    if math.abs(toPickup) > 0.4 then
+        state.moveDir = toPickup > 0 and 1 or -1
+    end
+end
+
+-- ============================================================================
+-- 战术：炸弹决策
+-- ============================================================================
+
+--- 检查脚下"炸完是否还能站住"：自身爆炸圈内必须有非普通块（SAFE）或圈外可达
+---@param p table 玩家
+---@param radius number 估算的爆炸格半径
+---@return boolean safe
+local function isBombSelfSafe(p, radius)
+    if not p.node or not mapModule_ then return false end
+    local px, py = p.node.position.x, p.node.position.y
+    -- 角色脚下格子
+    local fgx, fgy = mapModule_.WorldToGrid(px, py - CHAR_HALF_H - 0.1)
+    -- 在爆炸半径内寻找一块"安全方块"：SAFE 或紧邻爆炸圈外的实心块
+    local r = math.max(2, math.floor(radius))
+    -- 1) 脚下圈内有 SAFE 块 → 安全
+    for dx = -r, r do
+        for dy = -1, 1 do
+            local gx, gy = fgx + dx, fgy + dy
+            local block = mapModule_.GetBlock(gx, gy)
+            if block == Config.BLOCK_SAFE then
+                return true
+            end
+        end
+    end
+    -- 2) 圈外 1~2 格内有任意实心块（爆炸不会摧毁），且与角色高度差不大
+    for dx = -(r + 2), r + 2 do
+        if math.abs(dx) > r then
+            for dy = -2, 2 do
+                local gx, gy = fgx + dx, fgy + dy
+                local block = mapModule_.GetBlock(gx, gy)
+                if block ~= Config.BLOCK_EMPTY then
+                    return true
+                end
+            end
+        end
+    end
+    return false
+end
+
+--- 寻找适合炸的目标玩家：在杀伤范围内 + 活着 + 不是自己 + 不是已完赛
+---@param p table 自身
+---@return table|nil targetPlayer, number distSq
+local function findBombTarget(p)
+    if not playerModule_ or not p.node then return nil, math.huge end
+    local px, py = p.node.position.x, p.node.position.y
+    local best, bestD2 = nil, math.huge
+    for _, q in ipairs(playerModule_.list) do
+        if q.index ~= p.index and q.alive and not q.finished and q.node then
+            local qpos = q.node.position
+            local dx = qpos.x - px
+            local dy = qpos.y - py
+            if math.abs(dx) <= BOMB_KILL_RANGE and math.abs(dy) <= BOMB_KILL_VERTICAL then
+                local d2 = dx * dx + dy * dy
+                if d2 < bestD2 then
+                    bestD2 = d2
+                    best = q
+                end
+            end
+        end
+    end
+    return best, bestD2
+end
+
+--- 每帧炸弹决策：决定是否开始/维持/释放蓄力
+function AIController.UpdateBomb(p, state, dt)
+    -- 重置持续输入（默认不蓄力）
+    state.wantCharging = false
+
+    if not p.alive or p.finished then
+        state.chargeTimer = 0
+        state.bombTargetIdx = nil
+        return
+    end
+
+    -- 已经炸过/能量没了 → 清状态
+    if p.energy < 1.0 and not p.charging then
+        state.chargeTimer = 0
+        state.bombTargetIdx = nil
+        return
+    end
+
+    -- 当前 Player 端蓄力中：维持 + 计时 + 决定何时释放
+    if p.charging then
+        state.chargeTimer = state.chargeTimer + dt
+        state.bombRecheck = state.bombRecheck - dt
+        state.wantCharging = true  -- 持续按住
+
+        local target, _ = findBombTarget(p)
+
+        -- 失去目标且已蓄力一段时间 → 立即释放（别浪费）
+        if not target and state.chargeTimer > 0.4 then
+            state.wantCharging = false
+            state.wantExplodeRelease = true
+            state.chargeTimer = 0
+            state.bombTargetIdx = nil
+            return
+        end
+
+        -- 蓄力达到目标时长 → 释放
+        if state.chargeTimer >= BOMB_CHARGE_TIME then
+            state.wantCharging = false
+            state.wantExplodeRelease = true
+            state.chargeTimer = 0
+            state.bombTargetIdx = nil
+            return
+        end
+
+        -- 周期性安全检查：如果脚下变得不安全，立即释放避免被自己困死
+        if state.bombRecheck <= 0 then
+            state.bombRecheck = BOMB_RECHECK_INTERVAL
+            local approxRadius = math.max(1, math.floor(Config.ExplosionRadius * (state.chargeTimer / Config.ExplosionChargeTime)))
+            if not isBombSelfSafe(p, approxRadius) then
+                -- 已不安全：立即释放（已经按了能量没办法吞回）
+                state.wantCharging = false
+                state.wantExplodeRelease = true
+                state.chargeTimer = 0
+                state.bombTargetIdx = nil
+                return
+            end
+        end
+        return
+    end
+
+    -- 未蓄力：满能量 + 找到目标 + 自身安全 → 开始蓄力
+    if p.energy >= 1.0 and p.onGround then
+        local target, _ = findBombTarget(p)
+        if target and isBombSelfSafe(p, math.floor(Config.ExplosionRadius * (BOMB_CHARGE_TIME / Config.ExplosionChargeTime))) then
+            state.wantCharging = true
+            state.chargeTimer = 0
+            state.bombRecheck = BOMB_RECHECK_INTERVAL
+            state.bombTargetIdx = target.index
+        end
+    end
+end
+
+-- ============================================================================
+-- 战术：顺路捡道具
+-- ============================================================================
+
+--- 在主路径附近找一个值得绕的道具，返回坐标或 nil
+---@param p table
+---@param state table
+---@return table|nil pickup { x, y, amount }
+findDetourPickup = function(p, state)
+    local PickupMod = getPickupModule()
+    if not PickupMod or not p.node then return nil end
+    if not state.path or state.pathIdx > #state.path then return nil end
+
+    local pos = p.node.position
+    local px, py = pos.x, pos.y
+    -- 主路径下一个目标的位置
+    local nextPlat = state.path[state.pathIdx]
+    if not nextPlat then return nil end
+
+    -- 满能量就别绕了，能量会浪费
+    if p.energy >= 0.95 then return nil end
+
+    local list = PickupMod.GetActivePickups()
+    if #list == 0 then return nil end
+
+    local best, bestScore = nil, -math.huge
+    for _, pk in ipairs(list) do
+        local dx = pk.x - px
+        local dy = pk.y - py
+        -- 限制：不能偏离当前位置太远，且大致在同一高度（避免下来再上去）
+        if math.abs(dx) <= PICKUP_DETOUR_MAX_DX and math.abs(dy) <= PICKUP_DETOUR_MAX_DY then
+            -- 必须在通往目标的方向上（同侧）才考虑
+            local toTarget = nextPlat.cx - px
+            local sameSide = (toTarget >= 0 and dx >= -1.0) or (toTarget < 0 and dx <= 1.0)
+            if sameSide then
+                -- 评分：amount 大 + 距离近 + 顺路（dx 与 toTarget 同号更好）
+                local distScore = -math.sqrt(dx * dx + dy * dy * 1.5)
+                local sizeScore = (pk.amount or 0.2) * 5.0
+                local detourPenalty = math.abs(dx - toTarget) * 0.2
+                local score = distScore + sizeScore - detourPenalty
+                if score > bestScore then
+                    bestScore = score
+                    best = pk
+                end
+            end
+        end
+    end
+    return best
 end
 
 -- ============================================================================

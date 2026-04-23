@@ -67,6 +67,12 @@ local dbg_lastAction_ = "none"       -- 上次触发的动作
 local dbg_lastActionTime_ = 0        -- 上次动作时间
 local dbg_btnReturnTrue_ = 0         -- DrawRubberButton 返回 true 的次数
 
+-- 帧率监测（每秒采样一次）
+local fpsRenderFrames_ = 0
+local fpsLastSample_ = -1            -- -1 表示尚未初始化
+local fpsRenderValue_ = 0            -- 显示用的渲染 FPS
+local fpsNetValue_ = 0               -- 显示用的网络发送 FPS
+
 --- 在 Update 阶段缓存鼠标输入状态
 --- 使用 GetMouseButtonDown + 前帧状态差分，彻底规避 GetMouseButtonPress 时序问题
 --- 必须由 Client.HandleUpdate / Standalone.HandleUpdate 在每帧开头调用
@@ -233,6 +239,9 @@ function HandleNanoVGRender(eventType, eventData)
     HUD.UpdateKillFloats(renderDt)
 
     nvgBeginFrame(vg_, logW_, logH_, dpr_)
+
+    -- 帧率监控（覆盖所有界面分支，最先采样最准）
+    HUD.DrawFpsHud()
 
     local state = gameManager_ and gameManager_.state or "racing"
 
@@ -1532,6 +1541,67 @@ function HUD.DrawMatchEnd()
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
     nvgText(vg_, logW_ * 0.5, logH_ - 30, "New match starting soon...")
+end
+
+--- 右下角帧率显示（渲染 FPS / 网络发送 FPS）
+--- 每秒采样一次：渲染 FPS 自统计，网络 FPS 从 _G.NetSendFps 读取
+function HUD.DrawFpsHud()
+    -- 采样累计（使用引擎 wall-clock 时间，os.clock 在 WASM 下不可靠）
+    fpsRenderFrames_ = fpsRenderFrames_ + 1
+    local now = time:GetElapsedTime()
+    if fpsLastSample_ < 0 then
+        fpsLastSample_ = now
+    end
+    local elapsed = now - fpsLastSample_
+    if elapsed >= 1.0 then
+        fpsRenderValue_ = math.floor(fpsRenderFrames_ / elapsed + 0.5)
+        -- 网络发送频率：优先使用 _G.NetSendFps（Client 实测），否则回退引擎配置
+        local measured = _G.NetSendFps
+        if measured and measured > 0 then
+            fpsNetValue_ = math.floor(measured + 0.5)
+        elseif network and network.GetUpdateFps then
+            fpsNetValue_ = network:GetUpdateFps()
+        else
+            fpsNetValue_ = 0
+        end
+        fpsRenderFrames_ = 0
+        fpsLastSample_ = now
+    end
+
+    -- 绘制
+    nvgSave(vg_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 14)
+    nvgTextAlign(vg_, NVG_ALIGN_RIGHT + NVG_ALIGN_BOTTOM)
+
+    local pad = 8
+    local lineH = 16
+    local boxW = 130
+    local boxH = lineH * 2 + pad * 2
+    local boxX = logW_ - boxW - 8
+    local boxY = logH_ - boxH - 8
+
+    -- 半透明背景
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, boxX, boxY, boxW, boxH, 4)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+    nvgFill(vg_)
+
+    -- 渲染 FPS（绿色 / 黄色 / 红色 阈值着色）
+    local rR, rG, rB = 120, 255, 120
+    if fpsRenderValue_ < 30 then rR, rG, rB = 255, 80, 80
+    elseif fpsRenderValue_ < 50 then rR, rG, rB = 255, 220, 80 end
+    nvgFillColor(vg_, nvgRGBA(rR, rG, rB, 255))
+    nvgText(vg_, boxX + boxW - pad, boxY + pad + lineH, "Render: " .. fpsRenderValue_ .. " fps")
+
+    -- 网络发送 FPS
+    local nR, nG, nB = 120, 255, 255
+    if fpsNetValue_ < 20 then nR, nG, nB = 255, 80, 80
+    elseif fpsNetValue_ < 45 then nR, nG, nB = 255, 220, 80 end
+    nvgFillColor(vg_, nvgRGBA(nR, nG, nB, 255))
+    nvgText(vg_, boxX + boxW - pad, boxY + pad + lineH * 2, "Net:    " .. fpsNetValue_ .. " fps")
+
+    nvgRestore(vg_)
 end
 
 --- 画面调试覆盖层（左上角显示输入/连接状态）

@@ -54,11 +54,14 @@ end
 ---@param index number 玩家编号 1~4
 ---@return Node visualNode, Material mat, Material outlineMat
 function Player.CreateVisuals(node, index)
-    local visualNode = node:CreateChild("Visual")
+    -- 关键：所有视觉子节点用 LOCAL 模式创建
+    -- 在 REPLICATED 父节点（Player_N）下若用默认 REPLICATED 模式，
+    -- 客户端创建的子节点会与服务端节点同步逻辑产生 hash 冲突，导致视觉随机消失
+    local visualNode = node:CreateChild("Visual", LOCAL)
     visualNode.scale = Vector3(0.9, 0.9, 0.9)
 
     -- 方块外观（圆角矩形）
-    local geom = visualNode:CreateComponent("CustomGeometry")
+    local geom = visualNode:CreateComponent("CustomGeometry", LOCAL)
     mapModule_.BuildRoundedBox(geom, Config.BlockSize, 0.1)
     geom.castShadows = true
 
@@ -70,11 +73,11 @@ function Player.CreateVisuals(node, index)
     mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
     geom:SetMaterial(mat)
 
-    -- 描边子节点
-    local outlineNode = visualNode:CreateChild("Outline")
+    -- 描边子节点（LOCAL，避免与服务端节点同步冲突）
+    local outlineNode = visualNode:CreateChild("Outline", LOCAL)
     outlineNode.position = Vector3(0, 0, 0.1)
     outlineNode.scale = Vector3(1.15, 1.15, 1.0)
-    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+    local outlineGeom = outlineNode:CreateComponent("CustomGeometry", LOCAL)
     mapModule_.BuildRoundedBox(outlineGeom, Config.BlockSize, 0.1)
     outlineGeom.castShadows = false
     local outlineMat = Material:new()
@@ -96,18 +99,18 @@ function Player.CreateVisuals(node, index)
     local eyeBaseZ = -0.48
     local eyeRadius = 0.22
 
-    local eyeL = visualNode:CreateChild("EyeL")
+    local eyeL = visualNode:CreateChild("EyeL", LOCAL)
     eyeL.position = Vector3(-eyeBaseX, eyeBaseY, eyeBaseZ)
     eyeL.scale = Vector3(eyeRadius, eyeRadius, eyeRadius * 0.35)
-    local eyeLModel = eyeL:CreateComponent("StaticModel")
+    local eyeLModel = eyeL:CreateComponent("StaticModel", LOCAL)
     eyeLModel.model = sphereModel
     eyeLModel.castShadows = false
     eyeLModel:SetMaterial(eyeMat)
 
-    local eyeR = visualNode:CreateChild("EyeR")
+    local eyeR = visualNode:CreateChild("EyeR", LOCAL)
     eyeR.position = Vector3(eyeBaseX, eyeBaseY, eyeBaseZ)
     eyeR.scale = Vector3(eyeRadius, eyeRadius, eyeRadius * 0.35)
-    local eyeRModel = eyeR:CreateComponent("StaticModel")
+    local eyeRModel = eyeR:CreateComponent("StaticModel", LOCAL)
     eyeRModel.model = sphereModel
     eyeRModel.castShadows = false
     eyeRModel:SetMaterial(eyeMat)
@@ -139,7 +142,10 @@ function Player.Create(index, isHuman, opts)
     if opts.existingNode then
         node = opts.existingNode
     else
-        node = scene_:CreateChild("Player_" .. index)
+        -- 服务端：REPLICATED（默认），节点会同步到客户端，位置变化也会同步
+        -- 客户端占位/单机：LOCAL，避免与服务端 REPLICATED 节点 ID 冲突
+        local createMode = (networkMode_ == "server") and REPLICATED or LOCAL
+        node = scene_:CreateChild("Player_" .. index, createMode)
         node.position = Vector3(spawnX, spawnY, 0)
     end
 
@@ -156,23 +162,40 @@ function Player.Create(index, isHuman, opts)
         visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
     end
 
-    -- 动态刚体（服务端也需要物理）
-    local body = node:GetComponent("RigidBody") or node:CreateComponent("RigidBody")
-    body.mass = 1.0
-    body.friction = 0.3  -- 降低摩擦：移动由代码直接设置速度，低摩擦避免被地面约束卡住
-    body.linearDamping = 0.05
-    body.collisionLayer = 2
-    body.collisionMask = 0xFFFF
-    body.collisionEventMode = COLLISION_ALWAYS
+    -- 动态刚体（仅服务端/单机需要物理，客户端不创建——避免与服务端复制冲突）
+    local body = nil
+    if networkMode_ ~= "client" then
+        -- 服务端：使用 LOCAL 标志创建物理组件，避免复制到客户端
+        -- 单机：LOCAL 或 REPLICATED 都可以（无网络），统一用 LOCAL
+        local createMode = LOCAL
+        body = node:CreateComponent("RigidBody", createMode)
+        body.mass = 1.0
+        body.friction = 0.3
+        body.linearDamping = 0.05
+        body.collisionLayer = 2
+        body.collisionMask = 0xFFFF
+        body.collisionEventMode = COLLISION_ALWAYS
 
-    -- 2.5D 约束：锁 Z 移动，锁全旋转
-    body.linearFactor = Vector3(1, 1, 0)
-    body.angularFactor = Vector3(0, 0, 0)
+        -- 2.5D 约束：锁 Z 移动，锁全旋转
+        body.linearFactor = Vector3(1, 1, 0)
+        body.angularFactor = Vector3(0, 0, 0)
 
-    local shape = node:GetComponent("CollisionShape") or node:CreateComponent("CollisionShape")
-    -- 使用胶囊体代替方盒：底部圆弧可滑过方块接缝，避免边缘卡顿
-    -- 直径0.9 高度1.0（缩放0.9后有效尺寸: 直径0.81 高度0.9）
-    shape:SetCapsule(0.9, 1.0)
+        local shape = node:CreateComponent("CollisionShape", createMode)
+        shape:SetCapsule(0.9, 1.0)
+    else
+        -- 客户端：如果复制节点已带有物理组件（从服务端复制），移除它们
+        -- 防止客户端本地物理模拟干扰服务端的位置同步
+        local existingBody = node:GetComponent("RigidBody")
+        if existingBody then
+            node:RemoveComponent(existingBody)
+            print("[Player] Removed replicated RigidBody from client player " .. index)
+        end
+        local existingShape = node:GetComponent("CollisionShape")
+        if existingShape then
+            node:RemoveComponent(existingShape)
+            print("[Player] Removed replicated CollisionShape from client player " .. index)
+        end
+    end
 
     -- 玩家数据
     local p = {
@@ -255,15 +278,21 @@ function Player.Create(index, isHuman, opts)
         idleTimer = 0,         -- 静止计时器
     }
 
-    -- 注册碰撞回调
-    node:CreateScriptObject("PlayerCollision")
-    local scriptObj = node:GetScriptObject()
-    if scriptObj then
-        scriptObj.playerData = p
+    -- 注册碰撞回调（仅服务端/单机需要，客户端没有物理体无需碰撞检测）
+    if networkMode_ ~= "client" then
+        node:CreateScriptObject("PlayerCollision")
+        local scriptObj = node:GetScriptObject()
+        if scriptObj then
+            scriptObj.playerData = p
+        end
     end
 
     table.insert(Player.list, p)
-    print("[Player] Created player " .. index .. (isHuman and " (human)" or " (AI)"))
+    print("[Player] Created player " .. index .. (isHuman and " (human)" or " (AI)")
+        .. " mode=" .. networkMode_
+        .. " body=" .. tostring(p.body ~= nil)
+        .. " visual=" .. tostring(p.visualNode ~= nil)
+        .. " pos=" .. tostring(node.position))
 
     return p
 end
@@ -689,23 +718,61 @@ local DASH_ROLL_DECAY  = 1200  -- 非冲刺时旋转回弹速度（度/秒）
 ---@param p table
 ---@param dt number
 function Player.UpdateVisualEffects(p, dt)
-    if not p.visualNode then return end
+    if not p.visualNode or not p.node then return end
+
+    -- =====================
+    -- 由位置推算速度（兼容客户端无刚体场景）
+    -- =====================
+    local curX = p.node.position.x
+    local curY = p.node.position.y
+    local invDt = 1.0 / math.max(dt, 1e-4)
+    local estVx = ((p.lastVisX ~= nil) and (curX - p.lastVisX) * invDt) or 0
+    local estVy = ((p.lastVisY ~= nil) and (curY - p.lastVisY) * invDt) or 0
+    p.lastVisX = curX
+    p.lastVisY = curY
 
     -- =====================
     -- 撞墙 squash 触发
+    -- 服务端：用 hitWallX + 刚体速度
+    -- 客户端：用速度突变（上一帧水平速度大、本帧骤降）
     -- =====================
-    if p.hitWallX ~= 0 and p.body then
+    if p.body and p.hitWallX ~= 0 then
         local vx = math.abs(p.body.linearVelocity.x)
-        -- 只有水平速度足够大才触发（避免贴墙静止时触发）
         if vx > 2.0 then
             local squashAmount = math.min(vx / 25.0, 0.3)
             if squashAmount > 0.04 then
-                p.squashScaleX = 1.0 - squashAmount       -- 横向压扁
-                p.squashScaleY = 1.0 + squashAmount * 0.5 -- 纵向膨胀
+                p.squashScaleX = 1.0 - squashAmount
+                p.squashScaleY = 1.0 + squashAmount * 0.5
                 p.squashVelX = 0
                 p.squashVelY = 0
             end
         end
+    elseif not p.body then
+        local prevVx = p.prevEstVx or 0
+        local absPrev = math.abs(prevVx)
+        local absCur = math.abs(estVx)
+        if absPrev > 4.0 and absCur < absPrev * 0.4 then
+            local squashAmount = math.min(absPrev / 25.0, 0.3)
+            if squashAmount > 0.04 then
+                p.squashScaleX = 1.0 - squashAmount
+                p.squashScaleY = 1.0 + squashAmount * 0.5
+                p.squashVelX = 0
+                p.squashVelY = 0
+            end
+        end
+        -- 落地 squash:垂直速度从大幅下落骤减为 0 附近
+        local prevVy = p.prevEstVy or 0
+        if prevVy < -6.0 and estVy > -1.0 then
+            local landAmount = math.min(math.abs(prevVy) / 30.0, 0.3)
+            if landAmount > 0.04 then
+                p.squashScaleY = 1.0 - landAmount
+                p.squashScaleX = 1.0 + landAmount * 0.5
+                p.squashVelX = 0
+                p.squashVelY = 0
+            end
+        end
+        p.prevEstVx = estVx
+        p.prevEstVy = estVy
     end
 
     -- =====================
@@ -824,15 +891,17 @@ function Player.UpdateEyes(p, dt)
     -- 2) 垂直偏移：跟随跳跃/下落
     -- =====================
     local targetOffsetY = 0
+    local vy = 0
     if p.body then
-        local vy = p.body.linearVelocity.y
-        if vy > 2.0 then
-            -- 上升：眼睛看上方
-            targetOffsetY = math.min(vy / 15.0, 1.0) * 0.10
-        elseif vy < -2.0 then
-            -- 下落：眼睛看下方
-            targetOffsetY = math.max(vy / 15.0, -1.0) * 0.10
-        end
+        vy = p.body.linearVelocity.y
+    elseif p.prevVelY then
+        -- 客户端无物理体：使用位置差值推断的垂直速度
+        vy = p.prevVelY
+    end
+    if vy > 2.0 then
+        targetOffsetY = math.min(vy / 15.0, 1.0) * 0.10
+    elseif vy < -2.0 then
+        targetOffsetY = math.max(vy / 15.0, -1.0) * 0.10
     end
     p.eyeOffsetY = p.eyeOffsetY + (targetOffsetY - p.eyeOffsetY) * math.min(1.0, dt * 8)
 
@@ -1034,8 +1103,16 @@ function Player.DoExplode(p, progress)
     local pos = p.node.position
     local centerGX, centerGY = mapModule_.WorldToGrid(pos.x, pos.y)
 
-    -- 破坏地图方块
-    local destroyed = mapModule_.Explode(centerGX, centerGY, actualRadius)
+    -- 破坏地图方块（服务端权威，客户端不在这里破坏）
+    local destroyed = 0
+    if networkMode_ ~= "client" then
+        destroyed = mapModule_.Explode(centerGX, centerGY, actualRadius)
+    end
+
+    -- 通知服务端广播爆炸事件（服务端侧调用）
+    if networkMode_ == "server" and Player.onExplode then
+        Player.onExplode(p.index, centerGX, centerGY, actualRadius)
+    end
 
     -- 检测范围内其他玩家（服务端权威，客户端不判定击杀）
     if networkMode_ ~= "client" then
@@ -1079,7 +1156,7 @@ end
 function Player.SpawnExplosionFX(pos, playerIndex)
     if scene_ == nil then return end
 
-    local fxNode = scene_:CreateChild("ExplosionFX")
+    local fxNode = scene_:CreateChild("ExplosionFX", LOCAL)
     fxNode.position = Vector3(pos.x, pos.y, -0.5)
 
     -- 程序化创建粒子效果
@@ -1150,7 +1227,7 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     emitter.autoRemoveMode = REMOVE_NODE
 
     -- 也添加一个大的快速扩散环（冲击波）
-    local ringNode = scene_:CreateChild("ShockwaveFX")
+    local ringNode = scene_:CreateChild("ShockwaveFX", LOCAL)
     ringNode.position = Vector3(pos.x, pos.y, -0.5)
 
     local ringEffect = ParticleEffect:new()
@@ -1202,6 +1279,14 @@ end
 ---@type fun(killerIndex: number, victimIndex: number, multiKillCount: number, killStreak: number)|nil
 Player.onKill = nil
 
+--- 爆炸事件回调（由 Server 注册，用于广播爆炸同步）
+---@type fun(playerIndex: number, centerGX: number, centerGY: number, actualRadius: number)|nil
+Player.onExplode = nil
+
+--- 玩家死亡事件回调（由 Server 注册，用于广播死亡同步）
+---@type fun(playerIndex: number, reason: string, killerIndex: number|nil)|nil
+Player.onDeath = nil
+
 --- 击杀玩家
 ---@param p table
 ---@param reason string "explosion"|"fall"
@@ -1235,6 +1320,11 @@ function Player.Kill(p, reason, killerIndex)
                 break
             end
         end
+    end
+
+    -- 通知服务端广播死亡事件
+    if networkMode_ == "server" and Player.onDeath then
+        Player.onDeath(p.index, reason, killerIndex)
     end
 
     -- 隐藏玩家节点 + 停止物理
@@ -1281,7 +1371,7 @@ function Player.SpawnSplatFX(pos, playerIndex)
     local r, g, b = color.r, color.g, color.b
 
     -- === 第 1 层：大量碎片向四周飞散（主体喷溅） ===
-    local fxNode = scene_:CreateChild("SplatFX")
+    local fxNode = scene_:CreateChild("SplatFX", LOCAL)
     fxNode.position = Vector3(pos.x, pos.y, -0.3)
 
     local effect = ParticleEffect:new()
@@ -1329,7 +1419,7 @@ function Player.SpawnSplatFX(pos, playerIndex)
     emitter.autoRemoveMode = REMOVE_NODE
 
     -- === 第 2 层：中心闪光爆裂（白→玩家色，大粒子快速膨胀消失） ===
-    local flashNode = scene_:CreateChild("SplatFlash")
+    local flashNode = scene_:CreateChild("SplatFlash", LOCAL)
     flashNode.position = Vector3(pos.x, pos.y, -0.35)
 
     local flashEffect = ParticleEffect:new()
@@ -1374,7 +1464,7 @@ function Player.SpawnSplatFX(pos, playerIndex)
     flashEmitter.autoRemoveMode = REMOVE_NODE
 
     -- === 第 3 层：彩色星星/碎屑飞散（白色小亮点） ===
-    local starNode = scene_:CreateChild("SplatStars")
+    local starNode = scene_:CreateChild("SplatStars", LOCAL)
     starNode.position = Vector3(pos.x, pos.y, -0.32)
 
     local starEffect = ParticleEffect:new()
@@ -1438,7 +1528,7 @@ function Player.SpawnDeathFace(p, pos)
     -- 与角色完全重合：角色 visualNode 的 scale 是 0.9，BlockSize 是 1.0
     local charSize = Config.BlockSize * 0.9
 
-    local fxNode = scene_:CreateChild("DeathFace_" .. p.index)
+    local fxNode = scene_:CreateChild("DeathFace_" .. p.index, LOCAL)
     fxNode.position = Vector3(pos.x, pos.y, 0)
 
     local planeNode = fxNode:CreateChild("FacePlane")
@@ -1592,6 +1682,248 @@ function Player.GetAlivePositions()
         end
     end
     return positions
+end
+
+-- ============================================================================
+-- 客户端专用更新（仅视觉，不做物理/爆炸/击杀/死亡判定）
+-- ============================================================================
+
+-- 客户端诊断计时器（每5秒输出一次状态摘要）
+local clientDiagTimer_ = 0
+
+--- 客户端专用：更新所有玩家（仅视觉效果）
+---@param dt number
+function Player.UpdateAllClient(dt)
+    -- 每5秒输出一次诊断
+    clientDiagTimer_ = clientDiagTimer_ + dt
+    if clientDiagTimer_ >= 5.0 then
+        clientDiagTimer_ = 0
+        for _, p in ipairs(Player.list) do
+            local pos = p.node and p.node.position or Vector3.ZERO
+            local enabled = p.node and p.node.enabled or false
+            print("[Player.Diag] p" .. p.index
+                .. " alive=" .. tostring(p.alive)
+                .. " enabled=" .. tostring(enabled)
+                .. " body=" .. tostring(p.body ~= nil)
+                .. " visual=" .. tostring(p.visualNode ~= nil)
+                .. " pos=" .. string.format("%.1f,%.1f", pos.x, pos.y)
+                .. " faceDir=" .. p.lastFaceDir
+                .. " moveX=" .. p.inputMoveX)
+        end
+    end
+
+    for _, p in ipairs(Player.list) do
+        Player.UpdateOneClient(p, dt)
+    end
+end
+
+--- 客户端专用：更新单个玩家（仅视觉，不做物理/输入/爆炸/死亡）
+---@param p table
+---@param dt number
+function Player.UpdateOneClient(p, dt)
+    if not p.alive then
+        -- 死亡状态：检测服务端是否已通过场景复制重新启用节点
+        p.respawnTimer = p.respawnTimer - dt
+        if p.node and p.node.enabled then
+            -- 服务端已 Respawn 并 enable 了节点（通过复制同步到客户端）
+            -- 客户端本地执行 Respawn 恢复 alive 和视觉状态
+            Player.Respawn(p)
+            print("[Player] Client detected server respawn for player " .. p.index)
+            return
+        end
+        -- 哭脸弹出动画
+        if p.deathFacePlane and p.deathFaceTimer ~= nil then
+            p.deathFaceTimer = p.deathFaceTimer + dt
+            local dur = 0.2
+            local t = math.min(p.deathFaceTimer / dur, 1.0)
+            local s
+            if t < 1.0 then
+                s = 1.0 - math.cos(t * math.pi * 0.5)
+                s = s + math.sin(t * math.pi * 2.5) * (1.0 - t) * 0.35
+                s = s * 1.15
+            else
+                s = 1.0
+            end
+            local sz = p.deathFaceTargetSize * s
+            p.deathFacePlane.scale = Vector3(sz, 1.0, sz)
+        end
+        return
+    end
+
+    if p.finished then return end
+
+    -- 无敌闪烁
+    if p.invincibleTimer > 0 then
+        p.invincibleTimer = p.invincibleTimer - dt
+        local blink = (math.floor(p.invincibleTimer * 10) % 2 == 0)
+        if p.visualNode then
+            p.visualNode.enabled = blink
+        end
+        if p.invincibleTimer <= 0 then
+            if p.visualNode then p.visualNode.enabled = true end
+        end
+    end
+
+    -- 爆炸后摇视觉（计时递减，不做物理）
+    if p.explodeRecovery > 0 then
+        p.explodeRecovery = p.explodeRecovery - dt
+    end
+
+    -- 蓄力视觉效果（本机玩家本地即时反馈）
+    if p.isHuman then
+        local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
+        if leftDown and not p.charging and p.energy >= 1.0 then
+            -- 开始蓄力视觉
+            p.charging = true
+            p.chargeTimer = 0
+            p.chargeProgress = 0
+        end
+        if p.charging then
+            if leftDown then
+                p.chargeTimer = math.min(p.chargeTimer + dt, Config.ExplosionChargeTime)
+                p.chargeProgress = p.chargeTimer / Config.ExplosionChargeTime
+                Player.UpdateExplodeVisual(p)
+            else
+                -- 松开时：等待服务端 EXPLODE_SYNC 来执行实际爆炸
+                -- 这里不做任何事情，HandleRemoteExplode 会重置蓄力状态
+            end
+        end
+    end
+
+    -- 着陆检测（仅视觉：squash 效果）
+    if p.onGround and not p.wasOnGround then
+        p.jumpCount = 0
+        local impactSpeed = math.abs(p.prevVelY)
+        local squashAmount = math.min(impactSpeed / 30.0, 0.35)
+        if squashAmount > 0.04 then
+            p.squashScaleY = 1.0 - squashAmount
+            p.squashScaleX = 1.0 + squashAmount * 0.6
+            p.squashVelY = 0
+            p.squashVelX = 0
+        end
+    end
+
+    -- 连杀窗口递减（视觉用）
+    if p.multiKillTimer > 0 then
+        p.multiKillTimer = p.multiKillTimer - dt
+        if p.multiKillTimer <= 0 then p.multiKillCount = 0 end
+    end
+
+    -- 面朝方向（客户端无物理体，从位置变化推断）
+    if p.node and p.node.enabled then
+        local curPos = p.node.position
+        if p.prevPosition then
+            local dx = curPos.x - p.prevPosition.x
+            local dy = curPos.y - p.prevPosition.y
+            -- 用位置差值推断水平方向
+            if dx > 0.02 then p.lastFaceDir = 1
+            elseif dx < -0.02 then p.lastFaceDir = -1 end
+            -- 推断 inputMoveX（供眼睛动画用）
+            if math.abs(dx) > 0.02 then
+                p.inputMoveX = dx > 0 and 1 or -1
+            else
+                p.inputMoveX = 0
+            end
+            -- 推断垂直速度（用于着陆冲击计算）
+            if dt > 0 then
+                p.prevVelY = dy / dt
+            end
+            -- 简易地面检测：Y 坐标几乎不变 → 可能在地面上
+            if math.abs(dy) < 0.01 and math.abs(curPos.y - (p.prevPosition.y or curPos.y)) < 0.02 then
+                p.onGround = true
+            end
+        end
+        p.prevPosition = Vector3(curPos.x, curPos.y, curPos.z)
+    end
+
+    -- 视觉动效（squash & stretch、眼睛动画）
+    Player.UpdateVisualEffects(p, dt)
+
+    -- 记录帧状态
+    p.wasOnGround = p.onGround
+    p.onGround = false
+    p.hitCeiling = false
+    p.hitWallX = 0
+end
+
+--- 客户端处理远程爆炸同步：执行地图破坏 + 视觉/音效
+---@param playerIndex number 爆炸者玩家编号
+---@param centerGX number 爆炸中心网格 X
+---@param centerGY number 爆炸中心网格 Y
+---@param actualRadius number 爆炸半径（格）
+function Player.HandleRemoteExplode(playerIndex, centerGX, centerGY, actualRadius)
+    -- 在客户端地图上执行破坏（客户端 MapRoot 是 LOCAL 的）
+    mapModule_.Explode(centerGX, centerGY, actualRadius)
+
+    -- 找到爆炸者的位置用于特效
+    local pos = nil
+    for _, p in ipairs(Player.list) do
+        if p.index == playerIndex then
+            if p.node then
+                pos = p.node.position
+            end
+            -- 重置该玩家的蓄力视觉
+            p.charging = false
+            p.chargeTimer = 0
+            p.chargeProgress = 0
+            p.explodeRecovery = Config.ExplosionRecovery
+            p.onGround = false
+            p.wasOnGround = false
+            Player.RestoreMaterial(p)
+            break
+        end
+    end
+
+    if pos then
+        -- 视觉特效
+        Player.SpawnExplosionFX(pos, playerIndex)
+        -- 屏幕震动
+        local shakeIntensity = 0.15 + actualRadius * 0.05
+        Camera.Shake(shakeIntensity, 0.25)
+        -- 音效
+        SFX.Play("explosion", 0.8)
+    end
+
+    print("[Player] Remote explode: player=" .. playerIndex .. " radius=" .. actualRadius)
+end
+
+--- 客户端处理远程死亡同步：执行死亡视觉效果
+---@param playerIndex number 死亡玩家编号
+---@param reason string "explosion"|"fall"
+---@param killerIndex number|nil 击杀者编号
+function Player.ClientDeath(playerIndex, reason, killerIndex)
+    for _, p in ipairs(Player.list) do
+        if p.index == playerIndex then
+            if not p.alive then return end  -- 已经死了，不重复处理
+
+            p.alive = false
+            p.respawnTimer = Config.RespawnDelay
+            p.killStreak = 0
+
+            -- 隐藏玩家 + 停止物理
+            if p.node then
+                local deathPos = p.node.position
+
+                if p.body then
+                    p.body.linearVelocity = Vector3.ZERO
+                end
+                if p.visualNode then
+                    p.visualNode.enabled = false
+                end
+                p.node.enabled = false
+
+                -- 爆炸死亡：喷溅特效 + 哭脸
+                if reason == "explosion" then
+                    Player.SpawnSplatFX(deathPos, p.index)
+                    Player.SpawnDeathFace(p, deathPos)
+                end
+            end
+
+            SFX.Play("death", 0.7)
+            print("[Player] Client death: player=" .. playerIndex .. " reason=" .. reason)
+            return
+        end
+    end
 end
 
 --- 获取人类玩家位置（即使死亡也返回重生点，保证相机始终能跟踪）

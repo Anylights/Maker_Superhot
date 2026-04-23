@@ -42,7 +42,7 @@ local animDuration_ = 1.0
 --- 初始化相机
 ---@param scene Scene
 function Camera.Init(scene)
-    Camera.node = scene:CreateChild("Camera")
+    Camera.node = scene:CreateChild("Camera", LOCAL)
     Camera.node.position = Vector3(0, 5, Config.CameraZ)
     Camera.node.rotation = Quaternion(0, 0, 0)
 

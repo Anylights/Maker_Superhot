@@ -10,9 +10,16 @@ local Pickup = {}
 ---@type Scene
 local scene_ = nil
 local playerModule_ = nil  -- Player 模块引用
+local networkMode_ = "standalone"  -- "standalone" | "server" | "client"
 
 -- 活跃拾取物列表
 local pickups_ = {}
+
+--- 设置网络模式（必须在 Init 之前或之后立即调用）
+---@param mode string "standalone" | "server" | "client"
+function Pickup.SetNetworkMode(mode)
+    networkMode_ = mode
+end
 
 -- 材质缓存
 local smallMat_ = nil
@@ -112,45 +119,63 @@ local function buildDiamond(geom, w, h, d)
     geom:Commit()
 end
 
+--- 为已有节点挂上视觉子节点（LOCAL 模式，避免与服务端节点同步冲突）
+---@param node Node REPLICATED 父节点
+---@param size string "small"|"large"
+local function attachVisualsTo(node, size)
+    local isLarge = (size == "large")
+    local scale = isLarge and 0.6 or 0.4
+    local dw = scale * 0.5
+    local dh = scale * 0.7
+    local dd = scale * 0.35
+
+    -- 主体钻石（CustomGeometry 是组件，跟随 node 的 mode；显式重建在子节点更稳）
+    local visualNode = node:CreateChild("Visual", LOCAL)
+    local geom = visualNode:CreateComponent("CustomGeometry", LOCAL)
+    buildDiamond(geom, dw, dh, dd)
+    geom.castShadows = true
+    geom:SetMaterial(isLarge and largeMat_ or smallMat_)
+
+    -- 描边
+    local outlineNode = visualNode:CreateChild("Outline", LOCAL)
+    outlineNode.position = Vector3(0, 0, 0.08)
+    outlineNode.scale = Vector3(1.18, 1.18, 1.0)
+    local outGeom = outlineNode:CreateComponent("CustomGeometry", LOCAL)
+    buildDiamond(outGeom, dw, dh, dd)
+    outGeom.castShadows = false
+    outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
+end
+
 --- 生成单个拾取物
 ---@param x number 世界 X
 ---@param y number 世界 Y
 ---@param size string "small"|"large"
 function Pickup.Spawn(x, y, size)
-    local node = scene_:CreateChild("Pickup_" .. size)
+    -- 节点：服务端创建 REPLICATED（默认）让客户端能感知；
+    -- 单机/客户端创建 LOCAL（不会触发同步）
+    local createMode = (networkMode_ == "server") and REPLICATED or LOCAL
+    local node = scene_:CreateChild("Pickup_" .. size, createMode)
     node.position = Vector3(x, y, 0)
 
     local isLarge = (size == "large")
     local scale = isLarge and 0.6 or 0.4
 
-    -- 钻石造型尺寸（世界坐标）
-    local dw = scale * 0.5   -- X 半径
-    local dh = scale * 0.7   -- Y 半径（略高，更像钻石）
-    local dd = scale * 0.35  -- Z 半径
+    -- 视觉：服务端跳过；其它模式（standalone/client）立即挂上
+    if networkMode_ ~= "server" then
+        attachVisualsTo(node, size)
+    end
 
-    -- 主体钻石
-    local geom = node:CreateComponent("CustomGeometry")
-    buildDiamond(geom, dw, dh, dd)
-    geom.castShadows = true
-    geom:SetMaterial(isLarge and largeMat_ or smallMat_)
+    -- 物理：仅服务端 / 单机需要触发器；客户端不需要（客户端不做拾取判定）
+    if networkMode_ ~= "client" then
+        local bodyMode = (networkMode_ == "server") and LOCAL or REPLICATED
+        local body = node:CreateComponent("RigidBody", bodyMode)
+        body.trigger = true
+        body.collisionLayer = 4
+        body.collisionMask = 2
 
-    -- 描边子节点（略大，Z 偏后）
-    local outlineNode = node:CreateChild("Outline")
-    outlineNode.position = Vector3(0, 0, 0.08)
-    outlineNode.scale = Vector3(1.18, 1.18, 1.0)
-    local outGeom = outlineNode:CreateComponent("CustomGeometry")
-    buildDiamond(outGeom, dw, dh, dd)
-    outGeom.castShadows = false
-    outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
-
-    -- 触发器刚体
-    local body = node:CreateComponent("RigidBody")
-    body.trigger = true
-    body.collisionLayer = 4
-    body.collisionMask = 2  -- 只检测玩家
-
-    local shape = node:CreateComponent("CollisionShape")
-    shape:SetSphere(scale * 1.2)
+        local shape = node:CreateComponent("CollisionShape", bodyMode)
+        shape:SetSphere(scale * 1.2)
+    end
 
     local pickup = {
         node = node,
@@ -160,10 +185,39 @@ function Pickup.Spawn(x, y, size)
         respawnTimer = 0,
         spawnX = x,
         spawnY = y,
-        bobPhase = math.random() * math.pi * 2,  -- 随机初始浮动相位
+        bobPhase = math.random() * math.pi * 2,
     }
 
     table.insert(pickups_, pickup)
+end
+
+--- 客户端：处理服务端复制过来的 Pickup_xxx 节点（NodeAdded 触发）
+---@param node Node REPLICATED 节点
+function Pickup.AttachClientVisualsForNode(node)
+    if not node then return end
+    local name = node.name
+    local size
+    if name == "Pickup_small" then size = "small"
+    elseif name == "Pickup_large" then size = "large"
+    else return end
+
+    -- 防重复
+    if node:GetChild("Visual", false) then return end
+    attachVisualsTo(node, size)
+
+    -- 加入 pickups_ 用于 UpdateVisuals 的旋转/浮动动画
+    local isLarge = (size == "large")
+    table.insert(pickups_, {
+        node = node,
+        size = size,
+        amount = isLarge and Config.LargeEnergyAmount or Config.SmallEnergyAmount,
+        active = true,
+        respawnTimer = 0,
+        spawnX = node.position.x,
+        spawnY = node.position.y,
+        bobPhase = math.random() * math.pi * 2,
+    })
+    print("[Pickup] Client visual attached to " .. name .. " (id=" .. node.ID .. ")")
 end
 
 -- ============================================================================
@@ -201,6 +255,10 @@ function Pickup.Update(dt)
                             pk.collected = true
                             SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6)
                             print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " energy")
+                            -- 服务端：广播拾取事件给所有客户端，触发即时视觉移除
+                            if networkMode_ == "server" and Pickup.onCollected then
+                                Pickup.onCollected(pk.node and pk.node.ID or 0, p.index, pk.size)
+                            end
                             break
                         end
                     end
@@ -216,6 +274,25 @@ function Pickup.Update(dt)
                 pickups_[i].node:Remove()
             end
             table.remove(pickups_, i)
+        end
+    end
+end
+
+--- 客户端专用：仅更新视觉动画（旋转+浮动），不做碰撞检测
+---@param dt number
+function Pickup.UpdateVisuals(dt)
+    -- 反向遍历，剔除被服务端 Remove 后变成无效引用的节点
+    for i = #pickups_, 1, -1 do
+        local pk = pickups_[i]
+        local node = pk.node
+        -- node:GetID() == 0 表示节点已被销毁
+        if not node or node.ID == 0 or not node.parent then
+            table.remove(pickups_, i)
+        elseif pk.active then
+            node:Rotate(Quaternion(0, 120 * dt, 0))
+            pk.bobPhase = (pk.bobPhase or 0) + dt * 3.0
+            local bobOffset = math.sin(pk.bobPhase) * 0.12
+            node.position = Vector3(pk.spawnX, pk.spawnY + bobOffset, 0)
         end
     end
 end
@@ -251,8 +328,32 @@ function Pickup.HasPickupNear(x, y, radius)
     return false
 end
 
+--- 客户端专用：根据服务端广播的 NodeID 立即移除拾取物（视觉与索引）
+---@param nodeId number
+---@return boolean removed 是否成功移除
+function Pickup.RemoveByNodeID(nodeId)
+    if not nodeId or nodeId == 0 then return false end
+    for i = #pickups_, 1, -1 do
+        local pk = pickups_[i]
+        if pk.node and pk.node.ID == nodeId then
+            -- 客户端不能 Remove REPLICATED 节点，但可以移除本地的 Visual 子节点让它消失
+            local visual = pk.node:GetChild("Visual", false)
+            if visual then visual:Remove() end
+            table.remove(pickups_, i)
+            return true
+        end
+    end
+    return false
+end
+
 --- 清除所有拾取物
 function Pickup.ClearAll()
+    -- 客户端：不能 Remove REPLICATED 节点（会与服务端同步冲突）
+    -- 仅清空本地索引；节点自身由服务端 Remove 后通过同步消失
+    if networkMode_ == "client" then
+        pickups_ = {}
+        return
+    end
     for _, pk in ipairs(pickups_) do
         if pk.node then
             pk.node:Remove()

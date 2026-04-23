@@ -72,10 +72,11 @@ function MapData.Generate()
                 end
 
                 -- 收集 P1-P4 出生点
+                -- spawnY = 方块顶面 + 玩家半身高(0.5) + 安全余量(0.05)，避免胶囊与方块重叠
                 for pi = 1, 4 do
                     if cell == Config.SpawnBlockTypes[pi] then
                         local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                        local wy = y * Config.BlockSize  -- 站在方块上方
+                        local wy = y * Config.BlockSize + 0.55
                         MapData.SpawnPositions[pi] = { x = wx, y = wy }
                     end
                 end
@@ -83,7 +84,7 @@ function MapData.Generate()
                 -- 兼容旧版 BLOCK_SPAWN（取第一个作为通用起点）
                 if cell == SP and oldSpawnX == nil then
                     oldSpawnX = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                    oldSpawnY = y * Config.BlockSize
+                    oldSpawnY = y * Config.BlockSize + 0.55
                 end
             end
         end
@@ -167,7 +168,7 @@ function MapData.Generate()
             for pi = 1, 4 do
                 if cell == Config.SpawnBlockTypes[pi] then
                     local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                    local wy = y * Config.BlockSize
+                    local wy = y * Config.BlockSize + 0.55
                     MapData.SpawnPositions[pi] = { x = wx, y = wy }
                 end
             end

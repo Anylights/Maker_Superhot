@@ -68,6 +68,10 @@ local activeGame_ = nil       -- { players={...}, roomCode, isQuick, state }
 -- 服务端时间
 local serverTime_ = 0
 
+-- 定期广播游戏状态的间隔计时器
+local gameStateBroadcastTimer_ = 0
+local GAME_STATE_BROADCAST_INTERVAL = 1.0  -- 每秒广播一次
+
 -- ============================================================================
 -- Entry
 -- ============================================================================
@@ -77,6 +81,9 @@ function Server.Start()
     graphics.windowTitle = Config.Title .. " [Server]"
     print("=== " .. Config.Title .. " (Server) ===")
 
+    -- 将网络帧率提升到 60Hz，与渲染帧率对齐，消除输入延迟与卡顿
+    network:SetUpdateFps(60)
+
     -- 创建场景
     Server.CreateScene()
 
@@ -85,24 +92,17 @@ function Server.Start()
     Map.Init(scene_)
     Player.SetNetworkMode("server")
     Player.Init(scene_, Map)
+    Pickup.SetNetworkMode("server")
     Pickup.Init(scene_, Player)
     AIController.Init(Player, Map)
     SFX.Init(scene_)
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, nil)
     RandomPickup.Init(Map, Pickup)
 
-    -- LevelManager.Init() 使用文件系统操作（CreateDir/File），
-    -- 在服务端沙箱环境中可能被禁止，用 pcall 保护防止崩溃
-    local ok, err = pcall(function()
-        LevelManager.Init()
-    end)
-    if not ok then
-        print("[Server] WARNING: LevelManager.Init() failed (expected in sandbox): " .. tostring(err))
-        print("[Server] Continuing without level manager file operations...")
-        -- 手动加载内置关卡到缓存（不写文件）
-        local LevelsData = require("LevelsData")
-        print("[Server] Built-in levels available from LevelsData")
-    end
+    -- LevelManager.Init() 内部已分离缓存填充和文件 I/O：
+    -- 缓存填充是纯内存操作，永远成功；文件 I/O 已有 pcall 保护
+    -- 因此这里不再需要外层 pcall
+    LevelManager.Init()
 
     -- 监听连接事件
     SubscribeToEvent("ClientConnected", "HandleClientConnected")
@@ -125,6 +125,7 @@ function Server.Start()
     end)
 
     print("[Server] Started, waiting for connections...")
+    print("[Server] ✅ All event handlers registered, server fully ready")
 end
 
 function Server.Stop()
@@ -137,20 +138,21 @@ end
 
 function Server.CreateScene()
     scene_ = Scene()
+    -- Octree/PhysicsWorld 必须保持 REPLICATED（默认）：scene 核心组件，影响同步根
     scene_:CreateComponent("Octree")
 
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
 
-    -- 死亡区域
-    local deathZone = scene_:CreateChild("DeathZone")
+    -- 死亡区域（服务端独有 LOCAL，不复制到客户端）
+    local deathZone = scene_:CreateChild("DeathZone", LOCAL)
     deathZone.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
     deathZone.scale = Vector3(MapData.Width + 20, 2, 10)
-    local dzBody = deathZone:CreateComponent("RigidBody")
+    local dzBody = deathZone:CreateComponent("RigidBody", LOCAL)
     dzBody.trigger = true
     dzBody.collisionLayer = 4
     dzBody.collisionMask = 2
-    local dzShape = deathZone:CreateComponent("CollisionShape")
+    local dzShape = deathZone:CreateComponent("CollisionShape", LOCAL)
     dzShape:SetBox(Vector3(1, 1, 1))
 
     print("[Server] Scene created")
@@ -795,12 +797,15 @@ function Server.StartGame(gamePlayers, isQuick, roomCode)
     local grid, fn = LevelManager.GetRandom()
     if grid then
         MapData.SetCustomGrid(grid)
+        print("[Server] Selected level: " .. tostring(fn))
     else
         MapData.ClearCustomGrid()
+        print("[Server] Using default map")
     end
 
-    -- 建图
-    Map.Build()
+    -- 注意：不要在这里调用 Map.Build()！
+    -- GameManager.StartMatch() → StartRound() → Map.Reset() 会调用 Map.Build()
+    -- 重复调用会导致不必要的场景节点翻腾
 
     -- 创建玩家
     Player.list = {}
@@ -811,9 +816,8 @@ function Server.StartGame(gamePlayers, isQuick, roomCode)
         end
     end
 
-    -- 初始化道具
-    Pickup.Reset()
-    RandomPickup.Reset()
+    -- 注意：不要在这里调用 Pickup.Reset() / RandomPickup.Reset()！
+    -- StartRound() 内部已包含这些调用
 
     -- 设置活跃游戏
     activeGame_ = {
@@ -823,7 +827,8 @@ function Server.StartGame(gamePlayers, isQuick, roomCode)
         state = "running",
     }
 
-    -- 为真人玩家分配角色
+    -- 为真人玩家分配角色（包含关卡文件名，让客户端加载同一张地图）
+    local levelFile = fn or ""
     for _, gp in ipairs(gamePlayers) do
         if gp.conn then
             local connData = connections_[gp.connKey]
@@ -836,12 +841,37 @@ function Server.StartGame(gamePlayers, isQuick, roomCode)
                 data["Slot"] = Variant(gp.slot)
                 data["MapWidth"] = Variant(MapData.Width)
                 data["MapHeight"] = Variant(MapData.Height)
+                data["LevelFile"] = Variant(levelFile)
                 gp.conn:SendRemoteEvent(EVENTS.ASSIGN_ROLE, true, data)
             end)
         end
     end
 
-    -- 开始比赛
+    -- 注册爆炸回调 → 广播给所有客户端
+    -- 道具拾取广播：服务端 Remove 节点同步可能延迟，主动通知客户端立即移除视觉
+    Pickup.onCollected = function(nodeId, playerIndex, size)
+        if not activeGame_ then return end
+        local data = VariantMap()
+        data["NodeID"] = Variant(nodeId)
+        data["PlayerIndex"] = Variant(playerIndex)
+        data["Size"] = Variant(size or "")
+        for _, gp in ipairs(activeGame_.players) do
+            if gp.conn and not gp.disconnected then
+                gp.conn:SendRemoteEvent(EVENTS.PICKUP_COLLECTED, true, data)
+            end
+        end
+    end
+
+    Player.onExplode = function(playerIndex, centerGX, centerGY, actualRadius)
+        Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadius)
+    end
+
+    -- 注册死亡回调 → 广播给所有客户端
+    Player.onDeath = function(playerIndex, reason, killerIndex)
+        Server.BroadcastPlayerDeath(playerIndex, reason, killerIndex)
+    end
+
+    -- 开始比赛（内部调用 StartRound → Map.Build + Pickup.Reset + RandomPickup.Reset）
     GameManager.StartMatch()
 
     -- 状态变化回调
@@ -868,12 +898,14 @@ function Server.EndGame()
         end
     end
 
-    -- 重置所有玩家连接状态
+    -- 重置所有玩家连接状态（清空 slot/roomCode/inQuick，否则下一局点匹配/建房会被忽略）
     for _, gp in ipairs(activeGame_.players) do
         if gp.connKey then
             local connData = connections_[gp.connKey]
             if connData then
                 connData.slot = 0
+                connData.roomCode = nil
+                connData.inQuick = false
             end
         end
     end
@@ -894,10 +926,24 @@ function Server.BroadcastGameState()
     data["RoundTimer"] = Variant(GameManager.GetRoundTime())
     data["CountdownTimer"] = Variant(GameManager.stateTimer)
 
-    -- 分数
+    -- 分数 + 玩家状态（能量/生命/完赛）
     for i = 1, Config.NumPlayers do
         data["Score" .. i] = Variant(GameManager.scores[i])
         data["KillScore" .. i] = Variant(GameManager.killScores[i])
+        local p = Player.list[i]
+        if p then
+            data["Energy" .. i] = Variant(p.energy or 0)
+            data["Alive" .. i] = Variant(p.alive and 1 or 0)
+            data["Finished" .. i] = Variant(p.finished and 1 or 0)
+            data["Charging" .. i] = Variant((p.charging and 1) or 0)
+            data["ChargeProg" .. i] = Variant(p.chargeProgress or 0)
+        else
+            data["Energy" .. i] = Variant(0)
+            data["Alive" .. i] = Variant(0)
+            data["Finished" .. i] = Variant(0)
+            data["Charging" .. i] = Variant(0)
+            data["ChargeProg" .. i] = Variant(0)
+        end
     end
 
     -- 回合结果
@@ -932,6 +978,37 @@ function Server.BroadcastKillEvent(killerIdx, victimIdx, multiKill, killStreak)
     for _, gp in ipairs(activeGame_.players) do
         if gp.conn and not gp.disconnected then
             gp.conn:SendRemoteEvent(EVENTS.KILL_EVENT, true, data)
+        end
+    end
+end
+
+function Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadius)
+    if not activeGame_ then return end
+
+    local data = VariantMap()
+    data["PlayerIndex"] = Variant(playerIndex)
+    data["CenterGX"] = Variant(centerGX)
+    data["CenterGY"] = Variant(centerGY)
+    data["Radius"] = Variant(actualRadius)
+
+    for _, gp in ipairs(activeGame_.players) do
+        if gp.conn and not gp.disconnected then
+            gp.conn:SendRemoteEvent(EVENTS.EXPLODE_SYNC, true, data)
+        end
+    end
+end
+
+function Server.BroadcastPlayerDeath(playerIndex, reason, killerIndex)
+    if not activeGame_ then return end
+
+    local data = VariantMap()
+    data["PlayerIndex"] = Variant(playerIndex)
+    data["Reason"] = Variant(reason or "")
+    data["KillerIndex"] = Variant(killerIndex or 0)
+
+    for _, gp in ipairs(activeGame_.players) do
+        if gp.conn and not gp.disconnected then
+            gp.conn:SendRemoteEvent(EVENTS.PLAYER_DEATH, true, data)
         end
     end
 end
@@ -1020,6 +1097,13 @@ function Server.HandleUpdate(dt)
         -- 更新道具
         Pickup.Update(dt)
         RandomPickup.Update(dt)
+
+        -- 定期广播游戏状态（确保客户端计时器、分数等持续同步）
+        gameStateBroadcastTimer_ = gameStateBroadcastTimer_ + dt
+        if gameStateBroadcastTimer_ >= GAME_STATE_BROADCAST_INTERVAL then
+            gameStateBroadcastTimer_ = gameStateBroadcastTimer_ - GAME_STATE_BROADCAST_INTERVAL
+            Server.BroadcastGameState()
+        end
     end
 end
 

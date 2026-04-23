@@ -23,16 +23,25 @@ local runtimeCache_ = {}
 -- ============================================================================
 
 function LevelManager.Init()
-    fileSystem:CreateDir(SAVE_DIR)
-
-    -- 将内置关卡加载到运行时缓存
+    -- 第一步：将所有内置关卡加载到运行时缓存（纯内存操作，永远不会失败）
     for key, data in pairs(LevelsData.levels) do
         runtimeCache_[key] = data
-        -- 同时写入文件系统，方便运行时读取（覆盖旧的）
-        LevelManager.WriteToFileSystem(key, data)
+    end
+    print("[LevelManager] Runtime cache populated: " .. LevelManager.CountTable(runtimeCache_) .. " levels")
+
+    -- 第二步：尝试文件系统操作（服务端沙箱可能禁止，用 pcall 保护）
+    local ok, err = pcall(function()
+        fileSystem:CreateDir(SAVE_DIR)
+        for key, data in pairs(runtimeCache_) do
+            LevelManager.WriteToFileSystem(key, data)
+        end
+    end)
+    if not ok then
+        print("[LevelManager] WARNING: File I/O failed (expected in sandbox): " .. tostring(err))
+        print("[LevelManager] Levels available from runtime cache only")
     end
 
-    print("[LevelManager] Initialized, built-in levels: " .. LevelManager.CountTable(LevelsData.levels))
+    print("[LevelManager] Initialized, total levels: " .. LevelManager.CountTable(runtimeCache_))
 end
 
 --- 统计 table 元素数量
@@ -61,12 +70,16 @@ function LevelManager.List()
         table.insert(result, { filename = fn, name = data.name or key })
     end
 
-    -- 补充文件系统中可能有的但缓存中没有的关卡
-    local files = fileSystem:ScanDir(SAVE_DIR .. "/", "*.json", SCAN_FILES, false)
-    for _, filename in ipairs(files) do
-        if not seen[filename] then
-            local name = LevelManager.ReadNameFromFile(filename)
-            table.insert(result, { filename = filename, name = name })
+    -- 补充文件系统中可能有的但缓存中没有的关卡（ScanDir 在沙箱中可能失败）
+    local scanOk, files = pcall(function()
+        return fileSystem:ScanDir(SAVE_DIR .. "/", "*.json", SCAN_FILES, false)
+    end)
+    if scanOk and files then
+        for _, filename in ipairs(files) do
+            if not seen[filename] then
+                local name = LevelManager.ReadNameFromFile(filename)
+                table.insert(result, { filename = filename, name = name })
+            end
         end
     end
 
@@ -334,11 +347,15 @@ function LevelManager.NextFilename()
         end
     end
 
-    local files = fileSystem:ScanDir(SAVE_DIR .. "/", "*.json", SCAN_FILES, false)
-    for _, f in ipairs(files) do
-        local num = tonumber(f:match("level_(%d+)%.json"))
-        if num and num > maxNum then
-            maxNum = num
+    local scanOk, files = pcall(function()
+        return fileSystem:ScanDir(SAVE_DIR .. "/", "*.json", SCAN_FILES, false)
+    end)
+    if scanOk and files then
+        for _, f in ipairs(files) do
+            local num = tonumber(f:match("level_(%d+)%.json"))
+            if num and num > maxNum then
+                maxNum = num
+            end
         end
     end
 

@@ -35,6 +35,9 @@ Shared.EVENTS = {
     MATCH_FOUND      = "E_MatchFound",          -- 快速匹配成功
     QUICK_UPDATE     = "E_QuickUpdate",         -- 快速匹配队列人数更新
     KILL_EVENT       = "E_KillEvent",           -- 击杀事件广播
+    EXPLODE_SYNC     = "E_ExplodeSync",         -- 爆炸同步（服务端→客户端）
+    PLAYER_DEATH     = "E_PlayerDeath",         -- 玩家死亡同步（服务端→客户端）
+    PICKUP_COLLECTED = "E_PickupCollected",     -- 道具被拾取（服务端→客户端，触发即时移除）
 
     -- 客户端 → 服务端
     CLIENT_READY     = "E_ClientReady",         -- 客户端场景准备完毕

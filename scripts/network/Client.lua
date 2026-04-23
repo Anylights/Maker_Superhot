@@ -128,17 +128,24 @@ function Client.Start()
     graphics.windowTitle = Config.Title
     print("=== " .. Config.Title .. " (Client) ===")
 
+    -- 将网络帧率提升到 60Hz，与渲染帧率对齐，消除输入延迟与卡顿
+    network:SetUpdateFps(60)
+
     -- 创建场景
     Client.CreateScene()
 
-    -- 初始化子系统
+    -- 初始化子系统（客户端跳过地图物理——无动态刚体，节省内存避免 WASM OOM）
+    Map.SetSkipPhysics(true)
     Map.Init(scene_)
     Player.SetNetworkMode("client")
     Player.Init(scene_, Map)
+    Pickup.SetNetworkMode("client")
     Pickup.Init(scene_, Player)
     AIController.Init(Player, Map)
     SFX.Init(scene_)
-    GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, Camera)
+    -- 客户端不传 RandomPickup：道具节点由服务端创建并复制到客户端
+    -- 传 nil 可防止 StartRound() 中 RandomPickup.Reset() 在客户端创建重复的本地道具节点
+    GameManager.Init(Player, Map, Pickup, AIController, nil, Camera)
     Camera.Init(scene_)
 
     -- 设置视口
@@ -182,6 +189,12 @@ function Client.Start()
     SubscribeToEvent(EVENTS.MATCH_FOUND, "HandleMatchFound")
     SubscribeToEvent(EVENTS.QUICK_UPDATE, "HandleQuickUpdate")
     SubscribeToEvent(EVENTS.KILL_EVENT, "HandleKillEvent")
+    SubscribeToEvent(EVENTS.EXPLODE_SYNC, "HandleExplodeSync")
+    SubscribeToEvent(EVENTS.PLAYER_DEATH, "HandlePlayerDeath")
+    SubscribeToEvent(EVENTS.PICKUP_COLLECTED, "HandlePickupCollected")
+
+    -- 监听场景节点新增（用于给服务端复制过来的 Pickup_xxx / Player_N 节点补挂 LOCAL 视觉子节点）
+    SubscribeToEvent(scene_, "NodeAdded", "HandleSceneNodeAdded")
 
     -- 击杀回调 → HUD 消费
     GameManager.OnKill(function(killerIdx, victimIdx, multiKill, killStreak)
@@ -218,52 +231,29 @@ function Client.CreateScene()
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
 
-    -- 光照
-    local lightGroupFile = cache:GetResource("XMLFile", "LightGroup/Daytime.xml")
-    if lightGroupFile then
-        local lightGroup = scene_:CreateChild("LightGroup")
-        lightGroup:LoadXML(lightGroupFile:GetRoot())
-        local zoneComp = lightGroup:GetComponent("Zone")
-        if not zoneComp then
-            for i = 0, lightGroup.numChildren - 1 do
-                local child = lightGroup:GetChild(i)
-                zoneComp = child:GetComponent("Zone")
-                if zoneComp then break end
-            end
-        end
-        if zoneComp then
-            zoneComp.fogColor = Color(0.95, 0.82, 0.68)
-        end
-    else
-        Client.CreateFallbackLighting()
-    end
+    -- 光照：直接走 fallback 路径（保证所有节点都是 LOCAL）
+    -- 之前用 LightGroup XML 会创建 REPLICATED 子节点，被服务端 scene 同步覆盖→画面变灰
+    Client.CreateFallbackLighting()
 
-    -- 死亡区域（客户端也创建，用于本地物理预测）
-    local deathZone = scene_:CreateChild("DeathZone")
-    deathZone.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
-    deathZone.scale = Vector3(MapData.Width + 20, 2, 10)
-    local dzBody = deathZone:CreateComponent("RigidBody")
-    dzBody.trigger = true
-    dzBody.collisionLayer = 4
-    dzBody.collisionMask = 2
-    local dzShape = deathZone:CreateComponent("CollisionShape")
-    dzShape:SetBox(Vector3(1, 1, 1))
+    -- 死亡区域：客户端不再创建（无玩家物理体，trigger 碰撞不会触发）
+    -- 死亡判定完全由服务端处理
 
     print("[Client] Scene created")
 end
 
 function Client.CreateFallbackLighting()
-    local zoneNode = scene_:CreateChild("Zone")
-    local zone = zoneNode:CreateComponent("Zone")
+    -- LOCAL：客户端本地灯光节点，不参与服务端同步
+    local zoneNode = scene_:CreateChild("Zone", LOCAL)
+    local zone = zoneNode:CreateComponent("Zone", LOCAL)
     zone.boundingBox = BoundingBox(-200.0, 200.0)
     zone.ambientColor = Color(0.40, 0.35, 0.30)
     zone.fogColor = Color(0.95, 0.82, 0.68)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
 
-    local lightNode = scene_:CreateChild("DirectionalLight")
+    local lightNode = scene_:CreateChild("DirectionalLight", LOCAL)
     lightNode.direction = Vector3(0.5, -1.0, 0.3)
-    local light = lightNode:CreateComponent("Light")
+    local light = lightNode:CreateComponent("Light", LOCAL)
     light.lightType = LIGHT_DIRECTIONAL
     light.color = Color(1.0, 0.95, 0.9)
     light.castShadows = true
@@ -276,7 +266,7 @@ function Client.CreateBackgroundPlane()
     local botColor = Config.BgColorBot
     local size = 200
     local strips = 8
-    local bgNode = scene_:CreateChild("BackgroundGradient")
+    local bgNode = scene_:CreateChild("BackgroundGradient", LOCAL)
     bgNode.position = Vector3(0, 0, 5)
 
     local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
@@ -294,13 +284,13 @@ function Client.CreateBackgroundPlane()
         local midG = (g0 + g1) * 0.5
         local midB = (b0 + b1) * 0.5
 
-        local stripNode = bgNode:CreateChild("Strip" .. i)
+        local stripNode = bgNode:CreateChild("Strip" .. i, LOCAL)
         local yTop = size * (1 - t0 * 2)
         local yBot = size * (1 - t1 * 2)
         stripNode.position = Vector3(0, (yTop + yBot) * 0.5, 0)
         stripNode.scale = Vector3(size * 2, yTop - yBot, 0.1)
 
-        local model = stripNode:CreateComponent("StaticModel")
+        local model = stripNode:CreateComponent("StaticModel", LOCAL)
         model.model = cache:GetResource("Model", "Models/Box.mdl")
         model.castShadows = false
 
@@ -357,33 +347,51 @@ function HandleAssignRole(eventType, eventData)
     mySlot_ = eventData["Slot"]:GetInt()
     local mapW = eventData["MapWidth"]:GetInt()
     local mapH = eventData["MapHeight"]:GetInt()
+    local levelFile = eventData["LevelFile"]:GetString()
 
-    NetLog("  slot=" .. mySlot_ .. " map=" .. mapW .. "x" .. mapH, 100, 200, 255)
-    print("[Client] Assigned slot: " .. mySlot_ .. " map: " .. mapW .. "x" .. mapH)
+    NetLog("  slot=" .. mySlot_ .. " map=" .. mapW .. "x" .. mapH .. " level=" .. levelFile, 100, 200, 255)
+    print("[Client] Assigned slot: " .. mySlot_ .. " map: " .. mapW .. "x" .. mapH .. " level: " .. levelFile)
 
     -- 更新 MapData 尺寸
     MapData.Width = mapW
     MapData.Height = mapH
 
-    -- 建图（客户端需要视觉）
-    Map.Build()
+    -- 加载与服务端相同的关卡数据（关键！确保双方地图一致）
+    if levelFile ~= "" then
+        local grid = LevelManager.Load(levelFile)
+        if grid then
+            MapData.SetCustomGrid(grid)
+            print("[Client] Loaded level: " .. levelFile)
+        else
+            print("[Client] WARNING: Failed to load level " .. levelFile .. ", using default")
+            MapData.ClearCustomGrid()
+        end
+    else
+        MapData.ClearCustomGrid()
+    end
+
+    -- 注意：不要在这里调用 Map.Build()！
+    -- GameManager.StartMatch() → StartRound() → Map.Reset() 会调用 Map.Build()
 
     -- 从场景中查找已复制的玩家节点并创建 Player 数据
+    -- 关键：客户端必须传 skipVisuals=true，让 AttachVisuals 单独以 LOCAL 模式创建视觉子节点
+    -- 否则 visual 子节点直接创建在 REPLICATED 父节点下，会与服务端同步冲突导致丢失
     Player.list = {}
     for i = 1, Config.NumPlayers do
         local nodeName = "Player_" .. i
         local existingNode = scene_:GetChild(nodeName, true)
         if existingNode then
-            local p = Player.Create(i, (i == mySlot_), { existingNode = existingNode })
-            -- 挂载视觉组件
+            local p = Player.Create(i, (i == mySlot_), {
+                existingNode = existingNode,
+                skipVisuals = true,
+            })
             Player.AttachVisuals(p)
-            -- 非本机玩家注册为 AI（客户端不控制它们，位置由服务端复制同步）
             if i ~= mySlot_ then
                 p.isHuman = false
             end
         else
-            -- 节点尚未复制到位，创建本地占位（后续可在 NodeAdded 中补）
-            local p = Player.Create(i, (i == mySlot_))
+            -- 节点尚未复制到位，先创建本地占位，等 NodeAdded 替换
+            local p = Player.Create(i, (i == mySlot_), { skipVisuals = true })
             Player.AttachVisuals(p)
             if i ~= mySlot_ then
                 p.isHuman = false
@@ -392,25 +400,67 @@ function HandleAssignRole(eventType, eventData)
         end
     end
 
-    -- 初始化道具
-    Pickup.Reset()
-    RandomPickup.Reset()
+    -- 注意：不要在这里调用 Pickup.Reset() / RandomPickup.Reset()！
+    -- StartRound() 内部已包含这些调用
 
     -- 设置相机
     Camera.SetFixedForMap(mapW, mapH, 2)
 
-    -- 更新死亡区域
-    local dz = scene_:GetChild("DeathZone", false)
-    if dz then
-        dz.position = Vector3(mapW * 0.5, Config.DeathY, 0)
-        dz.scale = Vector3(mapW + 20, 2, 10)
-    end
-
     -- 进入游戏状态
     clientState_ = "playing"
+    -- StartMatch 内部会调用 StartRound → Map.Build + Pickup.Reset + RandomPickup.Reset
     GameManager.StartMatch()
 
     print("[Client] Game started, I am player " .. mySlot_)
+end
+
+--- 场景节点新增事件：为服务端复制过来的 Pickup/Player 节点补挂 LOCAL 视觉子节点
+--- 防御：仅处理 scene 直接子节点；避免在 AttachVisuals 创建子节点时递归触发
+local nodeAddedReentry_ = false
+function HandleSceneNodeAdded(eventType, eventData)
+    if nodeAddedReentry_ then return end
+    local node = eventData["Node"]:GetPtr("Node")
+    if not node then return end
+    -- 关键防御 1：仅处理 scene 直接子节点（顶层 Player_N / Pickup_xxx）
+    -- 否则任何 LOCAL 子节点（Visual/Outline/Eye 等）都会触发本回调
+    if node.parent ~= scene_ then return end
+    local name = node.name
+    if not name then return end
+    if name == "Pickup_small" or name == "Pickup_large" then
+        nodeAddedReentry_ = true
+        Pickup.AttachClientVisualsForNode(node)
+        nodeAddedReentry_ = false
+    elseif name:sub(1, 7) == "Player_" then
+        local idx = tonumber(name:sub(8))
+        if idx and Player.list[idx] and not Player.list[idx].visualNode then
+            nodeAddedReentry_ = true
+            Player.list[idx].node = node
+            Player.AttachVisuals(Player.list[idx])
+            nodeAddedReentry_ = false
+        end
+    end
+end
+
+--- 兜底扫描：每帧扫描 scene 中的 REPLICATED Pickup/Player 节点（防 NodeAdded 未触发）
+local lastScanTime_ = 0
+function ScanReplicatedNodes()
+    if not scene_ then return end
+    local children = scene_:GetChildren(false)  -- 仅直接子节点
+    for i = 1, #children do
+        local node = children[i]
+        local name = node.name
+        if name == "Pickup_small" or name == "Pickup_large" then
+            if not node:GetChild("Visual", false) then
+                Pickup.AttachClientVisualsForNode(node)
+            end
+        elseif name and name:sub(1, 7) == "Player_" then
+            local idx = tonumber(name:sub(8))
+            if idx and Player.list[idx] and not Player.list[idx].visualNode then
+                Player.list[idx].node = node
+                Player.AttachVisuals(Player.list[idx])
+            end
+        end
+    end
 end
 
 function HandleRoomCreated(eventType, eventData)
@@ -462,11 +512,25 @@ function HandleGameState(eventType, eventData)
 
     local serverState = eventData["State"]:GetString()
     local round = eventData["Round"]:GetInt()
+    print("[Client] GAME_STATE: server=" .. serverState .. " local=" .. GameManager.state .. " round=" .. round)
 
-    -- 同步分数
+    -- 同步分数 + 玩家状态（能量/生命/完赛）
     for i = 1, Config.NumPlayers do
         GameManager.scores[i] = eventData["Score" .. i]:GetInt()
         GameManager.killScores[i] = eventData["KillScore" .. i]:GetInt()
+        local p = Player.list[i]
+        if p then
+            local eVar = eventData["Energy" .. i]
+            if eVar then p.energy = eVar:GetFloat() end
+            local aVar = eventData["Alive" .. i]
+            if aVar then p.alive = (aVar:GetInt() == 1) end
+            local fVar = eventData["Finished" .. i]
+            if fVar then p.finished = (fVar:GetInt() == 1) end
+            local cVar = eventData["Charging" .. i]
+            if cVar then p.charging = (cVar:GetInt() == 1) end
+            local cpVar = eventData["ChargeProg" .. i]
+            if cpVar then p.chargeProgress = cpVar:GetFloat() end
+        end
     end
 
     -- 同步回合结果
@@ -480,12 +544,23 @@ function HandleGameState(eventType, eventData)
 
     -- 同步状态（如果变化了）
     if serverState ~= GameManager.state then
-        GameManager.SetState(serverState)
+        -- 新回合开始：服务端进入 INTRO，客户端也需要重置地图/玩家/道具
+        if serverState == GameManager.STATE_INTRO then
+            -- 调用 StartRound 重置所有子系统 + 初始化 intro 动画状态
+            -- （introPhase_、introTextAlpha_ 等局部变量必须通过 StartRound 重置）
+            -- StartRound 内部会 SetState(INTRO)，round 会被 +1（随后被服务端值覆盖）
+            GameManager.StartRound()
+            -- StartRound 已经设置了 Camera.SetFixedForMap，不需要额外处理
+        else
+            GameManager.SetState(serverState)
+        end
     end
 
-    -- 同步计时器
+    -- 用服务端权威值覆盖本地计时器（修正累积误差）
     GameManager.stateTimer = eventData["CountdownTimer"]:GetFloat()
     GameManager.roundTimer = eventData["RoundTimer"]:GetFloat()
+    -- 用服务端权威值覆盖 round（StartRound 可能多加了 1）
+    GameManager.round = round
 
     -- 比赛结束 → 回到菜单
     if serverState == GameManager.STATE_MENU then
@@ -536,6 +611,31 @@ function HandleKillEvent(eventType, eventData)
     })
 end
 
+function HandleExplodeSync(eventType, eventData)
+    if clientState_ ~= "playing" then return end
+    local playerIndex = eventData["PlayerIndex"]:GetInt()
+    local centerGX = eventData["CenterGX"]:GetFloat()
+    local centerGY = eventData["CenterGY"]:GetFloat()
+    local radius = eventData["Radius"]:GetFloat()
+
+    Player.HandleRemoteExplode(playerIndex, centerGX, centerGY, radius)
+end
+
+function HandlePlayerDeath(eventType, eventData)
+    if clientState_ ~= "playing" then return end
+    local playerIndex = eventData["PlayerIndex"]:GetInt()
+    local reason = eventData["Reason"]:GetString()
+    local killerIndex = eventData["KillerIndex"]:GetInt()
+
+    Player.ClientDeath(playerIndex, reason, killerIndex)
+end
+
+function HandlePickupCollected(eventType, eventData)
+    local nodeId = eventData["NodeID"]:GetInt()
+    if nodeId == 0 then return end
+    Pickup.RemoveByNodeID(nodeId)
+end
+
 -- ============================================================================
 -- Input Collection
 -- ============================================================================
@@ -578,6 +678,17 @@ end
 
 -- 左键追踪（用于检测松开事件）
 local wasLeftDown_ = false
+-- 脉冲按钮 latch：按下后保持若干帧，确保通过网络节流后仍被服务端读取
+-- SetPulseButtonMask 会保证服务端侧只消费一次，所以多帧重复发送是安全的
+local jumpLatchFrames_ = 0
+local dashLatchFrames_ = 0
+local explodeLatchFrames_ = 0
+-- 网络帧率已对齐 60Hz，仅需 2 帧冗余以应对偶发抖动
+local PULSE_LATCH_FRAMES = 2
+
+-- 网络发送频率统计（每秒采样一次）
+local netSendCount_ = 0
+local netSendLastSample_ = -1
 
 function Client.CollectInputAdvanced()
     if serverConnection_ == nil then return end
@@ -585,6 +696,9 @@ function Client.CollectInputAdvanced()
     if clientState_ ~= "playing" then return end
     if not GameManager.CanPlayersMove() then
         serverConnection_.controls.buttons = 0
+        jumpLatchFrames_ = 0
+        dashLatchFrames_ = 0
+        explodeLatchFrames_ = 0
         return
     end
 
@@ -596,11 +710,23 @@ function Client.CollectInputAdvanced()
     if input:GetKeyDown(KEY_D) or input:GetKeyDown(KEY_RIGHT) then
         buttons = buttons | CTRL.RIGHT
     end
+
+    -- 跳跃：按下时启动 latch，持续若干帧
     if input:GetKeyPress(KEY_SPACE) then
-        buttons = buttons | CTRL.JUMP
+        jumpLatchFrames_ = PULSE_LATCH_FRAMES
     end
+    if jumpLatchFrames_ > 0 then
+        buttons = buttons | CTRL.JUMP
+        jumpLatchFrames_ = jumpLatchFrames_ - 1
+    end
+
+    -- 闪避
     if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then
+        dashLatchFrames_ = PULSE_LATCH_FRAMES
+    end
+    if dashLatchFrames_ > 0 then
         buttons = buttons | CTRL.DASH
+        dashLatchFrames_ = dashLatchFrames_ - 1
     end
 
     local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
@@ -608,11 +734,29 @@ function Client.CollectInputAdvanced()
         buttons = buttons | CTRL.CHARGE
     end
     if wasLeftDown_ and not leftDown then
+        explodeLatchFrames_ = PULSE_LATCH_FRAMES
+    end
+    if explodeLatchFrames_ > 0 then
         buttons = buttons | CTRL.EXPLODE_RELEASE
+        explodeLatchFrames_ = explodeLatchFrames_ - 1
     end
     wasLeftDown_ = leftDown
 
     serverConnection_.controls.buttons = buttons
+
+    -- 网络发送频率统计：每次 controls 写入都计为一次"潜在网络帧"
+    -- 使用引擎 wall-clock 时间（os.clock 在 WASM 下不可靠）
+    netSendCount_ = netSendCount_ + 1
+    local now = time:GetElapsedTime()
+    if netSendLastSample_ < 0 then
+        netSendLastSample_ = now
+    end
+    local elapsed = now - netSendLastSample_
+    if elapsed >= 1.0 then
+        _G.NetSendFps = netSendCount_ / elapsed
+        netSendCount_ = 0
+        netSendLastSample_ = now
+    end
 end
 
 -- ============================================================================
@@ -711,10 +855,10 @@ function Client.RequestCreateRoom()
         return
     end
     -- 防止重复发送（按钮在渲染帧每帧触发）
-    if clientState_ == "roomWaiting" or clientState_ == "creatingRoom" then
+    if clientState_ == "creatingRoom" or clientState_ == "roomWaiting" then
         return
     end
-    clientState_ = "creatingRoom"  -- 临时状态，防止重复发送
+    clientState_ = "creatingRoom"
     NetLog("SEND: REQUEST_CREATE", 255, 255, 100)
     serverConnection_:SendRemoteEvent(EVENTS.REQUEST_CREATE, true)
     print("[Client] Requesting create room")
@@ -806,6 +950,13 @@ end
 function Client.HandleUpdate(dt)
     -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
     HUD.CacheInput()
+
+    -- 兜底扫描：补挂 REPLICATED 节点视觉（防 NodeAdded 事件未触发）
+    lastScanTime_ = lastScanTime_ + dt
+    if lastScanTime_ >= 0.5 then
+        lastScanTime_ = 0
+        ScanReplicatedNodes()
+    end
 
     -- 发送 CLIENT_READY（连接建立后的下一帧）
     if needSendReady_ and serverConnection_ then
@@ -956,19 +1107,40 @@ function Client.HandlePlayingUpdate(dt)
     -- 收集输入并发给服务端
     Client.CollectInputAdvanced()
 
-    -- 客户端不驱动物理/AI/GameManager 的核心逻辑
-    -- 但仍需更新视觉效果（squash & stretch 等由服务端位置同步驱动）
-    -- GameManager.Update 由服务端状态同步驱动
+    -- ====================================================================
+    -- 客户端本地驱动 GameManager 状态动画/计时器
+    -- 核心逻辑（得分、终点检测、回合结束判定）由服务端权威运行
+    -- 客户端只驱动：Intro 相机动画、Countdown 倒计时音效、Racing 计时器递减
+    -- ====================================================================
+    local gmState = GameManager.state
+    if gmState == GameManager.STATE_INTRO then
+        -- 开场镜头动画（4个子阶段的相机平移+缩放）必须在客户端每帧驱动
+        GameManager.UpdateIntro(dt)
+    elseif gmState == GameManager.STATE_COUNTDOWN then
+        -- 倒计时（3-2-1-GO 音效 + 计时器递减）在客户端本地驱动
+        GameManager.UpdateCountdown(dt)
+    elseif gmState == GameManager.STATE_RACING then
+        -- 比赛中：本地递减回合计时器（服务端每秒同步一次，中间帧本地倒数保持平滑）
+        GameManager.roundTimer = math.max(0, GameManager.roundTimer - dt)
+    elseif gmState == GameManager.STATE_ROUND_END
+        or gmState == GameManager.STATE_SCORE
+        or gmState == GameManager.STATE_MATCH_END then
+        -- 回合结束/积分/比赛结束：本地递减状态计时器（HUD 显示用）
+        -- 状态转换由服务端 GAME_STATE 事件驱动，客户端不自行转换
+        GameManager.stateTimer = GameManager.stateTimer - dt
+    end
 
-    -- 更新地图（视觉效果）
+    -- 更新地图（方块动画、LOCAL MapRoot 视觉效果）
     Map.Update(dt)
 
-    -- 更新玩家视觉（基于复制的物理状态）
-    Player.UpdateAll(dt)
+    -- 更新玩家视觉（仅动画、特效，不做物理/移动/死亡检测）
+    Player.UpdateAllClient(dt)
 
-    -- 更新道具视觉
-    Pickup.Update(dt)
-    RandomPickup.Update(dt)
+    -- 更新道具视觉（仅旋转+浮动动画，不做碰撞/收集）
+    Pickup.UpdateVisuals(dt)
+
+    -- 注意：不调用 RandomPickup.Update(dt)
+    -- 道具生成由服务端控制，客户端通过场景复制接收道具节点
 end
 
 ---@param dt number

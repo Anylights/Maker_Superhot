@@ -390,13 +390,15 @@ function HandleAssignRole(eventType, eventData)
                 p.isHuman = false
             end
         else
-            -- 节点尚未复制到位，先创建本地占位，等 NodeAdded 替换
-            local p = Player.Create(i, (i == mySlot_), { skipVisuals = true })
-            Player.AttachVisuals(p)
+            -- 节点尚未复制到位（快速匹配中常见：ASSIGN_ROLE 早于 REPLICATED 节点同步到达）
+            -- 关键：不要创建本地占位节点，也不要挂 visuals
+            -- 否则 visualNode 被设置后 HandleSceneNodeAdded 永远不会替换 node，
+            -- 导致 REPLICATED 节点无视觉 + LOCAL 占位节点位置不同步
+            local p = Player.Create(i, (i == mySlot_), { nodeless = true })
             if i ~= mySlot_ then
                 p.isHuman = false
             end
-            print("[Client] Warning: node " .. nodeName .. " not found, created locally")
+            print("[Client] Player " .. nodeName .. " node not yet replicated, created nodeless placeholder (waiting for NodeAdded)")
         end
     end
 

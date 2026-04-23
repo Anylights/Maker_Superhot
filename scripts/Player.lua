@@ -141,15 +141,19 @@ function Player.Create(index, isHuman, opts)
     local node
     if opts.existingNode then
         node = opts.existingNode
+    elseif opts.nodeless then
+        -- 客户端等待服务端 REPLICATED 节点到达期间的占位：不创建任何节点
+        -- 节点会在 NodeAdded/ScanReplicatedNodes 中被赋值，并由 AttachVisuals 补挂视觉
+        node = nil
     else
         -- 服务端：REPLICATED（默认），节点会同步到客户端，位置变化也会同步
-        -- 客户端占位/单机：LOCAL，避免与服务端 REPLICATED 节点 ID 冲突
+        -- 单机：LOCAL
         local createMode = (networkMode_ == "server") and REPLICATED or LOCAL
         node = scene_:CreateChild("Player_" .. index, createMode)
         node.position = Vector3(spawnX, spawnY, 0)
     end
 
-    -- 视觉组件（服务端跳过）
+    -- 视觉组件（服务端跳过；nodeless 模式也跳过，等节点到位再 AttachVisuals）
     local visualNode = nil
     local mat = nil
     local outlineMat = nil
@@ -163,8 +167,9 @@ function Player.Create(index, isHuman, opts)
     end
 
     -- 动态刚体（仅服务端/单机需要物理，客户端不创建——避免与服务端复制冲突）
+    -- nodeless 模式：node 还未到位，物理设置全部跳过，等 NodeAdded 后再处理
     local body = nil
-    if networkMode_ ~= "client" then
+    if node and networkMode_ ~= "client" then
         -- 服务端：使用 LOCAL 标志创建物理组件，避免复制到客户端
         -- 单机：LOCAL 或 REPLICATED 都可以（无网络），统一用 LOCAL
         local createMode = LOCAL
@@ -182,7 +187,7 @@ function Player.Create(index, isHuman, opts)
 
         local shape = node:CreateComponent("CollisionShape", createMode)
         shape:SetCapsule(0.9, 1.0)
-    else
+    elseif node then
         -- 客户端：如果复制节点已带有物理组件（从服务端复制），移除它们
         -- 防止客户端本地物理模拟干扰服务端的位置同步
         local existingBody = node:GetComponent("RigidBody")

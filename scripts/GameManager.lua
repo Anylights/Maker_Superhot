@@ -326,15 +326,24 @@ function GameManager.UpdateIntro(dt)
             introPhaseTimer_ = Config.IntroZoomTextTime
             introTextAlpha_ = 0
 
-            -- 稍微拉近镜头聚焦出生区
+            -- 平移 + 缩放到全景：与"更快到达终点!"文字同时呈现
             if cameraModule_ then
+                local bs = Config.BlockSize
+                local padding = 2
+                local totalW = MapData.Width * bs + padding * 2
+                local totalH = MapData.Height * bs + padding * 2
+                local mapCx = MapData.Width * bs * 0.5
+                local mapCy = MapData.Height * bs * 0.5
+                local aspect = cameraModule_.camera and cameraModule_.camera.aspectRatio or (16.0 / 9.0)
+                if aspect <= 0 then aspect = 16.0 / 9.0 end
+                local fullOrtho = math.max(totalW / aspect, totalH)
                 cameraModule_.AnimateTo(
-                    Vector3(introSpawnCenterX_, introSpawnCenterY_, 0),
-                    Config.IntroSpawnOrtho * 0.85,
-                    Config.IntroZoomTextTime * 0.5
+                    Vector3(mapCx, mapCy, 0),
+                    fullOrtho,
+                    Config.IntroZoomTextTime * 0.85
                 )
             end
-            print("[GameManager] Intro phase 3: zoom + text")
+            print("[GameManager] Intro phase 3: pan+zoom to full map with text")
         end
         return
     end

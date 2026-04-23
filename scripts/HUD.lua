@@ -73,6 +73,10 @@ local fpsLastSample_ = -1            -- -1 表示尚未初始化
 local fpsRenderValue_ = 0            -- 显示用的渲染 FPS
 local fpsNetValue_ = 0               -- 显示用的网络发送 FPS
 
+-- 调试信息总开关（F2 切换）
+local debugVisible_ = false
+local prevF2Down_ = false
+
 --- 在 Update 阶段缓存鼠标输入状态
 --- 使用 GetMouseButtonDown + 前帧状态差分，彻底规避 GetMouseButtonPress 时序问题
 --- 必须由 Client.HandleUpdate / Standalone.HandleUpdate 在每帧开头调用
@@ -91,6 +95,18 @@ function HUD.CacheInput()
         dbg_lastClickX_ = cachedMouseLogX_
         dbg_lastClickY_ = cachedMouseLogY_
     end
+
+    -- F2 切换调试信息显示（边沿触发）
+    local f2Down = input:GetKeyDown(KEY_F2)
+    if f2Down and not prevF2Down_ then
+        debugVisible_ = not debugVisible_
+    end
+    prevF2Down_ = f2Down
+end
+
+--- 调试信息是否可见（供外部判断）
+function HUD.IsDebugVisible()
+    return debugVisible_
 end
 
 -- 动画
@@ -367,6 +383,56 @@ end
 
 --- 绘制半透明山丘剪影（叠加在 3D 渐变背景之上）
 --- 注意：不画不透明填充！渐变由 3D 背景面片提供，NanoVG 只叠加装饰
+--- 矢量化几何动态背景（铺满屏幕、缓慢斜向循环移动）
+--- @param palette table {bgTop, bgBottom, shapes={{r,g,b,a}, ...}}
+function HUD.DrawAnimatedBgPattern(palette)
+    -- 1. 纯色/微渐变底色
+    local bt, bb = palette.bgTop, palette.bgBottom
+    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
+        nvgRGBA(bt[1], bt[2], bt[3], 255),
+        nvgRGBA(bb[1], bb[2], bb[3], 255))
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillPaint(vg_, bgPaint)
+    nvgFill(vg_)
+
+    -- 2. 单一圆角菱形瓦片：错位栅格 + 整体向左下平移 + 自转
+    -- ⚠️ 无缝循环关键：奇偶行半格错位时，垂直周期是 2*tile（每 2 行一个完整循环）
+    --     所以 offY 必须模 (2*tile) 而非 tile；offX 仍模 tile
+    local accent = palette.accent or { bt[1] + 18, bt[2] + 18, bt[3] + 22, 90 }
+    local tile = palette.tile or 80              -- 瓦片间距（逻辑像素）
+    local speed = palette.speed or 30            -- 平移速度（逻辑像素/秒）
+    local spinSpeed = palette.spinSpeed or 0.3   -- 自转角速度（弧度/秒）
+    -- ⚠️ 用引擎时间，os.clock() 在某些环境下不会持续增长
+    local t = (time and time.elapsedTime) or os.clock()
+    -- 向左下平移：dx<0, dy>0；垂直周期是 2*tile（错位栅格）
+    local offX = -((t * speed) % tile)
+    local offY =  ((t * speed) % (tile * 2))
+    local cols = math.ceil(logW_ / tile) + 3
+    local rows = math.ceil(logH_ / tile) + 4
+    local spin = t * spinSpeed                    -- 当前自转角度（每个菱形相同）
+
+    nvgFillColor(vg_, nvgRGBA(accent[1], accent[2], accent[3], accent[4] or 90))
+    local sz = tile * 0.22                        -- 菱形相对小，留出充足间距
+    local r  = sz * 0.4   -- 圆角半径
+    local baseRot = math.pi * 0.25                -- 45° = 菱形姿态
+
+    for ri = -2, rows do
+        for ci = -2, cols do
+            -- 错位栅格：奇数行水平偏移半格
+            local cx = ci * tile + offX + ((ri % 2 ~= 0) and tile * 0.5 or 0)
+            local cy = ri * tile + offY
+            nvgSave(vg_)
+            nvgTranslate(vg_, cx, cy)
+            nvgRotate(vg_, baseRot + spin)        -- 菱形姿态 + 自转
+            nvgBeginPath(vg_)
+            nvgRoundedRect(vg_, -sz, -sz, sz * 2, sz * 2, r)
+            nvgFill(vg_)
+            nvgRestore(vg_)
+        end
+    end
+end
+
 function HUD.DrawBackground()
     -- 简约山丘剪影（远景层，半透明）
     local t = (os.clock() or 0) * 0.02  -- 极慢平移视差
@@ -871,7 +937,7 @@ function HUD.DrawScores()
 
     -- 标题
     nvgFillColor(vg_, nvgRGBA(255, 255, 255, 200))
-    nvgText(vg_, x, startY, "SCORE")
+    nvgText(vg_, x, startY, "积分")
 
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 16)
@@ -897,7 +963,7 @@ function HUD.DrawScores()
         -- 胜利目标线
         if score >= Config.WinScore then
             nvgFillColor(vg_, nvgRGBA(255, 215, 0, 255))
-            nvgText(vg_, x - 60, y, "WIN!")
+            nvgText(vg_, x - 60, y, "胜!")
         end
     end
 end
@@ -1065,7 +1131,7 @@ function HUD.DrawKillScorePanel()
     nvgFontSize(vg_, 12)
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     nvgFillColor(vg_, nvgRGBA(255, 255, 255, 160))
-    nvgText(vg_, panelX, panelY, "KILLS")
+    nvgText(vg_, panelX, panelY, "击杀")
 
     for i = 1, Config.NumPlayers do
         local y = panelY + headerH + (i - 1) * lineH
@@ -1333,10 +1399,14 @@ function HUD.DrawIntro()
         nvgFillColor(vg_, nvgRGBA(255, 90, 40, alpha))
         nvgText(vg_, logW_ * 0.5, logH_ * 0.45, "更快到达终点!")
 
-        -- 副标题
-        nvgFontSize(vg_, 20)
-        nvgFillColor(vg_, nvgRGBA(255, 255, 255, math.floor(textAlpha * 180)))
-        nvgText(vg_, logW_ * 0.5, logH_ * 0.55, "ROUND " .. (gameManager_.round or 1))
+        -- 副标题：回合数（字号加大）
+        nvgFontSize(vg_, 44)
+        -- 阴影
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(textAlpha * 200)))
+        nvgText(vg_, logW_ * 0.5 + 3, logH_ * 0.58 + 3, "第 " .. (gameManager_.round or 1) .. " 回合")
+        -- 主文字（金黄色）
+        nvgFillColor(vg_, nvgRGBA(255, 220, 80, math.floor(textAlpha * 240)))
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.58, "第 " .. (gameManager_.round or 1) .. " 回合")
     end
 end
 
@@ -1364,7 +1434,7 @@ function HUD.DrawCountdown()
     -- 数字（渐变色）
     if num <= 0 then
         nvgFillColor(vg_, nvgRGBA(50, 255, 100, 255))
-        nvgText(vg_, logW_ * 0.5, logH_ * 0.5, "GO!")
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.5, "出发!")
     else
         nvgFillColor(vg_, nvgRGBA(255, 255, 80, 255))
         nvgText(vg_, logW_ * 0.5, logH_ * 0.5, tostring(num))
@@ -1373,7 +1443,7 @@ function HUD.DrawCountdown()
     -- 提示
     nvgFontSize(vg_, 18)
     nvgFillColor(vg_, nvgRGBA(220, 200, 170, 200))
-    nvgText(vg_, logW_ * 0.5, logH_ * 0.5 + 80, "Get Ready!")
+    nvgText(vg_, logW_ * 0.5, logH_ * 0.5 + 80, "准备就绪!")
 end
 
 --- 回合结束覆盖层
@@ -1390,9 +1460,9 @@ function HUD.DrawRoundEnd()
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
     nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
-    nvgText(vg_, logW_ * 0.5 + 2, logH_ * 0.5 - 18, "ROUND OVER")
+    nvgText(vg_, logW_ * 0.5 + 2, logH_ * 0.5 - 18, "回合结束")
     nvgFillColor(vg_, nvgRGBA(255, 200, 50, 255))
-    nvgText(vg_, logW_ * 0.5, logH_ * 0.5 - 20, "ROUND OVER")
+    nvgText(vg_, logW_ * 0.5, logH_ * 0.5 - 20, "回合结束")
 
     -- 显示本回合名次
     nvgFontFace(vg_, "sans")
@@ -1428,7 +1498,7 @@ function HUD.DrawScoreScreen()
     nvgFontSize(vg_, 36)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg_, nvgRGBA(255, 255, 255, 240))
-    nvgText(vg_, logW_ * 0.5, logH_ * 0.3, "STANDINGS")
+    nvgText(vg_, logW_ * 0.5, logH_ * 0.3, "排名")
 
     -- 积分条
     local barMaxW = logW_ * 0.5
@@ -1489,7 +1559,7 @@ function HUD.DrawScoreScreen()
     nvgFontSize(vg_, 14)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
-    nvgText(vg_, logW_ * 0.5, logH_ - 30, "Next round starting soon...")
+    nvgText(vg_, logW_ * 0.5, logH_ - 30, "下一回合即将开始...")
 end
 
 --- 比赛结束覆盖层
@@ -1522,17 +1592,17 @@ function HUD.DrawMatchEnd()
         nvgFill(vg_)
 
         nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
-        nvgText(vg_, logW_ * 0.5 + 3, logH_ * 0.35 + 3, "WINNER!")
+        nvgText(vg_, logW_ * 0.5 + 3, logH_ * 0.35 + 3, "胜者!")
         nvgFillColor(vg_, nvgRGBA(255, 215, 0, 255))
-        nvgText(vg_, logW_ * 0.5, logH_ * 0.35, "WINNER!")
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.35, "胜者!")
 
         nvgFontSize(vg_, 36)
         nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-        nvgText(vg_, logW_ * 0.5, logH_ * 0.5, "Player " .. winner)
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.5, "玩家 " .. winner)
 
         nvgFontSize(vg_, 20)
         nvgFillColor(vg_, nvgRGBA(255, 255, 255, 200))
-        nvgText(vg_, logW_ * 0.5, logH_ * 0.58, "Score: " .. gameManager_.scores[winner])
+        nvgText(vg_, logW_ * 0.5, logH_ * 0.58, "积分: " .. gameManager_.scores[winner])
     end
 
     -- 提示
@@ -1540,12 +1610,13 @@ function HUD.DrawMatchEnd()
     nvgFontSize(vg_, 16)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
     nvgFillColor(vg_, nvgRGBA(180, 160, 140, 180))
-    nvgText(vg_, logW_ * 0.5, logH_ - 30, "New match starting soon...")
+    nvgText(vg_, logW_ * 0.5, logH_ - 30, "新比赛即将开始...")
 end
 
 --- 右下角帧率显示（渲染 FPS / 网络发送 FPS）
 --- 每秒采样一次：渲染 FPS 自统计，网络 FPS 从 _G.NetSendFps 读取
 function HUD.DrawFpsHud()
+    if not debugVisible_ then return end
     -- 采样累计（使用引擎 wall-clock 时间，os.clock 在 WASM 下不可靠）
     fpsRenderFrames_ = fpsRenderFrames_ + 1
     local now = time:GetElapsedTime()
@@ -1606,6 +1677,7 @@ end
 
 --- 画面调试覆盖层（左上角显示输入/连接状态）
 function HUD.DrawDebugOverlay()
+    if not debugVisible_ then return end
     nvgSave(vg_)
 
     -- 半透明黑底（加大高度以容纳网络日志）
@@ -1768,27 +1840,13 @@ end
 
 --- 主菜单界面
 function HUD.DrawMenu()
-
-    -- 全屏背景渐变（暖色日落）
-    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(250, 217, 179, 255), nvgRGBA(224, 166, 153, 255))
-    nvgBeginPath(vg_)
-    nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillPaint(vg_, bgPaint)
-    nvgFill(vg_)
-
-    -- 装饰粒子（缓慢浮动的光点）
+    -- 清爽青蓝色调：底色单一柔和，菱形仅有微弱明度差
+    HUD.DrawAnimatedBgPattern({
+        bgTop    = { 86, 130, 168 },
+        bgBottom = { 64, 104, 142 },
+        accent   = { 102, 148, 184, 90 },  -- 比底色略亮
+    })
     local t = os.clock()
-    for i = 1, 20 do
-        local px = (math.sin(t * 0.3 + i * 1.7) * 0.5 + 0.5) * logW_
-        local py = (math.cos(t * 0.2 + i * 2.3) * 0.5 + 0.5) * logH_
-        local alpha = math.abs(math.sin(t * 0.5 + i)) * 60 + 20
-        local radius = 2 + math.sin(t + i) * 1.5
-        nvgBeginPath(vg_)
-        nvgCircle(vg_, px, py, radius)
-        nvgFillColor(vg_, nvgRGBA(255, 255, 220, math.floor(alpha)))
-        nvgFill(vg_)
-    end
 
     local cx = logW_ * 0.5
     local cy = logH_ * 0.38  -- 标题偏上
@@ -1810,13 +1868,6 @@ function HUD.DrawMenu()
         local floatY = math.sin(t * 1.2) * 4
         imgY = imgY + floatY
 
-        -- 发光底衬
-        local glowA = math.floor(math.abs(math.sin(t * 1.5)) * 30 + 20)
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, imgX - 10, imgY - 6, drawW + 20, drawH + 12, 16)
-        nvgFillColor(vg_, nvgRGBA(255, 80, 40, glowA))
-        nvgFill(vg_)
-
         -- 绘制图片
         local imgPaint = nvgImagePattern(vg_, imgX, imgY, drawW, drawH, 0, titleImage_, 1.0)
         nvgBeginPath(vg_)
@@ -1836,15 +1887,8 @@ function HUD.DrawMenu()
         nvgText(vg_, cx, cy, Config.Title)
     end
 
-    -- ======== 副标题 ========
-    local subtitleY = titleBottom + 14
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 16)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(220, 200, 180, 180))
-    nvgText(vg_, cx, subtitleY, "2.5D 多人平台竞速派对")
-
     -- ======== 橡胶按钮（横向排列） ========
+    local subtitleY = titleBottom + 14  -- 保留为按钮基准 Y
     local mx = input.mousePosition.x / dpr_
     local my = input.mousePosition.y / dpr_
 
@@ -1896,65 +1940,21 @@ function HUD.DrawMenu()
         dbg_lastActionTime_ = os.clock()
     end
 
-    -- ======== 底部玩家颜色指示 ========
-    local dotY = btnY + btnH + 30
-    local dotSpacing = 50
-    local dotStartX = cx - dotSpacing * 1.5
-    nvgFontSize(vg_, 12)
-    for i = 1, 4 do
-        local dx = dotStartX + (i - 1) * dotSpacing
-        local color = Config.PlayerColors[i]
-        local r = math.floor(color.r * 255)
-        local g = math.floor(color.g * 255)
-        local b = math.floor(color.b * 255)
-
-        -- 玩家色块
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, dx - 8, dotY - 8, 16, 16, 4)
-        nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-        nvgFill(vg_)
-
-        -- 玩家标签
-        nvgFillColor(vg_, nvgRGBA(100, 70, 50, 200))
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-        local label = i == 1 and "P1 你" or ("P" .. i)
-        nvgText(vg_, dx, dotY + 12, label)
-    end
-
-    -- 调试覆盖层
+    -- 调试覆盖层（F2 切换）
     HUD.DrawDebugOverlay()
-
-    -- ======== 操作说明（紧凑版） ========
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 12)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
-    nvgFillColor(vg_, nvgRGBA(120, 90, 70, 160))
-    nvgText(vg_, cx, logH_ - 10, "A/D:移动  空格:跳跃  Shift:冲刺  鼠标左键:蓄力爆炸")
 end
 
 --- 匹配界面（正在寻找对手 + 旋转放大镜 + 玩家槽位）
 function HUD.DrawMatching()
     if gameManager_ == nil then return end
 
-    -- 全屏背景
-    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(35, 20, 12, 255), nvgRGBA(50, 28, 18, 255))
-    nvgBeginPath(vg_)
-    nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillPaint(vg_, bgPaint)
-    nvgFill(vg_)
-
-    -- 装饰粒子
+    -- 深色派对色调：底色单一柔和，菱形仅有微弱明度差
+    HUD.DrawAnimatedBgPattern({
+        bgTop    = { 36, 32, 56 },
+        bgBottom = { 26, 24, 44 },
+        accent   = { 50, 46, 74, 90 },  -- 比底色略亮
+    })
     local t = os.clock()
-    for i = 1, 12 do
-        local px = (math.sin(t * 0.4 + i * 2.1) * 0.5 + 0.5) * logW_
-        local py = (math.cos(t * 0.3 + i * 1.8) * 0.5 + 0.5) * logH_
-        local alpha = math.abs(math.sin(t * 0.6 + i)) * 40 + 15
-        nvgBeginPath(vg_)
-        nvgCircle(vg_, px, py, 2 + math.sin(t + i) * 1)
-        nvgFillColor(vg_, nvgRGBA(255, 180, 80, math.floor(alpha)))
-        nvgFill(vg_)
-    end
 
     local cx = logW_ * 0.5
     local cy = logH_ * 0.38
@@ -2382,24 +2382,11 @@ end
 
 --- 绘制全屏暗色背景（联机界面通用）
 local function drawOnlineBg()
-    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(35, 20, 12, 255), nvgRGBA(50, 28, 18, 255))
-    nvgBeginPath(vg_)
-    nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillPaint(vg_, bgPaint)
-    nvgFill(vg_)
-
-    -- 装饰粒子
-    local t = os.clock()
-    for i = 1, 12 do
-        local px = (math.sin(t * 0.4 + i * 2.1) * 0.5 + 0.5) * logW_
-        local py = (math.cos(t * 0.3 + i * 1.8) * 0.5 + 0.5) * logH_
-        local alpha = math.abs(math.sin(t * 0.6 + i)) * 40 + 15
-        nvgBeginPath(vg_)
-        nvgCircle(vg_, px, py, 2 + math.sin(t + i) * 1)
-        nvgFillColor(vg_, nvgRGBA(255, 180, 80, math.floor(alpha)))
-        nvgFill(vg_)
-    end
+    HUD.DrawAnimatedBgPattern({
+        bgTop    = { 36, 32, 56 },
+        bgBottom = { 26, 24, 44 },
+        accent   = { 50, 46, 74, 90 },
+    })
 end
 
 --- Toast 提示（屏幕顶部，3 秒自动消失）

@@ -744,10 +744,10 @@ function Player.UpdateVisualEffects(p, dt)
     if p.body and p.hitWallX ~= 0 then
         local vx = math.abs(p.body.linearVelocity.x)
         if vx > 2.0 then
-            local squashAmount = math.min(vx / 25.0, 0.3)
+            local squashAmount = math.min(vx / 12.0, 0.5)
             if squashAmount > 0.04 then
                 p.squashScaleX = 1.0 - squashAmount
-                p.squashScaleY = 1.0 + squashAmount * 0.5
+                p.squashScaleY = 1.0 + squashAmount * 0.7
                 p.squashVelX = 0
                 p.squashVelY = 0
             end
@@ -756,22 +756,22 @@ function Player.UpdateVisualEffects(p, dt)
         local prevVx = p.prevEstVx or 0
         local absPrev = math.abs(prevVx)
         local absCur = math.abs(estVx)
-        if absPrev > 4.0 and absCur < absPrev * 0.4 then
-            local squashAmount = math.min(absPrev / 25.0, 0.3)
+        if absPrev > 2.5 and absCur < absPrev * 0.5 then
+            local squashAmount = math.min(absPrev / 12.0, 0.5)
             if squashAmount > 0.04 then
                 p.squashScaleX = 1.0 - squashAmount
-                p.squashScaleY = 1.0 + squashAmount * 0.5
+                p.squashScaleY = 1.0 + squashAmount * 0.7
                 p.squashVelX = 0
                 p.squashVelY = 0
             end
         end
-        -- 落地 squash:垂直速度从大幅下落骤减为 0 附近
+        -- 落地 squash:垂直速度从下落骤减为 0 附近
         local prevVy = p.prevEstVy or 0
-        if prevVy < -6.0 and estVy > -1.0 then
-            local landAmount = math.min(math.abs(prevVy) / 30.0, 0.3)
+        if prevVy < -2.0 and estVy > -0.5 then
+            local landAmount = math.min(math.abs(prevVy) / 12.0, 0.5)
             if landAmount > 0.04 then
                 p.squashScaleY = 1.0 - landAmount
-                p.squashScaleX = 1.0 + landAmount * 0.5
+                p.squashScaleX = 1.0 + landAmount * 0.7
                 p.squashVelX = 0
                 p.squashVelY = 0
             end
@@ -824,9 +824,19 @@ function Player.UpdateVisualEffects(p, dt)
     p.squashScaleX = p.squashScaleX + p.squashVelX * dt
     p.squashScaleY = p.squashScaleY + p.squashVelY * dt
 
+    -- 下落拉伸（stretch）：自由下落时纵向拉长
+    do
+        local vy = (p.body and p.body.linearVelocity.y) or estVy
+        if vy < -4.0 then
+            local stretch = math.min((-vy - 4.0) / 18.0, 0.25)
+            p.squashScaleY = math.max(p.squashScaleY, 1.0 + stretch)
+            p.squashScaleX = math.min(p.squashScaleX, 1.0 - stretch * 0.5)
+        end
+    end
+
     -- 安全钳位，防止极端形变
-    p.squashScaleX = math.max(0.5, math.min(1.5, p.squashScaleX))
-    p.squashScaleY = math.max(0.5, math.min(1.5, p.squashScaleY))
+    p.squashScaleX = math.max(0.4, math.min(1.7, p.squashScaleX))
+    p.squashScaleY = math.max(0.4, math.min(1.7, p.squashScaleY))
 
     -- =====================
     -- 冲刺旋转
@@ -1795,18 +1805,7 @@ function Player.UpdateOneClient(p, dt)
         end
     end
 
-    -- 着陆检测（仅视觉：squash 效果）
-    if p.onGround and not p.wasOnGround then
-        p.jumpCount = 0
-        local impactSpeed = math.abs(p.prevVelY)
-        local squashAmount = math.min(impactSpeed / 30.0, 0.35)
-        if squashAmount > 0.04 then
-            p.squashScaleY = 1.0 - squashAmount
-            p.squashScaleX = 1.0 + squashAmount * 0.6
-            p.squashVelY = 0
-            p.squashVelX = 0
-        end
-    end
+    -- 着陆 squash 由 UpdateVisualEffects 的速度估算分支处理（客户端无可靠 onGround）
 
     -- 连杀窗口递减（视觉用）
     if p.multiKillTimer > 0 then
@@ -1829,13 +1828,9 @@ function Player.UpdateOneClient(p, dt)
             else
                 p.inputMoveX = 0
             end
-            -- 推断垂直速度（用于着陆冲击计算）
+            -- 垂直速度估算（保留供其他视觉用，squash 由 UpdateVisualEffects 自行估算）
             if dt > 0 then
                 p.prevVelY = dy / dt
-            end
-            -- 简易地面检测：Y 坐标几乎不变 → 可能在地面上
-            if math.abs(dy) < 0.01 and math.abs(curPos.y - (p.prevPosition.y or curPos.y)) < 0.02 then
-                p.onGround = true
             end
         end
         p.prevPosition = Vector3(curPos.x, curPos.y, curPos.z)

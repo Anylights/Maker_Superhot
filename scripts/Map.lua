@@ -35,6 +35,9 @@ local respawnAnims_ = {}
 -- 网络模式：服务端跳过视觉组件
 local skipVisuals_ = false
 
+-- 编辑器预览模式：所有节点强制 LOCAL，避免客户端创建 REPLICATED 节点导致 socket 崩溃
+local editorPreviewMode_ = false
+
 --- 设置是否跳过视觉组件（必须在 Init 之前调用）
 ---@param skip boolean
 function Map.SetSkipVisuals(skip)
@@ -271,7 +274,8 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local wx = (gx - 1) * bs + bs * 0.5
     local wy = (gy - 1) * bs + bs * 0.5
 
-    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, skipVisuals_ and LOCAL or REPLICATED)
+    local createMode = (skipVisuals_ or editorPreviewMode_) and LOCAL or REPLICATED
+    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, createMode)
     node.position = Vector3(wx, wy, 0)
 
     -- 视觉组件（服务端跳过）
@@ -737,10 +741,12 @@ function Map.SetBlock(gx, gy, blockType)
         return
     end
 
-    -- 创建新方块节点
+    -- 创建新方块节点（编辑器调用：强制 LOCAL 防止客户端创建 REPLICATED 节点导致网络崩溃）
     local mapRoot = scene_:GetChild("MapRoot")
     if mapRoot then
+        editorPreviewMode_ = true
         local node = Map.CreateBlockNode(mapRoot, gx, gy, blockType)
+        editorPreviewMode_ = false
         if not blockNodes_[gy] then blockNodes_[gy] = {} end
         blockNodes_[gy][gx] = node
     end
@@ -780,8 +786,9 @@ function Map.BuildFromGrid(externalGrid)
         end
     end
 
-    -- 创建地图父节点（服务端用 LOCAL 防止复制冲突）
-    local mapRoot = scene_:CreateChild("MapRoot", skipVisuals_ and LOCAL or REPLICATED)
+    -- 编辑器预览强制 LOCAL：客户端不能创建 REPLICATED 节点（会触发 socket 网络回调越界崩溃）
+    editorPreviewMode_ = true
+    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
     blockNodes_ = {}
     local blockCount = 0
 
@@ -796,11 +803,12 @@ function Map.BuildFromGrid(externalGrid)
             end
         end
     end
+    editorPreviewMode_ = false
 
     destroyed_ = {}
     debris_ = {}
 
-    print("[Map] Built from external grid: " .. blockCount .. " blocks")
+    print("[Map] Built from external grid: " .. blockCount .. " blocks (LOCAL preview)")
 end
 
 return Map

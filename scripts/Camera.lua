@@ -90,19 +90,25 @@ function Camera.Update(dt, playerPositions, humanPos)
     local mapMinY = 0
     local mapMaxY = MapData.Height * Config.BlockSize
 
+    -- 过滤掉低于 DeathY 的掉落玩家（不再跟踪）
+    local dropY = Config.DeathY or -10.0
+
     local positions = {}
     for _, pos in ipairs(playerPositions) do
-        local clampedY = math.max(mapMinY, pos.y)
-        local clampedX = math.max(mapMinX, math.min(mapMaxX, pos.x))
-        table.insert(positions, Vector3(clampedX, clampedY, 0))
+        if pos.y >= dropY then
+            local clampedY = math.max(mapMinY, pos.y)
+            local clampedX = math.max(mapMinX, math.min(mapMaxX, pos.x))
+            table.insert(positions, Vector3(clampedX, clampedY, 0))
+        end
     end
 
-    if humanPos then
+    if humanPos and humanPos.y >= dropY then
         local clampedY = math.max(mapMinY, humanPos.y)
         local clampedX = math.max(mapMinX, math.min(mapMaxX, humanPos.x))
         table.insert(positions, Vector3(clampedX, clampedY, 0))
     end
 
+    -- 所有玩家都掉落了，保持当前位置不变
     if #positions == 0 then return end
 
     local minX, maxX = math.huge, -math.huge
@@ -341,6 +347,12 @@ function Camera.UpdateAnimation(dt)
 
     if t >= 1.0 then
         animating_ = false
+        -- 动画结束后自动进入固定模式（由 AnimateToFixedMap 触发）
+        if autoFixAfterAnim_ then
+            autoFixAfterAnim_ = false
+            Camera.fixedMode = true
+            print("[Camera] Auto-fixed after animation")
+        end
         return false
     end
     return true
@@ -370,6 +382,27 @@ end
 function Camera.ReleaseFixed()
     Camera.fixedMode = false
     print("[Camera] Fixed mode released")
+end
+
+-- 动画结束后是否自动进入固定模式
+local autoFixAfterAnim_ = false
+
+--- 平滑动画到全景视图，动画完成后自动进入固定模式
+---@param duration number 过渡时长（秒）
+function Camera.AnimateToFixedMap(duration)
+    local bs = Config.BlockSize
+    local padding = 2
+    local totalW = MapData.Width * bs + padding * 2
+    local totalH = MapData.Height * bs + padding * 2
+    local mapCx = MapData.Width * bs * 0.5
+    local mapCy = MapData.Height * bs * 0.5
+    local aspect = Camera.camera and Camera.camera.aspectRatio or (16.0 / 9.0)
+    if aspect <= 0 then aspect = 16.0 / 9.0 end
+    local fullOrtho = math.max(totalW / aspect, totalH)
+
+    autoFixAfterAnim_ = true
+    Camera.AnimateTo(Vector3(mapCx, mapCy, 0), fullOrtho, duration)
+    print("[Camera] AnimateToFixedMap: will fix after animation")
 end
 
 --- 屏幕逻辑坐标 → 世界坐标（WorldToScreen 的逆变换）

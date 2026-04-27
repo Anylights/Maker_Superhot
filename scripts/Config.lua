@@ -85,11 +85,22 @@ Config.PickupLargeOutline = Color(0.50, 0.35, 0.03, 1.0)
 
 -- 移动系统
 Config.MoveSpeed       = 8.0     -- 水平移动速度 m/s
-Config.MaxJumps        = 1       -- 最大跳跃次数（仅一段跳）
+Config.MaxJumps        = 2       -- 最大跳跃次数（二段跳）
 Config.DashSpeed       = 25.0    -- 冲刺速度 m/s（3x 移动速度，冲刺感更强）
 Config.DashDuration    = 0.22    -- 冲刺持续时间（秒）：覆盖约 5.5m
 Config.DashCooldown    = 2.0     -- 冲刺冷却（秒）
 Config.AirControlRatio = 0.7     -- 空中控制系数
+
+-- 冲刺击退
+Config.DashKnockbackRadius = 1.5  -- 冲刺碰撞检测半径（米）
+Config.DashKnockbackForce  = 15.0 -- 冲刺击退水平力（m/s）
+Config.DashKnockbackUp     = 6.0  -- 冲刺击退垂直力（m/s）
+
+-- 下砸
+Config.SlamSpeed         = 40.0   -- 下砸下落速度（m/s，非常快）
+Config.SlamRadius        = 1.5    -- 下砸着陆水平击飞范围（米，左右各 1.5 格）
+Config.SlamKnockbackForce = 18.0  -- 下砸击飞水平力（m/s）
+Config.SlamKnockbackUp   = 10.0   -- 下砸击飞垂直力（m/s）
 
 -- 物理跳跃系统（速度 + 重力，类似超级鸡马）
 -- 按一下跳固定高度，不需要长按。上升靠初速度，下落靠重力。
@@ -160,6 +171,7 @@ Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸
 Config.CameraMaxOrtho    = 40.0    -- 最大正交尺寸（适配更大地图）
 Config.CameraPadding     = 4.0     -- 相机包围盒边距
 Config.CameraSmoothSpeed = 3.0     -- 相机平滑速度
+Config.CameraEndTransDur = 1.5     -- 回合结束时镜头过渡到全景的时长（秒）
 
 -- 玩家数量
 Config.NumPlayers = 4

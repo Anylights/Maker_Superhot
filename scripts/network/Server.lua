@@ -165,7 +165,7 @@ function HandleClientConnected(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local connKey = tostring(connection)
 
-    connection:SetPulseButtonMask(CTRL.JUMP | CTRL.DASH | CTRL.EXPLODE_RELEASE)
+    connection:SetPulseButtonMask(CTRL.JUMP | CTRL.DASH | CTRL.EXPLODE_RELEASE | CTRL.SLAM)
 
     connections_[connKey] = {
         conn = connection,
@@ -515,6 +515,7 @@ function Server.ProcessInputs()
 
                     if buttons & CTRL.JUMP ~= 0 then p.inputJump = true end
                     if buttons & CTRL.DASH ~= 0 then p.inputDash = true end
+                    if buttons & CTRL.SLAM ~= 0 then p.inputSlam = true end
 
                     local chargeDown = (buttons & CTRL.CHARGE ~= 0)
                     if chargeDown then p.inputCharging = true end

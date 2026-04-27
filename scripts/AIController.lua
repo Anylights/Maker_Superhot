@@ -39,8 +39,11 @@ local DASH_SPEED    = Config.DashSpeed            -- 25.0
 local DASH_DUR      = Config.DashDuration         -- 0.22
 
 -- 跳跃物理推导
-local MAX_JUMP_HEIGHT   = (JUMP_SPEED * JUMP_SPEED) / (2 * GRAVITY)     -- ~10.0
-local TIME_TO_PEAK      = JUMP_SPEED / GRAVITY                          -- ~1.43s
+local SINGLE_JUMP_HEIGHT = (JUMP_SPEED * JUMP_SPEED) / (2 * GRAVITY)    -- ~10.0（单次跳跃）
+local MAX_JUMPS          = Config.MaxJumps                               -- 2（二段跳）
+-- 二段跳最大高度：第一跳到顶后第二跳（近似2倍单跳高度）
+local MAX_JUMP_HEIGHT    = SINGLE_JUMP_HEIGHT * MAX_JUMPS                -- ~20.0
+local TIME_TO_PEAK       = JUMP_SPEED / GRAVITY                          -- ~1.43s（单次）
 local AIR_HORIZ_SPEED   = MOVE_SPEED * AIR_CONTROL                      -- ~5.6 m/s
 local DASH_DISTANCE     = DASH_SPEED * DASH_DUR                          -- ~5.5m
 
@@ -221,14 +224,25 @@ local function analyzeReachability(fromPlat, toPlat)
 
     -- ========== 目标在上方 ==========
     if dy > MAX_JUMP_HEIGHT - 0.3 then
-        return false, nil  -- 跳不到
+        return false, nil  -- 跳不到（即使二段跳也不够）
     end
 
-    -- 解方程：上升中首次到达 dy 的时间（短）；在峰顶后下落到 dy 的时间（长）
-    local disc = JUMP_SPEED * JUMP_SPEED - 2 * GRAVITY * dy
-    if disc < 0 then return false, nil end
-    local tReachUp   = (JUMP_SPEED - math.sqrt(disc)) / GRAVITY  -- 第一次穿越 dy
-    local tReachDown = (JUMP_SPEED + math.sqrt(disc)) / GRAVITY  -- 第二次穿越（落回 dy）
+    -- 判断是否需要二段跳（目标高度超过单次跳跃极限）
+    local needDoubleJump = (dy > SINGLE_JUMP_HEIGHT - 0.3)
+
+    -- 解方程：对于二段跳，使用等效的更大跳跃高度
+    -- 简化模型：二段跳约等于总跳跃时间翻倍
+    local effectiveJumpSpeed = JUMP_SPEED
+    local effectivePeakTime = TIME_TO_PEAK
+    if needDoubleJump then
+        -- 二段跳：在第一跳顶点附近再跳一次，总滞空时间约 2*TIME_TO_PEAK
+        effectivePeakTime = TIME_TO_PEAK * 2
+    end
+
+    local disc = effectiveJumpSpeed * effectiveJumpSpeed - 2 * GRAVITY * math.min(dy, SINGLE_JUMP_HEIGHT - 0.5)
+    if disc < 0 then disc = 0 end
+    local tReachUp   = (effectiveJumpSpeed - math.sqrt(disc)) / GRAVITY
+    local tReachDown = needDoubleJump and (effectivePeakTime * 2) or ((effectiveJumpSpeed + math.sqrt(disc)) / GRAVITY)
 
     -- 角色实际可在 [tReachUp, tReachDown] 之间的任意时刻落上目标平台
     -- 因此可用的水平滞空时间 = tReachDown
@@ -463,6 +477,7 @@ function AIController.Register(playerData)
         moveDir        = 0,
         wantJump       = false,
         wantDash       = false,
+        wantSlam       = false,
 
         aiState        = STATE_NAVIGATE,
         path           = nil,
@@ -549,6 +564,10 @@ function AIController.UpdateOne(p, dt)
     if state.wantDash then
         p.inputDash = true
         state.wantDash = false
+    end
+    if state.wantSlam then
+        p.inputSlam = true
+        state.wantSlam = false
     end
     -- 炸弹输入（持续 / 一次性）
     if state.wantCharging then
@@ -1081,6 +1100,42 @@ function AIController.ThinkInAir(p, state, px, py, vx, vy)
                 state.moveDir = dx > 0 and 1 or -1
             else
                 state.moveDir = 0
+            end
+        end
+    end
+
+    -- 二段跳：如果目标在上方且当前正在下落（vy < 0），且还有跳跃次数，使用二段跳
+    if state.jumpTarget and vy < -1.0 and p.jumpCount < MAX_JUMPS then
+        local tp = state.jumpTarget
+        local needHeight = tp.charY - py
+        -- 预测：按当前速度继续下落能否到达目标高度？如果不能，二段跳
+        -- 简单判断：目标在上方且正在下落 → 二段跳
+        if needHeight > 1.0 then
+            state.wantJump = true
+            if VERBOSE_JUMP_LOG then
+                print(string.format("[AI#%d] DOUBLE JUMP vy=%.2f needH=%.2f jumpCount=%d",
+                    p.index, vy, needHeight, p.jumpCount))
+            end
+        end
+    end
+
+    -- 下砸战术：空中正下方有其他玩家且距离合适时使用下砸
+    if not p.slamming and vy < 0 and playerModule_ then
+        local slamRadius = Config.SlamRadius or 3.0
+        for _, other in ipairs(playerModule_.list) do
+            if other.index ~= p.index and other.alive and not other.finished and other.node then
+                local opos = other.node.position
+                local dx = math.abs(opos.x - px)
+                local dy = py - opos.y  -- 正值表示 AI 在上方
+                -- 正下方（水平距离小）且高度差适中（2~8米）
+                if dx < slamRadius * 0.6 and dy > 2.0 and dy < 8.0 then
+                    state.wantSlam = true
+                    if VERBOSE_JUMP_LOG then
+                        print(string.format("[AI#%d] SLAM dx=%.2f dy=%.2f target=#%d",
+                            p.index, dx, dy, other.index))
+                    end
+                    break
+                end
             end
         end
     end

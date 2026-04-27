@@ -426,6 +426,10 @@ function Client.CollectInputAdvanced()
         buttons = buttons | CTRL.DASH
         p.inputDash = true
     end
+    if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then
+        buttons = buttons | CTRL.SLAM
+        p.inputSlam = true
+    end
 
     local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
     if leftDown then

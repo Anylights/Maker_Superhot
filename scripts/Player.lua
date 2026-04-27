@@ -234,7 +234,11 @@ function Player.Create(index, isHuman, opts)
         inputDash = false,
         inputCharging = false,       -- 右键按住中
         inputExplodeRelease = false, -- 右键松开（触发爆炸）
+        inputSlam = false,           -- 下砸输入
         wasChargingInput = false,    -- 上帧右键状态（用于松开检测）
+
+        -- 下砸
+        slamming = false,            -- 是否正在下砸中
 
         -- 视觉动效（squash & stretch）
         squashScaleX = 1.0,    -- 当前形变 X 比例
@@ -463,6 +467,13 @@ function Player.UpdateOne(p, dt)
             p.squashVelY = 0
             p.squashVelX = 0
         end
+
+        -- 下砸着陆：击退周围玩家
+        if p.slamming then
+            p.slamming = false
+            Player.DoSlamLanding(p)
+        end
+
         -- 着陆时检查跳跃缓冲：缓冲窗口内有按键 → 自动起跳
         if p.jumpBufferTimer > 0 then
             p.jumpBufferTimer = 0
@@ -498,6 +509,7 @@ function Player.UpdateOne(p, dt)
         p.inputMoveX = 0
         p.inputJump = false
         p.inputDash = false
+        p.inputSlam = false
         p.inputCharging = false
         p.inputExplodeRelease = false
         -- 应用重力（不调用完整 UpdateMovement 以避免输入干扰）
@@ -631,6 +643,83 @@ function Player.UpdateOne(p, dt)
     p.hitWallX = 0         -- 每帧重置墙壁碰撞
 end
 
+--- 冲刺击退：冲刺中撞到其他玩家，将其击飞
+---@param p table
+function Player.DoDashKnockback(p)
+    if not p.node then return end
+    local pos = p.node.position
+    for _, other in ipairs(Player.list) do
+        if other.index ~= p.index and other.alive and not other.finished and other.node and other.body then
+            if other.invincibleTimer > 0 then goto continueKB end
+            local diff = other.node.position - pos
+            local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
+            if dist < Config.DashKnockbackRadius then
+                -- 击飞方向：冲刺方向
+                local kbDir = p.dashDir
+                other.body.linearVelocity = Vector3(
+                    kbDir * Config.DashKnockbackForce,
+                    Config.DashKnockbackUp,
+                    0
+                )
+                -- 触发被击退的视觉效果
+                other.squashScaleX = 0.7
+                other.squashScaleY = 1.3
+                other.squashVelX = 0
+                other.squashVelY = 0
+                if networkMode_ ~= "server" then
+                    SFX.Play("explosion", 0.4)
+                end
+            end
+            ::continueKB::
+        end
+    end
+end
+
+--- 下砸着陆：击退周围小范围的玩家（水平力）
+---@param p table
+function Player.DoSlamLanding(p)
+    if not p.node then return end
+    local pos = p.node.position
+
+    -- 视觉效果：强力压扁
+    p.squashScaleY = 0.55
+    p.squashScaleX = 1.45
+    p.squashVelY = 0
+    p.squashVelX = 0
+
+    -- 屏幕震动
+    if networkMode_ ~= "server" then
+        Camera.Shake(0.25, 0.2)
+        SFX.Play("explosion", 0.6)
+    end
+
+    -- 击退周围玩家
+    for _, other in ipairs(Player.list) do
+        if other.index ~= p.index and other.alive and not other.finished and other.node and other.body then
+            if other.invincibleTimer > 0 then goto continueSL end
+            local diff = other.node.position - pos
+            local dx = math.abs(diff.x)
+            local dy = math.abs(diff.y)
+            -- 水平距离在 SlamRadius 内且垂直距离合理（不超过 2 格）
+            if dx < Config.SlamRadius and dy < 2.0 and (dx + dy) > 0.01 then
+                -- 击飞方向：从砸地点水平朝外
+                local kbDir = (diff.x >= 0) and 1 or -1
+                other.body.linearVelocity = Vector3(
+                    kbDir * Config.SlamKnockbackForce,
+                    Config.SlamKnockbackUp,
+                    0
+                )
+                -- 被击退视觉效果
+                other.squashScaleX = 0.7
+                other.squashScaleY = 1.3
+                other.squashVelX = 0
+                other.squashVelY = 0
+            end
+            ::continueSL::
+        end
+    end
+end
+
 --- 执行跳跃：给一个向上初速度，由物理重力自然完成抛物线
 ---@param p table
 function Player.DoJump(p)
@@ -659,6 +748,32 @@ function Player.UpdateMovement(p, dt)
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
         p.body.linearVelocity = Vector3(p.dashDir * Config.DashSpeed, 0, 0)
+        -- 冲刺击退：检测附近其他玩家并击飞
+        Player.DoDashKnockback(p)
+        return
+    end
+
+    -- 下砸输入处理：空中按下S → 快速下落
+    if p.inputSlam and not p.onGround and not p.slamming then
+        p.slamming = true
+        p.inputSlam = false
+        -- 立即给一个超快的向下速度
+        p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
+        if networkMode_ ~= "server" then
+            SFX.Play("dash", 0.5)
+        end
+        return
+    end
+    p.inputSlam = false
+
+    -- 下砸中：锁定为高速下落，忽略水平输入
+    if p.slamming then
+        local slamVy = p.body.linearVelocity.y
+        -- 保持高速下落（比正常重力快）
+        if slamVy > -Config.SlamSpeed then
+            slamVy = -Config.SlamSpeed
+        end
+        p.body.linearVelocity = Vector3(0, slamVy, 0)
         return
     end
 
@@ -1564,6 +1679,8 @@ function Player.Respawn(p)
     p.wasOnGround = false
     p.dashTimer = 0
     p.dashCooldown = 0
+    p.inputSlam = false
+    p.slamming = false
 
     -- 重置视觉动效
     p.squashScaleX = 1.0
@@ -1623,7 +1740,9 @@ function Player.ResetAll()
         p.inputDash = false
         p.inputCharging = false
         p.inputExplodeRelease = false
+        p.inputSlam = false
         p.wasChargingInput = false
+        p.slamming = false
 
         -- 重置视觉动效
         p.squashScaleX = 1.0

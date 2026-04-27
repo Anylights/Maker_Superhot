@@ -404,16 +404,16 @@ function GameManager.UpdateIntro(dt)
         introTextAlpha_ = math.max(0, 1.0 - progress * 2.0)  -- 前半段快速淡出
 
         if introPhaseTimer_ <= 0 then
-            -- 过渡完成，设置固定全景并进入倒计时
+            -- 过渡完成，释放固定模式进入动态跟随
             if cameraModule_ then
                 cameraModule_.StopAnimation()
-                cameraModule_.SetFixedForMap(MapData.Width, MapData.Height, 2)
+                cameraModule_.ReleaseFixed()
             end
             introPhase_ = 0
             introTextAlpha_ = 0
             lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
             GameManager.SetState(GameManager.STATE_COUNTDOWN, Config.CountdownTime)
-            print("[GameManager] Intro complete → countdown")
+            print("[GameManager] Intro complete → countdown (camera follow)")
         end
     end
 end
@@ -456,6 +456,11 @@ function GameManager.UpdateRacing(dt)
 end
 
 function GameManager.UpdateRoundEnd(dt)
+    -- 推进镜头过渡动画（由 EndRound 中的 AnimateToFixedMap 启动）
+    if cameraModule_ and cameraModule_.IsAnimating() then
+        cameraModule_.UpdateAnimation(dt)
+    end
+
     GameManager.stateTimer = GameManager.stateTimer - dt
     if GameManager.stateTimer <= 0 then
         -- 检查是否有人达到胜利分数
@@ -562,6 +567,11 @@ function GameManager.EndRound()
         local points = Config.PlaceScores[place] or 0
         GameManager.scores[playerIndex] = GameManager.scores[playerIndex] + points
         print("[GameManager] Player " .. playerIndex .. " place " .. place .. " +" .. points .. " pts (total: " .. GameManager.scores[playerIndex] .. ")")
+    end
+
+    -- 镜头平滑拉回全景
+    if cameraModule_ then
+        cameraModule_.AnimateToFixedMap(Config.CameraEndTransDur)
     end
 
     SFX.Play("round_end", 0.7)

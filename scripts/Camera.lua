@@ -90,19 +90,30 @@ function Camera.Update(dt, playerPositions, humanPos)
     local mapMinY = 0
     local mapMaxY = MapData.Height * Config.BlockSize
 
+    -- 地图边界容差：超出此范围的玩家视为"掉出"，放弃跟踪
+    local boundsTolerance = Config.CameraPadding * 2
+    local trackMinX = mapMinX - boundsTolerance
+    local trackMaxX = mapMaxX + boundsTolerance
+    local trackMinY = mapMinY - boundsTolerance
+    local trackMaxY = mapMaxY + boundsTolerance * 3  -- 上方留更多空间（跳跃）
+
     local positions = {}
     for _, pos in ipairs(playerPositions) do
-        local clampedY = math.max(mapMinY, pos.y)
-        local clampedX = math.max(mapMinX, math.min(mapMaxX, pos.x))
-        table.insert(positions, Vector3(clampedX, clampedY, 0))
+        -- 仅跟踪仍在地图合理范围内的玩家
+        if pos.x >= trackMinX and pos.x <= trackMaxX
+            and pos.y >= trackMinY and pos.y <= trackMaxY then
+            table.insert(positions, Vector3(pos.x, pos.y, 0))
+        end
     end
 
     if humanPos then
-        local clampedY = math.max(mapMinY, humanPos.y)
-        local clampedX = math.max(mapMinX, math.min(mapMaxX, humanPos.x))
-        table.insert(positions, Vector3(clampedX, clampedY, 0))
+        if humanPos.x >= trackMinX and humanPos.x <= trackMaxX
+            and humanPos.y >= trackMinY and humanPos.y <= trackMaxY then
+            table.insert(positions, Vector3(humanPos.x, humanPos.y, 0))
+        end
     end
 
+    -- 无可跟踪玩家时保持当前位置不动
     if #positions == 0 then return end
 
     local minX, maxX = math.huge, -math.huge

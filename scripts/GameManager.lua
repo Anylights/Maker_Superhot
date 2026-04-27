@@ -185,6 +185,19 @@ function GameManager.SetState(newState, timer)
         BGM.PlayMenu()
     end
 
+    -- 相机模式联动
+    if cameraModule_ then
+        if newState == GameManager.STATE_RACING then
+            -- 比赛开始：释放固定模式，启用动态跟随
+            cameraModule_.ReleaseFixed()
+        elseif newState == GameManager.STATE_ROUND_END
+            or newState == GameManager.STATE_SCORE
+            or newState == GameManager.STATE_MATCH_END then
+            -- 回合/比赛结束：恢复全局地图视角
+            cameraModule_.SetFixedForMap(MapData.Width, MapData.Height, 2)
+        end
+    end
+
     if onStateChange_ then
         onStateChange_(oldState, newState)
     end

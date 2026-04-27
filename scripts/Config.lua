@@ -10,20 +10,20 @@ Config.Title = "超级红温！"
 -- 方块/网格尺寸（米）
 Config.BlockSize = 1.0
 
--- 玩家颜色（4 名玩家）— 高饱和鲜艳，加亮以抵消网络复制变灰
+-- 玩家颜色（4 名玩家）— 极高饱和鲜艳，大幅加亮
 Config.PlayerColors = {
-    Color(1.00, 0.38, 0.32, 1.0),  -- 亮番茄红
-    Color(0.40, 0.65, 1.00, 1.0),  -- 亮宝蓝
-    Color(0.35, 1.00, 0.50, 1.0),  -- 亮翠绿
-    Color(1.00, 0.90, 0.28, 1.0),  -- 亮鲜黄
+    Color(1.00, 0.48, 0.42, 1.0),  -- 亮番茄红
+    Color(0.52, 0.75, 1.00, 1.0),  -- 亮宝蓝
+    Color(0.48, 1.00, 0.60, 1.0),  -- 亮翠绿
+    Color(1.00, 0.95, 0.40, 1.0),  -- 亮鲜黄
 }
 
--- 自发光强度进一步提升，让玩家在场景中更醒目
+-- 自发光强度大幅提升，让玩家在场景中更醒目
 Config.PlayerEmissive = {
-    Color(0.55, 0.10, 0.06),   -- 红光
-    Color(0.08, 0.20, 0.55),   -- 蓝光
-    Color(0.08, 0.45, 0.12),   -- 绿光
-    Color(0.55, 0.42, 0.06),   -- 黄光
+    Color(0.75, 0.15, 0.08),   -- 红光
+    Color(0.12, 0.30, 0.75),   -- 蓝光
+    Color(0.12, 0.60, 0.18),   -- 绿光
+    Color(0.75, 0.58, 0.10),   -- 黄光
 }
 
 -- 玩家描边颜色（深色，每色独立）
@@ -46,17 +46,17 @@ Config.BLOCK_SPAWN_P2   = 11 -- P2 出生点（宝蓝）
 Config.BLOCK_SPAWN_P3   = 12 -- P3 出生点（翠绿）
 Config.BLOCK_SPAWN_P4   = 13 -- P4 出生点（鲜黄）
 
--- 方块颜色（温暖色调，提亮以抵消变灰）
+-- 方块颜色（温暖色调，大幅提亮）
 Config.BlockColors = {
-    [1] = Color(1.00, 0.97, 0.92, 1.0),   -- 普通：明亮暖白
-    [2] = Color(0.45, 0.38, 0.32, 1.0),   -- 安全：浅棕
-    [3] = Color(0.50, 0.98, 0.92, 1.0),   -- 能量托台：亮薄荷绿
-    [4] = Color(0.58, 1.00, 0.55, 1.0),   -- 起点：亮暖绿
-    [5] = Color(1.00, 0.88, 0.30, 1.0),   -- 终点：亮橙金
-    [10] = Color(1.00, 0.38, 0.32, 1.0),  -- P1 出生点：亮红（同步玩家色）
-    [11] = Color(0.40, 0.65, 1.00, 1.0),  -- P2 出生点：亮蓝（同步玩家色）
-    [12] = Color(0.35, 1.00, 0.50, 1.0),  -- P3 出生点：亮绿（同步玩家色）
-    [13] = Color(1.00, 0.90, 0.28, 1.0),  -- P4 出生点：亮黄（同步玩家色）
+    [1] = Color(1.00, 0.98, 0.95, 1.0),   -- 普通：明亮暖白
+    [2] = Color(0.55, 0.48, 0.40, 1.0),   -- 安全：浅棕（提亮）
+    [3] = Color(0.58, 1.00, 0.95, 1.0),   -- 能量托台：亮薄荷绿
+    [4] = Color(0.65, 1.00, 0.62, 1.0),   -- 起点：亮暖绿
+    [5] = Color(1.00, 0.92, 0.40, 1.0),   -- 终点：亮橙金
+    [10] = Color(1.00, 0.48, 0.42, 1.0),  -- P1 出生点：亮红（同步玩家色）
+    [11] = Color(0.52, 0.75, 1.00, 1.0),  -- P2 出生点：亮蓝（同步玩家色）
+    [12] = Color(0.48, 1.00, 0.60, 1.0),  -- P3 出生点：亮绿（同步玩家色）
+    [13] = Color(1.00, 0.95, 0.40, 1.0),  -- P4 出生点：亮黄（同步玩家色）
 }
 
 -- 出生点方块自发光颜色（复用 PlayerEmissive）
@@ -70,9 +70,9 @@ Config.SpawnBlockEmissive = {
 -- 方块描边颜色（统一深棕）
 Config.BlockOutlineColor = Color(0.20, 0.16, 0.13, 1.0)
 
--- 橡皮质感 PBR 参数（低粗糙度增强反光，对抗变灰）
-Config.RubberMetallic  = 0.04
-Config.RubberRoughness = 0.42
+-- 橡皮质感 PBR 参数（低粗糙度增强反光，大幅对抗变灰）
+Config.RubberMetallic  = 0.05
+Config.RubberRoughness = 0.35
 
 -- 背景渐变色（NanoVG 绘制）
 Config.BgColorTop = { 0.98, 0.85, 0.70 }  -- 温暖桃色
@@ -86,9 +86,9 @@ Config.PickupLargeOutline = Color(0.50, 0.35, 0.03, 1.0)
 
 -- 移动系统
 Config.MoveSpeed       = 8.0     -- 水平移动速度 m/s
-Config.MaxJumps        = 1       -- 最大跳跃次数（仅一段跳）
-Config.DashSpeed       = 25.0    -- 冲刺速度 m/s（3x 移动速度，冲刺感更强）
-Config.DashDuration    = 0.22    -- 冲刺持续时间（秒）：覆盖约 5.5m
+Config.MaxJumps        = 2       -- 最大跳跃次数（二段跳）
+Config.DashSpeed       = 16.0    -- 冲刺速度 m/s（缩短距离）
+Config.DashDuration    = 0.22    -- 冲刺持续时间（秒）：覆盖约 3.5m
 Config.DashCooldown    = 2.0     -- 冲刺冷却（秒）
 Config.AirControlRatio = 0.7     -- 空中控制系数
 
@@ -101,6 +101,18 @@ Config.MaxFallSpeed      = 30.0  -- 最大下落速度 (m/s)
 -- 跳跃辅助
 Config.CoyoteTime        = 0.08  -- 土狼时间（秒）
 Config.JumpBufferTime    = 0.10  -- 跳跃缓冲（秒）
+
+-- 下砸系统（S 键，空中触发）
+Config.SlamSpeed         = 28.0  -- 下砸下落速度 (m/s)
+Config.SlamKnockRadius   = 1.0   -- 下砸击退范围（格）
+Config.SlamKnockForce    = 14.0  -- 下砸水平击退力 (m/s)
+Config.SlamKnockUpForce  = 5.0   -- 下砸垂直击退力 (m/s)
+Config.SlamRecovery      = 0.15  -- 下砸着地后摇（秒）
+
+-- 冲刺击退（冲刺中碰到敌人会撞飞）
+Config.DashKnockForce    = 20.0  -- 冲刺水平击退力（大于下砸）
+Config.DashKnockUpForce  = 6.0   -- 冲刺垂直击退力
+Config.DashKnockRadius   = 1.2   -- 冲刺击退检测范围（格）
 
 -- 能量系统
 Config.EnergyChargeTime   = 16.0   -- 自动充满时间（秒）

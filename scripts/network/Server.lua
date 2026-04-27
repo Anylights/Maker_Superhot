@@ -212,7 +212,7 @@ function HandleClientConnected(eventType, eventData)
     -- 等客户端发送 CLIENT_READY 后再设置，否则会导致场景同步时序问题
 
     -- 设置脉冲按钮掩码（一次性输入走 reliable 通道，防止丢包）
-    connection:SetPulseButtonMask(CTRL.JUMP | CTRL.DASH | CTRL.EXPLODE_RELEASE)
+    connection:SetPulseButtonMask(CTRL.JUMP | CTRL.DASH | CTRL.EXPLODE_RELEASE | CTRL.SLAM)
 
     connections_[connKey] = {
         conn = connection,
@@ -1034,6 +1034,7 @@ function Server.ProcessInputs()
                     -- 脉冲按钮（一次性消费）
                     if buttons & CTRL.JUMP ~= 0 then p.inputJump = true end
                     if buttons & CTRL.DASH ~= 0 then p.inputDash = true end
+                    if buttons & CTRL.SLAM ~= 0 then p.inputSlam = true end
 
                     -- 蓄力
                     local chargeDown = (buttons & CTRL.CHARGE ~= 0)

@@ -292,9 +292,18 @@ function Camera.SetFixedForMap(mapWidth, mapHeight, padding)
     local orthoFromH = totalH
     local ortho = math.max(orthoFromW, orthoFromH)
 
-    -- 只设 target，让固定模式块内的 lerp 平滑过渡过去
-    targetCenter_ = Vector3(cx, cy, 0)
-    targetOrtho_ = ortho
+    -- 如果 current 和 target 距离很远（首次进入或跨地图），直接设置 current 避免长时间漂移
+    local dx = cx - currentCenter_.x
+    local dy = cy - currentCenter_.y
+    local dist = math.sqrt(dx * dx + dy * dy)
+    if dist > 20.0 then
+        -- 距离过远，直接跳到目标附近（保留少量偏移让 lerp 有微小平滑感）
+        Camera.SetImmediate(Vector3(cx, cy, 0), ortho)
+    else
+        -- 正常距离，只设 target 让 lerp 平滑过渡
+        targetCenter_ = Vector3(cx, cy, 0)
+        targetOrtho_ = ortho
+    end
     print("[Camera] Fixed mode: center=(" .. string.format("%.1f,%.1f", cx, cy) ..
           ") ortho=" .. string.format("%.1f", ortho) ..
           " map=" .. mapWidth .. "x" .. mapHeight)

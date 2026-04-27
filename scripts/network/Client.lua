@@ -689,6 +689,9 @@ function Client.CollectInput()
     if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then
         buttons = buttons | CTRL.DASH
     end
+    if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then
+        buttons = buttons | CTRL.SLAM
+    end
     if input:GetMouseButtonDown(MOUSEB_LEFT) then
         buttons = buttons | CTRL.CHARGE
     end
@@ -713,6 +716,7 @@ local wasLeftDown_ = false
 local jumpLatchFrames_ = 0
 local dashLatchFrames_ = 0
 local explodeLatchFrames_ = 0
+local slamLatchFrames_ = 0
 -- 网络帧率已对齐 60Hz，仅需 2 帧冗余以应对偶发抖动
 local PULSE_LATCH_FRAMES = 2
 
@@ -729,6 +733,7 @@ function Client.CollectInputAdvanced()
         jumpLatchFrames_ = 0
         dashLatchFrames_ = 0
         explodeLatchFrames_ = 0
+        slamLatchFrames_ = 0
         return
     end
 
@@ -757,6 +762,15 @@ function Client.CollectInputAdvanced()
     if dashLatchFrames_ > 0 then
         buttons = buttons | CTRL.DASH
         dashLatchFrames_ = dashLatchFrames_ - 1
+    end
+
+    -- 下砸
+    if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then
+        slamLatchFrames_ = PULSE_LATCH_FRAMES
+    end
+    if slamLatchFrames_ > 0 then
+        buttons = buttons | CTRL.SLAM
+        slamLatchFrames_ = slamLatchFrames_ - 1
     end
 
     local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)

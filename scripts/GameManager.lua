@@ -17,7 +17,6 @@ GameManager.STATE_RACING     = "racing"
 GameManager.STATE_ROUND_END  = "roundEnd"
 GameManager.STATE_SCORE      = "score"
 GameManager.STATE_MATCH_END  = "matchEnd"
-GameManager.STATE_MATCHING   = "matching"
 GameManager.STATE_EDITOR     = "editor"
 GameManager.STATE_LEVEL_LIST = "levelList"
 
@@ -31,14 +30,6 @@ GameManager.roundTimer = 0
 GameManager.scores = { 0, 0, 0, 0 }
 GameManager.finishCount = 0      -- 当前回合已到达终点的人数
 GameManager.roundResults = {}     -- 当前回合名次
-
--- 匹配系统
-local matchingTimer_ = 0
-local matchingSlotCount_ = 0  -- 已填入的玩家槽位数（含自己）
-local matchingComplete_ = false
-
--- 匹配模式
-GameManager.matchMode = "quickStart"
 
 -- 试玩模式
 GameManager.testPlayMode = false
@@ -61,8 +52,6 @@ GameManager.killEvents = {}
 -- 状态转换回调
 local onStateChange_ = nil
 local onBeforeRound_ = nil  -- 每局开始前触发（在 Map.Reset 之前），用于切换关卡
--- 击杀事件回调（网络广播用）
-local onKill_ = nil
 
 -- 倒计时音效跟踪
 local lastCountdownNum_ = 0
@@ -114,12 +103,6 @@ end
 ---@param callback function
 function GameManager.OnStateChange(callback)
     onStateChange_ = callback
-end
-
---- 设置击杀事件回调（服务端广播用）
----@param callback function(killerIndex, victimIndex, multiKillCount, killStreak)
-function GameManager.OnKill(callback)
-    onKill_ = callback
 end
 
 --- 设置每局开始前的回调（在 Map.Reset 之前触发，用于切换关卡）
@@ -205,8 +188,6 @@ function GameManager.Update(dt)
     if state == GameManager.STATE_MENU then
         -- 菜单状态不做任何更新，等待外部调用 StartMatch
         return
-    elseif state == GameManager.STATE_MATCHING then
-        GameManager.UpdateMatching(dt)
     elseif state == GameManager.STATE_INTRO then
         GameManager.UpdateIntro(dt)
     elseif state == GameManager.STATE_COUNTDOWN then
@@ -519,11 +500,6 @@ function GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, kill
     }
     table.insert(GameManager.killEvents, event)
 
-    -- 网络回调
-    if onKill_ then
-        onKill_(killerIndex, victimIndex, multiKillCount, killStreak)
-    end
-
     print("[GameManager] Kill event: P" .. killerIndex .. " killed P" .. victimIndex
         .. " (multi=" .. multiKillCount .. ", streak=" .. killStreak
         .. ", score=" .. GameManager.scores[killerIndex] .. ")")
@@ -608,91 +584,6 @@ end
 ---@return boolean
 function GameManager.CanPlayersMove()
     return GameManager.state == GameManager.STATE_RACING
-end
-
--- ============================================================================
--- 匹配状态
--- ============================================================================
-
---- 进入匹配状态
-function GameManager.EnterMatching()
-    matchingTimer_ = 0
-    matchingSlotCount_ = 1  -- 玩家自己先占一个槽
-    matchingComplete_ = false
-    GameManager.SetState(GameManager.STATE_MATCHING)
-    print("[GameManager] Entering matching...")
-end
-
---- 更新匹配逻辑
----@param dt number
-function GameManager.UpdateMatching(dt)
-    matchingTimer_ = matchingTimer_ + dt
-
-    -- 模拟逐个玩家加入（间隔 0.6~1.2 秒随机加一个）
-    local slotsNeeded = Config.NumPlayers
-    if matchingSlotCount_ < slotsNeeded then
-        -- 根据时间进度模拟填充
-        local fillInterval = Config.MatchingTimeout / (slotsNeeded - 1)
-        local expectedSlots = 1 + math.floor(matchingTimer_ / fillInterval)
-        if expectedSlots > matchingSlotCount_ and matchingSlotCount_ < slotsNeeded then
-            matchingSlotCount_ = math.min(expectedSlots, slotsNeeded)
-        end
-    end
-
-    -- 超时 → 全部就绪
-    if matchingTimer_ >= Config.MatchingTimeout then
-        matchingSlotCount_ = slotsNeeded
-        if not matchingComplete_ then
-            matchingComplete_ = true
-            SFX.Play("match_ready", 0.8)
-            print("[GameManager] Matching complete! All players ready.")
-        end
-    end
-end
-
---- 仅更新匹配计时器（客户端联机模式专用，不做本地槽位模拟）
----@param dt number
-function GameManager.UpdateMatchingTimer(dt)
-    matchingTimer_ = matchingTimer_ + dt
-end
-
---- 取消匹配，返回菜单
-function GameManager.CancelMatching()
-    GameManager.SetState(GameManager.STATE_MENU)
-    print("[GameManager] Matching cancelled")
-end
-
---- 获取匹配计时
----@return number
-function GameManager.GetMatchingTime()
-    return matchingTimer_
-end
-
---- 获取已匹配玩家数
----@return number
-function GameManager.GetMatchingSlots()
-    return matchingSlotCount_
-end
-
---- 匹配是否完成
----@return boolean
-function GameManager.IsMatchingComplete()
-    return matchingComplete_
-end
-
---- 强制匹配完成（服务端分配角色后调用，用于视觉反馈）
-function GameManager.ForceMatchingComplete()
-    matchingSlotCount_ = Config.NumPlayers
-    matchingComplete_ = true
-    matchingTimer_ = Config.MatchingTimeout
-    SFX.Play("match_ready", 0.8)
-    print("[GameManager] Matching force-completed (server assigned role)")
-end
-
---- 设置匹配槽位数（外部通知玩家加入时更新 UI）
----@param count number
-function GameManager.SetMatchingSlots(count)
-    matchingSlotCount_ = math.min(count, Config.NumPlayers)
 end
 
 -- ============================================================================

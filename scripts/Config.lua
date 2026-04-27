@@ -159,12 +159,6 @@ Config.IntroZoomOutTime      = 1.0   -- 拉远回全景过渡时间（秒）
 Config.IntroFinishOrtho      = 8.0   -- 聚焦终点时的正交尺寸（拉近）
 Config.IntroSpawnOrtho       = 10.0  -- 聚焦起点时的正交尺寸
 
--- 匹配系统
-Config.MatchingTimeout   = 10.0    -- 匹配超时（秒），超时后 AI 静默补齐
-
--- 联机配置
-Config.RoomStartDelay    = 1.5     -- 点击开始后延迟（秒），给客户端准备时间
-
 -- 相机
 Config.CameraZ           = -40.0   -- 相机 Z 位置（侧视）
 Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸

@@ -22,15 +22,7 @@ local mapModule_ = nil  -- Map 模块引用
 local pbrTechnique_ = nil
 local pbrAlphaTechnique_ = nil
 
--- 网络模式："standalone" | "server" | "client"
-local networkMode_ = "standalone"
 
---- 设置网络模式（必须在 Init 之前调用）
----@param mode string "standalone"|"server"|"client"
-function Player.SetNetworkMode(mode)
-    networkMode_ = mode
-    print("[Player] Network mode set to: " .. mode)
-end
 
 -- ============================================================================
 -- 初始化
@@ -139,13 +131,11 @@ function Player.Create(index, isHuman, opts)
     if opts.existingNode then
         node = opts.existingNode
     else
-        -- 服务端用 LOCAL 防止节点被复制到客户端（客户端有自己独立的玩家节点）
-        local createMode = (networkMode_ == "server") and LOCAL or REPLICATED
-        node = scene_:CreateChild("Player_" .. index, createMode)
+        node = scene_:CreateChild("Player_" .. index, REPLICATED)
         node.position = Vector3(spawnX, spawnY, 0)
     end
 
-    -- 视觉组件（服务端跳过）
+    -- 视觉组件
     local visualNode = nil
     local mat = nil
     local outlineMat = nil
@@ -396,9 +386,7 @@ function Player.UpdateOne(p, dt)
             -- 着地瞬间起跳（无限循环跳）
             if p.onGround then
                 p.body.linearVelocity = Vector3(newVx, Config.JumpSpeed, 0)
-                if networkMode_ ~= "server" then
-                    SFX.Play("jump", 0.4)
-                end
+                SFX.Play("jump", 0.4)
                 -- 起跳时给一个新的旋转速度（每跳一次方向不同）
                 p.celebrateRotateSpeed = 540  -- 度/秒，1.5 圈/秒
                 p.celebrateRotation = 0
@@ -583,44 +571,38 @@ function Player.UpdateOne(p, dt)
     p.inputCharging = false
     p.inputExplodeRelease = false
 
-    -- 死亡区域检测（客户端不做权威判定，由服务端物理驱动）
-    if networkMode_ ~= "client" then
-        if p.node and p.node.position.y < Config.DeathY then
-            Player.Kill(p, "fall")
-        end
+    -- 死亡区域检测
+    if p.node and p.node.position.y < Config.DeathY then
+        Player.Kill(p, "fall")
     end
 
-    -- 终点检测（服务端权威）
-    if networkMode_ ~= "client" then
-        if p.node and not p.finished and MapData.IsAtFinish(p.node.position.x, p.node.position.y) then
-            p.finished = true
-            print("[Player] Player " .. p.index .. " reached the finish!")
+    -- 终点检测
+    if p.node and not p.finished and MapData.IsAtFinish(p.node.position.x, p.node.position.y) then
+        p.finished = true
+        print("[Player] Player " .. p.index .. " reached the finish!")
 
-            -- 立即停下：清水平速度、关闭蓄力/输入
-            if p.body then
-                local vel = p.body.linearVelocity
-                p.body.linearVelocity = Vector3(0, vel.y, 0)
-            end
-            p.charging = false
-            p.chargeTimer = 0
-            p.chargeProgress = 0
-            p.inputMoveX = 0
-            p.inputJump = false
-            p.inputDash = false
-            p.inputCharging = false
-            p.inputExplodeRelease = false
-
-            -- 庆祝状态初始化
-            p.celebrateRotation = 0
-            p.celebrateRotateSpeed = 0
-            p.celebrateAnchorX = p.node.position.x
-
-            -- 烟花特效（只有非纯服务端模式才出特效）
-            if networkMode_ ~= "server" then
-                Player.SpawnFireworkFX(p.node.position, p.index)
-                SFX.Play("pickup_large", 0.8)
-            end
+        -- 立即停下：清水平速度、关闭蓄力/输入
+        if p.body then
+            local vel = p.body.linearVelocity
+            p.body.linearVelocity = Vector3(0, vel.y, 0)
         end
+        p.charging = false
+        p.chargeTimer = 0
+        p.chargeProgress = 0
+        p.inputMoveX = 0
+        p.inputJump = false
+        p.inputDash = false
+        p.inputCharging = false
+        p.inputExplodeRelease = false
+
+        -- 庆祝状态初始化
+        p.celebrateRotation = 0
+        p.celebrateRotateSpeed = 0
+        p.celebrateAnchorX = p.node.position.x
+
+        -- 烟花特效
+        Player.SpawnFireworkFX(p.node.position, p.index)
+        SFX.Play("pickup_large", 0.8)
     end
 
     -- =====================
@@ -666,9 +648,7 @@ function Player.DoDashKnockback(p)
                 other.squashScaleY = 1.3
                 other.squashVelX = 0
                 other.squashVelY = 0
-                if networkMode_ ~= "server" then
-                    SFX.Play("explosion", 0.4)
-                end
+                SFX.Play("explosion", 0.4)
             end
             ::continueKB::
         end
@@ -688,10 +668,8 @@ function Player.DoSlamLanding(p)
     p.squashVelX = 0
 
     -- 屏幕震动
-    if networkMode_ ~= "server" then
-        Camera.Shake(0.25, 0.2)
-        SFX.Play("explosion", 0.6)
-    end
+    Camera.Shake(0.25, 0.2)
+    SFX.Play("explosion", 0.6)
 
     -- 击退周围玩家
     for _, other in ipairs(Player.list) do
@@ -732,9 +710,7 @@ function Player.DoJump(p)
         p.body.linearVelocity = Vector3(vel.x, Config.JumpSpeed, 0)
     end
 
-    if networkMode_ ~= "server" then
-        SFX.Play("jump", 0.5)
-    end
+    SFX.Play("jump", 0.5)
 end
 
 --- 更新移动
@@ -759,9 +735,7 @@ function Player.UpdateMovement(p, dt)
         p.inputSlam = false
         -- 立即给一个超快的向下速度
         p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
-        if networkMode_ ~= "server" then
-            SFX.Play("dash", 0.5)
-        end
+        SFX.Play("dash", 0.5)
         return
     end
     p.inputSlam = false
@@ -853,9 +827,7 @@ function Player.UpdateMovement(p, dt)
             p.dashTimer = Config.DashDuration
             p.dashDir = p.lastFaceDir
             p.dashCooldown = Config.DashCooldown
-            if networkMode_ ~= "server" then
-                SFX.Play("dash", 0.6)
-            end
+            SFX.Play("dash", 0.6)
         end
         p.inputDash = false
     end
@@ -1224,38 +1196,34 @@ function Player.DoExplode(p, progress)
     -- 破坏地图方块
     local destroyed = mapModule_.Explode(centerGX, centerGY, actualRadius)
 
-    -- 检测范围内其他玩家（服务端权威，客户端不判定击杀）
-    if networkMode_ ~= "client" then
-        -- 边缘判定：爆炸边缘碰到玩家描边线即可击杀
-        -- 玩家描边外半径 ≈ BlockSize * 0.9 * 1.15 * 0.5 ≈ 0.52
-        local playerOutlineRadius = Config.BlockSize * 0.9 * 1.15 * 0.5
-        local killRadius = actualRadius * Config.BlockSize + playerOutlineRadius
-        for _, other in ipairs(Player.list) do
-            if other.index ~= p.index and other.alive and other.invincibleTimer <= 0 then
-                if other.node then
-                    local diff = other.node.position - pos
-                    local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
-                    if dist <= killRadius then
-                        Player.Kill(other, "explosion", p.index)
-                        print("[Player] Player " .. p.index .. " killed Player " .. other.index .. "!")
-                    end
+    -- 检测范围内其他玩家
+    -- 边缘判定：爆炸边缘碰到玩家描边线即可击杀
+    -- 玩家描边外半径 ≈ BlockSize * 0.9 * 1.15 * 0.5 ≈ 0.52
+    local playerOutlineRadius = Config.BlockSize * 0.9 * 1.15 * 0.5
+    local killRadius = actualRadius * Config.BlockSize + playerOutlineRadius
+    for _, other in ipairs(Player.list) do
+        if other.index ~= p.index and other.alive and other.invincibleTimer <= 0 then
+            if other.node then
+                local diff = other.node.position - pos
+                local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
+                if dist <= killRadius then
+                    Player.Kill(other, "explosion", p.index)
+                    print("[Player] Player " .. p.index .. " killed Player " .. other.index .. "!")
                 end
             end
         end
     end
 
-    -- 视觉/音效（服务端跳过）
-    if networkMode_ ~= "server" then
-        -- 生成爆炸粒子特效
-        Player.SpawnExplosionFX(pos, p.index)
+    -- 视觉/音效
+    -- 生成爆炸粒子特效
+    Player.SpawnExplosionFX(pos, p.index)
 
-        -- 屏幕震动（强度随爆炸半径缩放）
-        local shakeIntensity = 0.15 + actualRadius * 0.05  -- 1格≈0.20, 7格≈0.50
-        Camera.Shake(shakeIntensity, 0.25)
+    -- 屏幕震动（强度随爆炸半径缩放）
+    local shakeIntensity = 0.15 + actualRadius * 0.05  -- 1格≈0.20, 7格≈0.50
+    Camera.Shake(shakeIntensity, 0.25)
 
-        -- 爆炸音效
-        SFX.Play("explosion", 0.8)
-    end
+    -- 爆炸音效
+    SFX.Play("explosion", 0.8)
 
     print("[Player] Player " .. p.index .. " exploded! Radius=" .. actualRadius .. " Destroyed=" .. destroyed .. " blocks")
 end
@@ -1441,8 +1409,8 @@ function Player.Kill(p, reason, killerIndex)
         -- 3) 禁用整个玩家节点（统一用属性赋值风格）
         p.node.enabled = false
 
-        -- 爆炸死亡：喷溅特效 + 哭脸形象（服务端跳过）
-        if reason == "explosion" and networkMode_ ~= "server" then
+        -- 爆炸死亡：喷溅特效 + 哭脸形象
+        if reason == "explosion" then
             Player.SpawnSplatFX(deathPos, p.index)
             Player.SpawnDeathFace(p, deathPos)
         end
@@ -1451,9 +1419,7 @@ function Player.Kill(p, reason, killerIndex)
     -- 死亡重置连杀
     p.killStreak = 0
 
-    if networkMode_ ~= "server" then
-        SFX.Play("death", 0.7)
-    end
+    SFX.Play("death", 0.7)
 
     print("[Player] Player " .. p.index .. " died (" .. reason .. ")")
 end

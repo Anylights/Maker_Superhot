@@ -23,20 +23,12 @@ local runtimeCache_ = {}
 -- ============================================================================
 
 function LevelManager.Init()
-    -- 服务端没有 FileSystem 写权限，只在客户端/单机做文件操作
-    local isServer = (type(IsServerMode) == "function") and IsServerMode()
-
-    if not isServer then
-        fileSystem:CreateDir(SAVE_DIR)
-    end
+    fileSystem:CreateDir(SAVE_DIR)
 
     -- 将内置关卡加载到运行时缓存
     for key, data in pairs(LevelsData.levels) do
         runtimeCache_[key] = data
-        if not isServer then
-            -- 客户端写入文件系统，方便运行时读取（覆盖旧的）
-            LevelManager.WriteToFileSystem(key, data)
-        end
+        LevelManager.WriteToFileSystem(key, data)
     end
 
     print("[LevelManager] Initialized, built-in levels: " .. LevelManager.CountTable(LevelsData.levels))
@@ -68,15 +60,12 @@ function LevelManager.List()
         table.insert(result, { filename = fn, name = data.name or key })
     end
 
-    -- 补充文件系统中可能有的但缓存中没有的关卡（仅客户端/单机有 FileSystem 权限）
-    local isServer = (type(IsServerMode) == "function") and IsServerMode()
-    if not isServer then
-        local files = fileSystem:ScanDir(SAVE_DIR .. "/", "*.json", SCAN_FILES, false)
-        for _, filename in ipairs(files) do
-            if not seen[filename] then
-                local name = LevelManager.ReadNameFromFile(filename)
-                table.insert(result, { filename = filename, name = name })
-            end
+    -- 补充文件系统中可能有的但缓存中没有的关卡
+    local files = fileSystem:ScanDir(SAVE_DIR .. "/", "*.json", SCAN_FILES, false)
+    for _, filename in ipairs(files) do
+        if not seen[filename] then
+            local name = LevelManager.ReadNameFromFile(filename)
+            table.insert(result, { filename = filename, name = name })
         end
     end
 

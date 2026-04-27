@@ -32,18 +32,8 @@ local debris_ = {}
 -- 重生缩放动画列表：{ node, timer, duration }
 local respawnAnims_ = {}
 
--- 网络模式：服务端跳过视觉组件
-local skipVisuals_ = false
-
--- 编辑器预览模式：所有节点强制 LOCAL，避免客户端创建 REPLICATED 节点导致 socket 崩溃
+-- 编辑器预览模式：所有节点强制 LOCAL，避免编辑器创建 REPLICATED 节点导致崩溃
 local editorPreviewMode_ = false
-
---- 设置是否跳过视觉组件（必须在 Init 之前调用）
----@param skip boolean
-function Map.SetSkipVisuals(skip)
-    skipVisuals_ = skip
-    print("[Map] Skip visuals set to: " .. tostring(skip))
-end
 
 -- 描边材质缓存
 local outlineMat_ = nil
@@ -182,25 +172,23 @@ end
 function Map.Init(scene)
     scene_ = scene
 
-    if not skipVisuals_ then
-        -- 缓存模型和技术
-        boxModel_ = cache:GetResource("Model", "Models/Box.mdl")
-        pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
+    -- 缓存模型和技术
+    boxModel_ = cache:GetResource("Model", "Models/Box.mdl")
+    pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
 
-        -- 预创建材质
-        for blockType, color in pairs(Config.BlockColors) do
-            materialCache_[blockType] = Map.CreateBlockMaterial(color, blockType)
-        end
-
-        -- 创建描边材质（深棕色，哑光）
-        outlineMat_ = Material:new()
-        outlineMat_:SetTechnique(0, pbrTechnique_)
-        outlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.BlockOutlineColor))
-        outlineMat_:SetShaderParameter("Metallic", Variant(0.0))
-        outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
+    -- 预创建材质
+    for blockType, color in pairs(Config.BlockColors) do
+        materialCache_[blockType] = Map.CreateBlockMaterial(color, blockType)
     end
 
-    print("[Map] Initialized (skipVisuals=" .. tostring(skipVisuals_) .. ")")
+    -- 创建描边材质（深棕色，哑光）
+    outlineMat_ = Material:new()
+    outlineMat_:SetTechnique(0, pbrTechnique_)
+    outlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.BlockOutlineColor))
+    outlineMat_:SetShaderParameter("Metallic", Variant(0.0))
+    outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
+
+    print("[Map] Initialized")
 end
 
 --- 创建方块材质
@@ -237,7 +225,7 @@ function Map.Build()
     grid_ = MapData.Generate()
 
     -- 创建地图父节点（服务端用 LOCAL 防止复制冲突）
-    local mapRoot = scene_:CreateChild("MapRoot", skipVisuals_ and LOCAL or REPLICATED)
+    local mapRoot = scene_:CreateChild("MapRoot", editorPreviewMode_ and LOCAL or REPLICATED)
 
     -- 遍历网格，创建方块节点
     blockNodes_ = {}
@@ -274,37 +262,35 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local wx = (gx - 1) * bs + bs * 0.5
     local wy = (gy - 1) * bs + bs * 0.5
 
-    local createMode = (skipVisuals_ or editorPreviewMode_) and LOCAL or REPLICATED
+    local createMode = editorPreviewMode_ and LOCAL or REPLICATED
     local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, createMode)
     node.position = Vector3(wx, wy, 0)
 
-    -- 视觉组件（服务端跳过）
-    if not skipVisuals_ then
-        -- 使用 CustomGeometry 创建圆角方块
-        local geom = node:CreateComponent("CustomGeometry")
-        buildRoundedBox(geom, bs, 0.1)  -- 0.1 米圆角半径（微妙圆角）
-        geom.castShadows = true
+    -- 视觉组件
+    -- 使用 CustomGeometry 创建圆角方块
+    local geom = node:CreateComponent("CustomGeometry")
+    buildRoundedBox(geom, bs, 0.1)  -- 0.1 米圆角半径（微妙圆角）
+    geom.castShadows = true
 
-        local mat = materialCache_[blockType]
-        if mat then
-            geom:SetMaterial(mat)
-        end
+    local mat = materialCache_[blockType]
+    if mat then
+        geom:SetMaterial(mat)
+    end
 
-        -- 描边子节点（在方块后面 Z+0.1，略大）
-        local outlineNode = node:CreateChild("Outline")
-        outlineNode.position = Vector3(0, 0, 0.1)
-        outlineNode.scale = Vector3(1.12, 1.12, 1.0)
-        local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
-        buildRoundedBox(outlineGeom, bs, 0.1)
-        outlineGeom.castShadows = false
-        if outlineMat_ then
-            outlineGeom:SetMaterial(outlineMat_)
-        end
+    -- 描边子节点（在方块后面 Z+0.1，略大）
+    local outlineNode = node:CreateChild("Outline")
+    outlineNode.position = Vector3(0, 0, 0.1)
+    outlineNode.scale = Vector3(1.12, 1.12, 1.0)
+    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+    buildRoundedBox(outlineGeom, bs, 0.1)
+    outlineGeom.castShadows = false
+    if outlineMat_ then
+        outlineGeom:SetMaterial(outlineMat_)
+    end
 
-        -- 终点方块：添加旗帜视觉效果（旗杆+三角旗）
-        if blockType == Config.BLOCK_FINISH then
-            Map.CreateFlag(node, bs)
-        end
+    -- 终点方块：添加旗帜视觉效果（旗杆+三角旗）
+    if blockType == Config.BLOCK_FINISH then
+        Map.CreateFlag(node, bs)
     end
 
     -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
@@ -407,14 +393,11 @@ function Map.Update(dt)
         end
     end
 
-    -- 视觉动画（服务端跳过）
-    if not skipVisuals_ then
-        -- 更新飞散碎片
-        Map.UpdateDebris(dt)
+    -- 更新飞散碎片
+    Map.UpdateDebris(dt)
 
-        -- 更新重生缩放动画
-        Map.UpdateRespawnAnims(dt)
-    end
+    -- 更新重生缩放动画
+    Map.UpdateRespawnAnims(dt)
 end
 
 --- 更新飞散方块动画（整块坠落，不缩小）
@@ -528,52 +511,47 @@ function Map.DestroyBlock(gx, gy, explodeCX, explodeCY)
     if blockNodes_[gy] and blockNodes_[gy][gx] then
         local origNode = blockNodes_[gy][gx]
 
-        if skipVisuals_ then
-            -- 服务端：直接移除节点，不做碎片动画
-            origNode:Remove()
-        else
-            -- 客户端/单机：把原节点变成飞散碎片
-            -- 移除物理组件，让方块不再参与碰撞
-            local body = origNode:GetComponent("RigidBody")
-            if body then origNode:RemoveComponent(body) end
-            local shape = origNode:GetComponent("CollisionShape")
-            if shape then origNode:RemoveComponent(shape) end
+        -- 把原节点变成飞散碎片
+        -- 移除物理组件，让方块不再参与碰撞
+        local body = origNode:GetComponent("RigidBody")
+        if body then origNode:RemoveComponent(body) end
+        local shape = origNode:GetComponent("CollisionShape")
+        if shape then origNode:RemoveComponent(shape) end
 
-            -- 计算飞散方向：从爆炸中心指向方块
-            local pos = origNode.position
-            local dirX, dirY = 0, 1
-            if explodeCX and explodeCY then
-                dirX = pos.x - explodeCX
-                dirY = pos.y - explodeCY
-                local len = math.sqrt(dirX * dirX + dirY * dirY)
-                if len > 0.01 then
-                    dirX = dirX / len
-                    dirY = dirY / len
-                else
-                    dirX = 0
-                    dirY = 1
-                end
+        -- 计算飞散方向：从爆炸中心指向方块
+        local pos = origNode.position
+        local dirX, dirY = 0, 1
+        if explodeCX and explodeCY then
+            dirX = pos.x - explodeCX
+            dirY = pos.y - explodeCY
+            local len = math.sqrt(dirX * dirX + dirY * dirY)
+            if len > 0.01 then
+                dirX = dirX / len
+                dirY = dirY / len
+            else
+                dirX = 0
+                dirY = 1
             end
-
-            -- 飞散速度 + 随机扩散
-            local baseSpeed = 5.0 + math.random() * 4.0
-            local spreadAngle = (math.random() - 0.5) * 0.8
-            local cosA = math.cos(spreadAngle)
-            local sinA = math.sin(spreadAngle)
-            local vx = (dirX * cosA - dirY * sinA) * baseSpeed
-            local vy = (dirX * sinA + dirY * cosA) * baseSpeed + 2.0  -- 稍微向上抛
-
-            table.insert(debris_, {
-                node = origNode,
-                velX = vx,
-                velY = vy,
-                -- 只绕 Z 轴旋转，保持 2D 平面感
-                rotSpeed = 120 + math.random() * 240,
-                rotAxisX = 0,
-                rotAxisY = 0,
-                rotAxisZ = 1,
-            })
         end
+
+        -- 飞散速度 + 随机扩散
+        local baseSpeed = 5.0 + math.random() * 4.0
+        local spreadAngle = (math.random() - 0.5) * 0.8
+        local cosA = math.cos(spreadAngle)
+        local sinA = math.sin(spreadAngle)
+        local vx = (dirX * cosA - dirY * sinA) * baseSpeed
+        local vy = (dirX * sinA + dirY * cosA) * baseSpeed + 2.0  -- 稍微向上抛
+
+        table.insert(debris_, {
+            node = origNode,
+            velX = vx,
+            velY = vy,
+            -- 只绕 Z 轴旋转，保持 2D 平面感
+            rotSpeed = 120 + math.random() * 240,
+            rotAxisX = 0,
+            rotAxisY = 0,
+            rotAxisZ = 1,
+        })
 
         blockNodes_[gy][gx] = nil
     end
@@ -614,16 +592,13 @@ function Map.RespawnBlock(gx, gy, blockType)
         end
         blockNodes_[gy][gx] = node
 
-        -- 缩放动画（服务端跳过）
-        if not skipVisuals_ then
-            -- 初始缩放为 0，启动缩放动画
-            node.scale = Vector3(0.01, 0.01, 0.01)
-            table.insert(respawnAnims_, {
-                node = node,
-                timer = 0,
-                duration = 0.3,
-            })
-        end
+        -- 缩放动画：初始缩放为 0，启动缩放动画
+        node.scale = Vector3(0.01, 0.01, 0.01)
+        table.insert(respawnAnims_, {
+            node = node,
+            timer = 0,
+            duration = 0.3,
+        })
     end
 end
 

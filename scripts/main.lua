@@ -1,14 +1,13 @@
 -- ============================================================================
 -- main.lua - 超级红温！ 入口文件
--- 根据运行模式选择：Server / Client / Standalone
 -- ============================================================================
 
 ---@type table
 local Module = nil
 
 function Start()
-    print("[Main] Starting in STANDALONE mode")
-    Module = require("network.Standalone")
+    print("[Main] Starting game")
+    Module = require("Standalone")
     Module.Start()
 
     -- 订阅事件（全局函数 → 委托给 Module）

@@ -781,25 +781,25 @@ function Player.UpdateVisualEffects(p, dt)
     end
 
     -- =====================
-    -- 玩家互相挤压
+    -- 玩家互相挤压（优化：用距离平方避免 sqrt，提前跳过远距离玩家）
     -- =====================
+    local pPosX = p.node.position.x
+    local pPosY = p.node.position.y
+    local threshSq = 0.95 * 0.95  -- 0.9025
     for _, other in ipairs(Player.list) do
-        if other.index ~= p.index and other.alive and other.node and p.node then
-            local dx = other.node.position.x - p.node.position.x
-            local dy = other.node.position.y - p.node.position.y
-            local dist = math.sqrt(dx * dx + dy * dy)
-            -- 方块有效尺寸约0.9，两个贴在一起时 dist ≈ 0.9
-            if dist < 0.95 and dist > 0.01 then
-                local overlap = 0.95 - dist  -- 重叠程度
-                local squeeze = overlap * 0.15  -- 形变量（柔和）
+        if other.index ~= p.index and other.alive and other.node then
+            local dx = other.node.position.x - pPosX
+            local dy = other.node.position.y - pPosY
+            local distSq = dx * dx + dy * dy
+            if distSq < threshSq and distSq > 0.0001 then
+                local dist = math.sqrt(distSq)
+                local overlap = 0.95 - dist
+                local squeeze = overlap * 0.15
                 if squeeze > 0.03 then
-                    -- 沿挤压方向压缩
                     if math.abs(dx) > math.abs(dy) then
-                        -- 水平挤压
                         p.squashScaleX = math.min(p.squashScaleX, 1.0 - squeeze)
                         p.squashScaleY = math.max(p.squashScaleY, 1.0 + squeeze * 0.4)
                     else
-                        -- 垂直挤压
                         p.squashScaleY = math.min(p.squashScaleY, 1.0 - squeeze)
                         p.squashScaleX = math.max(p.squashScaleX, 1.0 + squeeze * 0.4)
                     end
@@ -1703,28 +1703,22 @@ end
 -- 客户端专用更新（仅视觉，不做物理/爆炸/击杀/死亡判定）
 -- ============================================================================
 
--- 客户端诊断计时器（每5秒输出一次状态摘要）
+-- 客户端诊断计时器（每15秒输出一次简要摘要，减少字符串拼接开销）
 local clientDiagTimer_ = 0
 
 --- 客户端专用：更新所有玩家（仅视觉效果）
 ---@param dt number
 function Player.UpdateAllClient(dt)
-    -- 每5秒输出一次诊断
+    -- 每15秒输出一次简要诊断
     clientDiagTimer_ = clientDiagTimer_ + dt
-    if clientDiagTimer_ >= 5.0 then
+    if clientDiagTimer_ >= 15.0 then
         clientDiagTimer_ = 0
+        local n = #Player.list
+        local alive = 0
         for _, p in ipairs(Player.list) do
-            local pos = p.node and p.node.position or Vector3.ZERO
-            local enabled = p.node and p.node.enabled or false
-            print("[Player.Diag] p" .. p.index
-                .. " alive=" .. tostring(p.alive)
-                .. " enabled=" .. tostring(enabled)
-                .. " body=" .. tostring(p.body ~= nil)
-                .. " visual=" .. tostring(p.visualNode ~= nil)
-                .. " pos=" .. string.format("%.1f,%.1f", pos.x, pos.y)
-                .. " faceDir=" .. p.lastFaceDir
-                .. " moveX=" .. p.inputMoveX)
+            if p.alive then alive = alive + 1 end
         end
+        print(string.format("[Player.Diag] %d players, %d alive", n, alive))
     end
 
     for _, p in ipairs(Player.list) do

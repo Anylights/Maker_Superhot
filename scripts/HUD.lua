@@ -246,10 +246,12 @@ function HandleNanoVGRender(eventType, eventData)
     cacheInputCalledThisFrame_ = false  -- 重置，为下一帧准备
 
     -- 计算帧间隔（用于浮动文字动画）
-    local now = os.clock()
+    local now = time:GetElapsedTime()
     local renderDt = now - lastRenderTime_
     if renderDt > 0.1 then renderDt = 0.016 end  -- 首帧/异常保护
     lastRenderTime_ = now
+    -- 缓存引擎时间供本帧所有动画脉冲使用（替代 os.clock()）
+    hudElapsedTime_ = now
 
     -- 更新浮动文字计时
     HUD.UpdateKillFloats(renderDt)
@@ -441,11 +443,12 @@ function HUD.DrawBackground()
     local farScroll  = t * 8    -- 远山平移速度（逻辑像素/秒）
     local nearScroll = t * 22   -- 近山平移速度
 
-    -- 远山（浅色）
+    -- 远山（浅色）— 步长增大到12像素，减少 sin() 调用和 lineTo 顶点数
+    local hillStep = 12
     nvgBeginPath(vg_)
     nvgMoveTo(vg_, 0, logH_)
     local hillY1 = logH_ * 0.72
-    for x = 0, logW_, 4 do
+    for x = 0, logW_, hillStep do
         local y = hillY1 + math.sin((x + farScroll) * 0.008) * logH_ * 0.06
                         + math.sin((x + farScroll * 1.6) * 0.015) * logH_ * 0.03
         nvgLineTo(vg_, x, y)
@@ -459,7 +462,7 @@ function HUD.DrawBackground()
     nvgBeginPath(vg_)
     nvgMoveTo(vg_, 0, logH_)
     local hillY2 = logH_ * 0.82
-    for x = 0, logW_, 4 do
+    for x = 0, logW_, hillStep do
         local y = hillY2 + math.sin((x + nearScroll) * 0.012) * logH_ * 0.04
                         + math.sin((x + nearScroll * 1.4) * 0.025) * logH_ * 0.02
         nvgLineTo(vg_, x, y)
@@ -550,7 +553,7 @@ function HUD.DrawWorldIndicators()
 
                 -- 闪烁频率随蓄力进度加快
                 local freq = 4 + p.chargeProgress * 12
-                local pulse = math.abs(math.sin(os.clock() * freq)) * 0.4 + 0.2
+                local pulse = math.abs(math.sin(hudElapsedTime_ * freq)) * 0.4 + 0.2
 
                 -- 半透明玩家色填充（30%~50%不透明度，随脉冲闪烁）
                 local fillAlpha = math.floor(52 + pulse * 127)  -- 77~128 (≈30%~50%)
@@ -573,7 +576,7 @@ function HUD.DrawWorldIndicators()
     HUD.DrawDestroyedBlockGhosts()
 end
 
---- 绘制被炸方块的虚线轮廓和重生进度条
+--- 绘制被炸方块的轮廓和重生进度条（优化版：用实线圆角矩形 + 进度弧替代虚线）
 function HUD.DrawDestroyedBlockGhosts()
     if mapModule_ == nil then return end
 
@@ -585,11 +588,9 @@ function HUD.DrawDestroyedBlockGhosts()
     -- 太小了就不画
     if blockScreenSize < 3 then return end
 
-    local dashLen = math.max(2, blockScreenSize * 0.12)
-    local gapLen = math.max(2, blockScreenSize * 0.10)
-
     -- 圆角半径：方块屏幕尺寸的 18%
     local cornerR = blockScreenSize * 0.18
+    local elapsedTime = time:GetElapsedTime()
 
     for _, info in ipairs(blocks) do
         -- 网格坐标转世界坐标（中心）
@@ -599,31 +600,35 @@ function HUD.DrawDestroyedBlockGhosts()
 
         local halfS = blockScreenSize * 0.5
 
-        -- 稍微内缩，让虚线框比原方块小一点
+        -- 稍微内缩
         local inset = blockScreenSize * 0.06
         local drawSize = blockScreenSize - inset * 2
         local drawX = sx - halfS + inset
         local drawY = sy - halfS + inset
 
         local progress = 1.0 - (info.timer / info.totalTime)  -- 0→1
-        local alpha = 80 + math.floor(math.abs(math.sin(os.clock() * 3 + info.x * 0.7)) * 40)
+        local alpha = 80 + math.floor(math.abs(math.sin(elapsedTime * 3 + info.x * 0.7)) * 40)
 
-        -- 1) 灰色虚线轮廓（底层，圆角）
+        -- 1) 灰色实线轮廓（底层，圆角矩形，单次 path）
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, drawX, drawY, drawSize, drawSize, cornerR)
         nvgStrokeColor(vg_, nvgRGBA(200, 200, 220, alpha))
-        nvgStrokeWidth(vg_, 2.5)
-        HUD.DrawDashedRoundedRect(drawX, drawY, drawSize, drawSize, cornerR, dashLen, gapLen)
+        nvgStrokeWidth(vg_, 2.0)
+        nvgStroke(vg_)
 
-        -- 2) 高亮进度（沿同一外框走进度，覆盖在灰色虚线之上）
-        local segments = HUD.GetRoundedRectSegments(drawX, drawY, drawSize, drawSize, cornerR)
-        local totalPerim = 0
-        for _, seg in ipairs(segments) do totalPerim = totalPerim + seg.len end
-        local filledPerim = totalPerim * progress
-
-        if filledPerim > 0.5 then
+        -- 2) 进度弧（中心圆弧，简单高效替代沿边框走的虚线进度）
+        if progress > 0.01 then
             local pAlpha = 160 + math.floor(progress * 95)
+            local cx = sx
+            local cy = sy
+            local radius = drawSize * 0.3
+            local startA = -math.pi * 0.5
+            local endA = startA + math.pi * 2 * progress
+            nvgBeginPath(vg_)
+            nvgArc(vg_, cx, cy, radius, startA, endA, NVG_CW)
             nvgStrokeColor(vg_, nvgRGBA(120, 200, 255, pAlpha))
-            nvgStrokeWidth(vg_, 3.5)
-            HUD.DrawDashedPath(segments, filledPerim, dashLen, gapLen)
+            nvgStrokeWidth(vg_, 3.0)
+            nvgStroke(vg_)
         end
     end
 end
@@ -901,7 +906,7 @@ function HUD.DrawEnergyBars()
             nvgRoundedRect(vg_, bx, by, fillW, barH, cornerR)
             if p.energy >= 1.0 then
                 -- 充满闪烁（危险红）
-                local pulse = math.abs(math.sin(os.clock() * 4)) * 55 + 200
+                local pulse = math.abs(math.sin(hudElapsedTime_ * 4)) * 55 + 200
                 nvgFillColor(vg_, nvgRGBA(255, 40, 30, math.floor(pulse)))
             else
                 nvgFillColor(vg_, nvgRGBA(180, 220, 255, 210))
@@ -993,7 +998,7 @@ function HUD.DrawRoundTimer()
     nvgRoundedRect(vg_, tx, ty, tw, th, 6)
     -- 时间紧迫时变红
     if remaining <= 10 then
-        local pulse = math.abs(math.sin(os.clock() * 3)) * 100 + 50
+        local pulse = math.abs(math.sin(hudElapsedTime_ * 3)) * 100 + 50
         nvgFillColor(vg_, nvgRGBA(180, 30, 30, math.floor(pulse) + 100))
     else
         nvgFillColor(vg_, nvgRGBA(50, 38, 30, 210))
@@ -1590,7 +1595,7 @@ function HUD.DrawMatchEnd()
         local b = math.floor(color.b * 255)
 
         -- 闪光背景
-        local pulse = math.abs(math.sin(os.clock() * 2)) * 30 + 20
+        local pulse = math.abs(math.sin(hudElapsedTime_ * 2)) * 30 + 20
         nvgBeginPath(vg_)
         nvgCircle(vg_, logW_ * 0.5, logH_ * 0.4, 100 + pulse)
         nvgFillColor(vg_, nvgRGBA(r, g, b, 40))

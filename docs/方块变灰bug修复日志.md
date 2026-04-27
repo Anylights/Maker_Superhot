@@ -120,33 +120,55 @@
 5. **单机版（Standalone）方块颜色正常**：同样没有 MatEmissiveColor，但光照环境不同
 6. **单机版加载 LightGroup 无 LOCAL 标志**：但客户端改为无 LOCAL 后仍无效
 
-## 尚未尝试的方向
+## 尝试 9（根因修复）：客户端所有节点/组件改为 LOCAL 模式 + InstantiateXML
 
-### 方向 A：完全回退到 docs/Client.lua 的 CreateScene
-- 不仅移除 LOCAL，还要检查是否有其他细微差异（如 DeathZone 的创建方式等）
-- docs/Client.lua 的 CreateScene 有 DeathZone（无 LOCAL），当前版本可能没有
+### 根因分析
 
-### 方向 B：对比 Map.lua 差异
-- 当前 scripts/Map.lua 与 docs/Map.lua 是否有差异
-- 特别关注 materialCache_ 初始化、CreateBlockMaterial、buildRoundedBox 等
+通过网上搜索 Urho3D PBR 变灰/变暗问题，结合引擎文档 `engine-docs/recipes/network-game-guide.md`，找到了根本原因：
 
-### 方向 C：对比 main.lua 差异
-- 当前 scripts/main.lua 与 docs/main.lua 的入口/路由逻辑是否不同
-- 可能影响 scene 创建时序或模块初始化顺序
+**Urho3D 场景复制（Scene Replication）机制**：
+1. `CreateChild()` 和 `CreateComponent()` 默认创建 **REPLICATED** 节点/组件
+2. 客户端连接服务端后，服务端拥有所有 REPLICATED 节点的权威控制权
+3. **服务端场景中不存在的 REPLICATED 节点，会在客户端被场景复制机制删除**
 
-### 方向 D：Renderer / HDR / PostProcess 差异
-- hdrRendering = true 在无 ToneMap PostProcess 时可能压暗 PBR 颜色
-- 尝试 hdrRendering = false
+**Client.lua 中的问题**：
+- `CreateScene()` 中：`scene_:CreateChild("LightGroup")` — **REPLICATED**（默认）
+- `CreateFallbackLighting()` 中：Zone 和 Light 节点 — **REPLICATED**
+- `CreateBackgroundPlane()` 中：BackgroundGradient 和 Strip 子节点 — **REPLICATED**
 
-### 方向 E：renderer.defaultZone 干扰
-- Client.Start 中设置了 renderer.defaultZone.fogColor
-- defaultZone 与 LightGroup 中的 Zone 可能冲突
+而 Server.lua 中只创建了 Octree、PhysicsWorld 和 DeathZone（LOCAL），**没有 LightGroup/Zone/Light**。
 
-### 方向 F：Map.Init 时 scene 状态
-- 联机版 Client.Start 在 Map.Init 前设置了 Map.SetSkipPhysics(true)
-- 检查 skipPhysics 是否意外影响了视觉组件创建
+**结果**：客户端连接服务端后，服务端的场景复制机制会删除客户端的 REPLICATED LightGroup/Zone/Light 节点。失去 Zone（IBL 环境贴图）和方向光后，PBR 材质在 HDR 模式下颜色被严重压暗/降饱和 → 方块变灰。
+
+**为什么 Standalone 不受影响**：Standalone 不连接服务端，不存在场景复制，所以 LightGroup 不会被删除。
+
+**为什么之前尝试 4/5 用 LOCAL 也失败**：
+- `CreateChild("LightGroup", LOCAL)` + `LoadXML()` 的方式，LoadXML 内部创建的子节点/组件可能仍然使用了默认的 REPLICATED 模式
+- 正确做法是使用 `InstantiateXML(root, pos, rot, LOCAL)`，这会让所有子节点和组件都强制 LOCAL
+
+### 修改内容
+
+**Client.lua**：
+1. `CreateScene()`:
+   - `DebugRenderer` 组件改为 `LOCAL`
+   - LightGroup 改用 `scene_:InstantiateXML(root, Vector3.ZERO, Quaternion.IDENTITY, LOCAL)` — 所有子节点/组件强制 LOCAL
+2. `CreateFallbackLighting()`:
+   - Zone 节点/组件：`CreateChild("Zone", LOCAL)` + `CreateComponent("Zone", LOCAL)`
+   - Light 节点/组件：`CreateChild("DirectionalLight", LOCAL)` + `CreateComponent("Light", LOCAL)`
+3. `CreateBackgroundPlane()`:
+   - BackgroundGradient 和所有 Strip 子节点、StaticModel 组件：全部加 `LOCAL`
+
+### 关键引用
+
+引擎文档 `engine-docs/recipes/network-game-guide.md` 第 1799-1800 行：
+> - **服务器**：游戏实体用 REPLICATED（或默认），环境用 LOCAL
+> - **客户端**：**所有节点和组件都必须用 LOCAL**
+
+### 结果
+
+待用户测试确认。
 
 ---
 
-*状态：暂停。8 次尝试均未解决，用户决定先做其他功能。*
+*状态：尝试 9 已实施，等待用户验证。*
 *最后更新：2026-04-27*

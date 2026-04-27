@@ -691,18 +691,28 @@ function Map.IsBlockDestroyed(gx, gy)
 end
 
 --- 获取所有正在重生的方块信息（用于 HUD 显示）
+--- 复用缓存表和子表，避免每帧大量 GC
 ---@return table  -- { {x, y, timer, totalTime}, ... }
+local destroyedBlocksCache_ = {}
 function Map.GetDestroyedBlocks()
-    local result = {}
+    local idx = 0
     for _, info in pairs(destroyed_) do
-        table.insert(result, {
-            x = info.x,
-            y = info.y,
-            timer = info.timer,
-            totalTime = Config.PlatformRespawnTime,
-        })
+        idx = idx + 1
+        local entry = destroyedBlocksCache_[idx]
+        if not entry then
+            entry = { x = 0, y = 0, timer = 0, totalTime = 0 }
+            destroyedBlocksCache_[idx] = entry
+        end
+        entry.x = info.x
+        entry.y = info.y
+        entry.timer = info.timer
+        entry.totalTime = Config.PlatformRespawnTime
     end
-    return result
+    -- 截断多余旧条目（标记 nil 即可，#table 仍正确）
+    for i = idx + 1, #destroyedBlocksCache_ do
+        destroyedBlocksCache_[i] = nil
+    end
+    return destroyedBlocksCache_
 end
 
 --- 清除全部地图

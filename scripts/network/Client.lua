@@ -229,30 +229,34 @@ end
 function Client.CreateScene()
     scene_ = Scene()
     scene_:CreateComponent("Octree")
-    scene_:CreateComponent("DebugRenderer")
+    scene_:CreateComponent("DebugRenderer", LOCAL)
 
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
 
-    -- 光照：与 Standalone 一致，优先加载 LightGroup/Daytime.xml（含 IBL 环境贴图）
-    -- 关键：成功加载时不创建 fallback，避免双 Zone 冲突导致 IBL 被覆盖
+    -- 光照：加载 LightGroup/Daytime.xml（含 IBL 环境贴图）
+    -- 关键：客户端所有节点必须 LOCAL！REPLICATED 节点会被服务端场景复制删除
+    -- 使用 InstantiateXML + LOCAL 模式，确保所有子节点和组件都是 LOCAL
     local lightGroupLoaded = false
     local lightGroupFile = cache:GetResource("XMLFile", "LightGroup/Daytime.xml")
     if lightGroupFile then
-        local lightGroup = scene_:CreateChild("LightGroup")
-        lightGroup:LoadXML(lightGroupFile:GetRoot())
-        local zoneComp = lightGroup:GetComponent("Zone")
-        if not zoneComp then
-            for i = 0, lightGroup.numChildren - 1 do
-                local child = lightGroup:GetChild(i)
-                zoneComp = child:GetComponent("Zone")
-                if zoneComp then break end
+        local lightGroup = scene_:InstantiateXML(lightGroupFile:GetRoot(),
+            Vector3.ZERO, Quaternion.IDENTITY, LOCAL)
+        if lightGroup then
+            lightGroup.name = "LightGroup"
+            local zoneComp = lightGroup:GetComponent("Zone")
+            if not zoneComp then
+                for i = 0, lightGroup.numChildren - 1 do
+                    local child = lightGroup:GetChild(i)
+                    zoneComp = child:GetComponent("Zone")
+                    if zoneComp then break end
+                end
             end
-        end
-        if zoneComp then
-            zoneComp.fogColor = Color(0.95, 0.82, 0.68)
-            lightGroupLoaded = true
-            print("[Client] LightGroup/Daytime.xml loaded (IBL active)")
+            if zoneComp then
+                zoneComp.fogColor = Color(0.95, 0.82, 0.68)
+                lightGroupLoaded = true
+                print("[Client] LightGroup/Daytime.xml loaded with LOCAL mode (IBL active)")
+            end
         end
     end
 
@@ -265,17 +269,18 @@ function Client.CreateScene()
 end
 
 function Client.CreateFallbackLighting()
-    local zoneNode = scene_:CreateChild("Zone")
-    local zone = zoneNode:CreateComponent("Zone")
+    -- 客户端所有节点/组件必须 LOCAL，否则会被服务端场景复制删除
+    local zoneNode = scene_:CreateChild("Zone", LOCAL)
+    local zone = zoneNode:CreateComponent("Zone", LOCAL)
     zone.boundingBox = BoundingBox(-200.0, 200.0)
     zone.ambientColor = Color(0.40, 0.35, 0.30)
     zone.fogColor = Color(0.95, 0.82, 0.68)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
 
-    local lightNode = scene_:CreateChild("DirectionalLight")
+    local lightNode = scene_:CreateChild("DirectionalLight", LOCAL)
     lightNode.direction = Vector3(0.5, -1.0, 0.3)
-    local light = lightNode:CreateComponent("Light")
+    local light = lightNode:CreateComponent("Light", LOCAL)
     light.lightType = LIGHT_DIRECTIONAL
     light.color = Color(1.0, 0.95, 0.9)
     light.castShadows = true
@@ -288,7 +293,8 @@ function Client.CreateBackgroundPlane()
     local botColor = Config.BgColorBot
     local size = 200
     local strips = 8
-    local bgNode = scene_:CreateChild("BackgroundGradient")
+    -- 客户端所有节点必须 LOCAL，否则会被服务端场景复制删除
+    local bgNode = scene_:CreateChild("BackgroundGradient", LOCAL)
     bgNode.position = Vector3(0, 0, 5)
 
     local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
@@ -306,13 +312,13 @@ function Client.CreateBackgroundPlane()
         local midG = (g0 + g1) * 0.5
         local midB = (b0 + b1) * 0.5
 
-        local stripNode = bgNode:CreateChild("Strip" .. i)
+        local stripNode = bgNode:CreateChild("Strip" .. i, LOCAL)
         local yTop = size * (1 - t0 * 2)
         local yBot = size * (1 - t1 * 2)
         stripNode.position = Vector3(0, (yTop + yBot) * 0.5, 0)
         stripNode.scale = Vector3(size * 2, yTop - yBot, 0.1)
 
-        local model = stripNode:CreateComponent("StaticModel")
+        local model = stripNode:CreateComponent("StaticModel", LOCAL)
         model.model = cache:GetResource("Model", "Models/Box.mdl")
         model.castShadows = false
 
@@ -995,8 +1001,9 @@ function Client.HandleUpdate(dt)
     end
 
     -- 兜底扫描：补挂 REPLICATED 节点视觉（防 NodeAdded 事件未触发）
+    -- 降频到 1 秒一次，减少 GetChildren 开销
     lastScanTime_ = lastScanTime_ + dt
-    if lastScanTime_ >= 0.5 then
+    if lastScanTime_ >= 1.0 then
         lastScanTime_ = 0
         ScanReplicatedNodes()
     end

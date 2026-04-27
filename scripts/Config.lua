@@ -93,14 +93,14 @@ Config.AirControlRatio = 0.7     -- 空中控制系数
 
 -- 冲刺击退
 Config.DashKnockbackRadius = 1.5  -- 冲刺碰撞检测半径（米）
-Config.DashKnockbackForce  = 15.0 -- 冲刺击退水平力（m/s）
-Config.DashKnockbackUp     = 6.0  -- 冲刺击退垂直力（m/s）
+Config.DashKnockbackForce  = 28.0 -- 冲刺击退水平力（m/s）— 大于下砸
+Config.DashKnockbackUp     = 8.0  -- 冲刺击退垂直力（m/s）
 
 -- 下砸
 Config.SlamSpeed         = 40.0   -- 下砸下落速度（m/s，非常快）
-Config.SlamRadius        = 1.5    -- 下砸着陆水平击飞范围（米，左右各 1.5 格）
-Config.SlamKnockbackForce = 18.0  -- 下砸击飞水平力（m/s）
-Config.SlamKnockbackUp   = 10.0   -- 下砸击飞垂直力（m/s）
+Config.SlamRadius        = 1.2    -- 下砸着陆水平击飞范围（米，左右各约 1 格）
+Config.SlamKnockbackForce = 20.0  -- 下砸击飞水平力（m/s）— 小于冲刺
+Config.SlamKnockbackUp   = 12.0   -- 下砸击飞垂直力（m/s）
 
 -- 物理跳跃系统（速度 + 重力，类似超级鸡马）
 -- 按一下跳固定高度，不需要长按。上升靠初速度，下落靠重力。

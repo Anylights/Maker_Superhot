@@ -834,8 +834,8 @@ function Player.UpdateMovement(p, dt)
             canJump = (p.jumpCount < Config.MaxJumps)
         elseif p.coyoteTimer <= Config.CoyoteTime then
             canJump = (p.jumpCount < Config.MaxJumps)
-        elseif p.jumpCount > 0 and p.jumpCount < Config.MaxJumps then
-            -- 多段跳
+        elseif p.jumpCount < Config.MaxJumps then
+            -- 空中跳跃（含第一次起跳和多段跳）
             canJump = true
         end
 

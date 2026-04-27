@@ -536,8 +536,20 @@ function Client.HandleUpdate(dt)
 
     -- 关卡列表 / 编辑器（与匹配状态独立）
     if GameManager.state == GameManager.STATE_LEVEL_LIST then
+        -- 从编辑器返回时刷新列表
+        if LevelEditor.exitedToList then
+            LevelEditor.exitedToList = false
+            HUD.RefreshLevelList()
+        end
         if HUD.IsPersistClicked() then
-            LevelManager.ExportToLog()
+            local count, err = LevelManager.SaveToSourceFile()
+            if count > 0 then
+                HUD.ShowLevelListToast("已保存 " .. count .. " 个关卡到工程！\n请对塔啦啦说「重新构建」", 5)
+            elseif err then
+                HUD.ShowLevelListToast("保存失败: " .. err, 3)
+            else
+                HUD.ShowLevelListToast("没有关卡需要保存。\n请先创建并保存关卡。", 3)
+            end
         end
         local action = HUD.GetLevelListAction()
         if action then

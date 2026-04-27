@@ -18,6 +18,7 @@ local LevelEditor = {}
 -- 状态
 -- ============================================================================
 LevelEditor.active = false
+LevelEditor.exitedToList = false  -- 标志：编辑器刚退出到列表（供 Standalone/Client 检测并刷新列表）
 
 -- 编辑器网格 (grid[y][x] = blockType)
 local grid_ = {}
@@ -111,6 +112,9 @@ local mapRef_ = nil
 local toastMessage_ = nil
 local toastTimer_ = 0
 
+-- 进入编辑器后的帧保护计数（防止首帧点击穿透）
+local enterGuardFrames_ = 0
+
 -- ============================================================================
 -- 初始化
 -- ============================================================================
@@ -155,6 +159,9 @@ end
 function LevelEditor.Enter()
     LevelEditor.active = true
 
+    -- 首帧保护：防止关卡列表的点击事件穿透到编辑器按钮
+    enterGuardFrames_ = 2
+
     -- 立即初始化分辨率，避免第一帧 Update 中 ScreenToWorld 使用 logW_=0
     local dpr = graphics:GetDPR()
     logW_ = graphics:GetWidth() / dpr
@@ -168,8 +175,8 @@ function LevelEditor.Enter()
     Camera.SetOrthoSize(camZoom_)
     Camera.SetCenter(camX_, camY_)
 
-    -- 用编辑器网格构建地图预览
-    LevelEditor.RebuildMapPreview()
+    -- 注意：不在这里调用 RebuildMapPreview()
+    -- LoadFile() 或 NewLevel() 已经调用过了，避免重复 BuildFromGrid
 
     LevelEditor.ShowToast("编辑器已打开")
     print("[LevelEditor] Entered editor mode")
@@ -181,6 +188,16 @@ function LevelEditor.Exit()
 
     -- 恢复相机自动跟随
     Camera.manualMode = false
+
+    -- 清理编辑器状态，避免下次进入时残留脏数据
+    currentFile_ = nil
+    currentName_ = nil
+    enterGuardFrames_ = 0
+
+    -- 清除地图预览节点（避免残留影响后续操作）
+    if mapRef_ then
+        mapRef_.Clear()
+    end
 
     print("[LevelEditor] Exited editor mode")
 end
@@ -210,12 +227,20 @@ function LevelEditor.Update(dt)
         end
     end
 
-    -- 缓存鼠标单击状态（GetMouseButtonPress 是一次性的，必须在 Update 中采集）
-    cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
-    if cachedMousePress_ then
-        local dpr = graphics:GetDPR()
-        cachedMouseLogX_ = input:GetMousePosition().x / dpr
-        cachedMouseLogY_ = input:GetMousePosition().y / dpr
+    -- 首帧保护：递减计数，保护期内吞掉鼠标点击防止穿透
+    if enterGuardFrames_ > 0 then
+        enterGuardFrames_ = enterGuardFrames_ - 1
+        -- 吞掉这帧的鼠标按下事件
+        input:GetMouseButtonPress(MOUSEB_LEFT)
+        cachedMousePress_ = false
+    else
+        -- 缓存鼠标单击状态（GetMouseButtonPress 是一次性的，必须在 Update 中采集）
+        cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
+        if cachedMousePress_ then
+            local dpr = graphics:GetDPR()
+            cachedMouseLogX_ = input:GetMousePosition().x / dpr
+            cachedMouseLogY_ = input:GetMousePosition().y / dpr
+        end
     end
 
     LevelEditor.HandleCameraInput(dt)
@@ -694,6 +719,7 @@ end
 
 function LevelEditor.OnExitClick()
     LevelEditor.Exit()
+    LevelEditor.exitedToList = true  -- 通知 Standalone/Client 需要刷新列表
     if gameManagerRef_ then
         -- 如果有关卡列表功能，返回关卡列表
         gameManagerRef_.EnterLevelList()

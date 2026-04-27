@@ -338,6 +338,82 @@ function LevelManager.ExportToLog()
 end
 
 -- ============================================================================
+-- 直接写入 LevelsData.lua 源文件（自动化持久化）
+-- ============================================================================
+
+--- 将所有关卡数据直接写入 scripts/LevelsData.lua 源文件
+--- 支持多次覆盖，每次调用都会重新生成完整文件
+---@return number count 写入的关卡数量
+---@return string|nil error 错误信息
+function LevelManager.SaveToSourceFile()
+    local count = 0
+    local sortedKeys = {}
+
+    for key, _ in pairs(runtimeCache_) do
+        count = count + 1
+        table.insert(sortedKeys, key)
+    end
+
+    if count == 0 then
+        return 0, "没有关卡数据"
+    end
+
+    -- 按 key 排序，确保输出稳定
+    table.sort(sortedKeys)
+
+    -- 构建 LevelsData.lua 源代码
+    local lines = {}
+    table.insert(lines, '-- ============================================================================')
+    table.insert(lines, '-- LevelsData.lua - 内置关卡数据（持久化存储）')
+    table.insert(lines, '-- 此文件由关卡编辑器自动生成，请勿手动编辑')
+    table.insert(lines, '-- 生成时间: ' .. os.date("%Y-%m-%d %H:%M:%S"))
+    table.insert(lines, '-- ============================================================================')
+    table.insert(lines, '')
+    table.insert(lines, 'local LevelsData = {}')
+    table.insert(lines, 'LevelsData.levels = {}')
+    table.insert(lines, '')
+
+    for _, key in ipairs(sortedKeys) do
+        local data = runtimeCache_[key]
+        table.insert(lines, '-- ' .. (data.name or key))
+        table.insert(lines, 'LevelsData.levels["' .. key .. '"] = {')
+        table.insert(lines, '    version = ' .. (data.version or 1) .. ',')
+        table.insert(lines, '    name = "' .. (data.name or key) .. '",')
+        table.insert(lines, '    width = ' .. (data.width or 30) .. ',')
+        table.insert(lines, '    height = ' .. (data.height or 24) .. ',')
+        table.insert(lines, '    blocks = {')
+
+        if data.blocks then
+            for _, b in ipairs(data.blocks) do
+                table.insert(lines, '        { x = ' .. b.x .. ', y = ' .. b.y .. ', t = ' .. b.t .. ' },')
+            end
+        end
+
+        table.insert(lines, '    },')
+        table.insert(lines, '}')
+        table.insert(lines, '')
+    end
+
+    table.insert(lines, 'return LevelsData')
+    table.insert(lines, '')
+
+    local content = table.concat(lines, '\n')
+
+    -- 写入文件
+    local path = "LevelsData.lua"  -- scripts/ 是资源根目录，相对路径即可
+    local file = File(path, FILE_WRITE)
+    if not file:IsOpen() then
+        print("[LevelManager] ERROR: Cannot open LevelsData.lua for writing")
+        return 0, "无法写入文件"
+    end
+    file:WriteString(content)
+    file:Close()
+
+    print("[LevelManager] Saved " .. count .. " levels to LevelsData.lua source file")
+    return count, nil
+end
+
+-- ============================================================================
 -- 文件名生成
 -- ============================================================================
 

@@ -49,6 +49,10 @@ local levelListScroll_ = 0       -- 滚动偏移
 local testPlayExitClicked_ = false  -- 试玩退出按钮是否被点击
 local persistClicked_ = false  -- "保存到工程"按钮是否被点击
 
+-- 关卡列表 toast 系统（独立于联机 toast）
+local levelListToast_ = nil     -- toast 消息文本
+local levelListToastTimer_ = 0  -- 剩余显示时间
+
 -- 帧缓存：鼠标点击状态（在 Update 阶段缓存，供 NanoVG 渲染阶段的按钮使用）
 local cachedMousePress_ = false
 local cachedMouseLogX_ = 0
@@ -181,6 +185,14 @@ function HUD.IsPersistClicked()
     local v = persistClicked_
     persistClicked_ = false
     return v
+end
+
+--- 显示关卡列表 toast
+---@param msg string 消息文本
+---@param duration number|nil 显示时间（秒），默认 4
+function HUD.ShowLevelListToast(msg, duration)
+    levelListToast_ = msg
+    levelListToastTimer_ = duration or 4.0
 end
 
 --- 刷新分辨率数据
@@ -2237,6 +2249,49 @@ function HUD.DrawLevelList()
     -- ESC 快捷键返回
     if input:GetKeyPress(KEY_ESCAPE) then
         levelListAction_ = { action = "back" }
+    end
+
+    -- Toast 提示（屏幕上方居中，自动消失）
+    if levelListToast_ and levelListToastTimer_ > 0 then
+        local now = os.clock()
+        -- 用渲染帧间隔近似 dt
+        local renderDt = now - lastRenderTime_
+        if renderDt > 0.1 then renderDt = 0.016 end
+        levelListToastTimer_ = levelListToastTimer_ - renderDt
+        if levelListToastTimer_ <= 0 then
+            levelListToast_ = nil
+        else
+            local alpha = math.min(1.0, levelListToastTimer_) * 255
+            -- 支持多行：按 \n 分割
+            local lines = {}
+            for line in levelListToast_:gmatch("[^\n]+") do
+                table.insert(lines, line)
+            end
+            local lineH = 22
+            local totalH = #lines * lineH + 16
+            local maxW = 0
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, 16)
+            for _, line in ipairs(lines) do
+                local tw = nvgTextBounds(vg_, 0, 0, line)
+                if tw > maxW then maxW = tw end
+            end
+            local boxW = maxW + 40
+            local boxX = cx - boxW * 0.5
+            local boxY = 75
+            nvgBeginPath(vg_)
+            nvgRoundedRect(vg_, boxX, boxY, boxW, totalH, 8)
+            nvgFillColor(vg_, nvgRGBA(40, 30, 20, math.floor(alpha * 0.85)))
+            nvgFill(vg_)
+            nvgStrokeColor(vg_, nvgRGBA(255, 210, 80, math.floor(alpha * 0.6)))
+            nvgStrokeWidth(vg_, 1.5)
+            nvgStroke(vg_)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+            nvgFillColor(vg_, nvgRGBA(255, 240, 180, math.floor(alpha)))
+            for li, line in ipairs(lines) do
+                nvgText(vg_, cx, boxY + 8 + (li - 0.5) * lineH, line)
+            end
+        end
     end
 end
 

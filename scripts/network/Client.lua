@@ -150,7 +150,6 @@ function Client.Start()
     -- 传 nil 可防止 StartRound() 中 RandomPickup.Reset() 在客户端创建重复的本地道具节点
     GameManager.Init(Player, Map, Pickup, AIController, nil, Camera)
     Camera.Init(scene_)
-    Camera.isNetworkClient = true  -- 禁用相机位置 lerp，避免与 SmoothedTransform 双重平滑抖动
 
     -- 设置视口
     local viewport = Viewport:new(scene_, Camera.GetCamera())

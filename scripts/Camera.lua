@@ -22,16 +22,8 @@ local targetOrtho_ = Config.CameraMinOrtho
 -- 手动模式（编辑器用，禁用自动跟随）
 Camera.manualMode = false
 
--- 网络客户端标记：跳过相机位置 lerp，避免与 SmoothedTransform 双重平滑导致抖动
-Camera.isNetworkClient = false
-
 -- 固定模式（游戏时显示全局地图，禁用自动跟随）
 Camera.fixedMode = false
-
--- 回切平滑：玩家掉出屏幕后恢复跟踪时，用 lerp 平滑回来而非硬切
-local lostTracking_ = false           -- 上一帧是否无可跟踪玩家
-local recoverTimer_ = 0               -- 回切平滑剩余时间
-local recoverDuration_ = 0.6          -- 回切平滑总时长（秒）
 
 -- 屏幕震动状态
 local shakeTimer_ = 0
@@ -77,18 +69,25 @@ function Camera.Update(dt, playerPositions, humanPos)
     -- intro 动画期间由 GameManager 完全控制相机，跳过自动逻辑
     if animating_ then return end
 
-    -- 固定模式：仍需处理屏幕震动
+    -- 固定模式：lerp 平滑过渡到目标 + 处理屏幕震动
     if Camera.fixedMode then
+        local smooth = Config.CameraSmoothSpeed * dt
+        smooth = math.min(smooth, 1.0)
+        currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
+        currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
+
+        -- 应用屏幕震动偏移
+        local shakeOffX, shakeOffY = 0, 0
         if shakeTimer_ > 0 then
             shakeTimer_ = shakeTimer_ - dt
             local progress = shakeTimer_ / shakeDuration_
             local amp = shakeIntensity_ * progress
-            local offX = (math.random() * 2 - 1) * amp
-            local offY = (math.random() * 2 - 1) * amp
-            Camera.node.position = Vector3(currentCenter_.x + offX, currentCenter_.y + offY, Config.CameraZ)
-        else
-            Camera.node.position = Vector3(currentCenter_.x, currentCenter_.y, Config.CameraZ)
+            shakeOffX = (math.random() * 2 - 1) * amp
+            shakeOffY = (math.random() * 2 - 1) * amp
         end
+
+        Camera.node.position = Vector3(currentCenter_.x + shakeOffX, currentCenter_.y + shakeOffY, Config.CameraZ)
+        Camera.camera.orthoSize = currentOrtho_
         return
     end
 
@@ -120,21 +119,9 @@ function Camera.Update(dt, playerPositions, humanPos)
         end
     end
 
-    -- 无可跟踪玩家时保持当前位置不动，并标记丢失追踪
+    -- 无可跟踪玩家时保持当前位置不动
     if #positions == 0 then
-        lostTracking_ = true
         return
-    end
-
-    -- 刚从"无可跟踪"恢复：启动回切平滑计时器
-    if lostTracking_ then
-        lostTracking_ = false
-        recoverTimer_ = recoverDuration_
-    end
-
-    -- 回切平滑倒计时
-    if recoverTimer_ > 0 then
-        recoverTimer_ = recoverTimer_ - dt
     end
 
     local minX, maxX = math.huge, -math.huge
@@ -165,27 +152,11 @@ function Camera.Update(dt, playerPositions, humanPos)
     targetOrtho_ = math.max(orthoFromX, orthoFromY)
     targetOrtho_ = math.max(Config.CameraMinOrtho, math.min(Config.CameraMaxOrtho, targetOrtho_))
 
-    if Camera.isNetworkClient then
-        -- 多人模式：玩家位置已由 SmoothedTransform 插值，通常直接跟随
-        -- 但回切恢复期间使用 lerp 平滑过渡，避免硬切
-        if recoverTimer_ > 0 then
-            -- 回切平滑：用较快的 lerp 速度追回目标
-            local recoverSmooth = math.min(Config.CameraSmoothSpeed * 2.0 * dt, 1.0)
-            currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * recoverSmooth
-        else
-            currentCenter_ = targetCenter_
-        end
-        -- 正交尺寸（缩放）不受 SmoothedTransform 影响，保持 lerp 平滑过渡
-        local smooth = Config.CameraSmoothSpeed * dt
-        smooth = math.min(smooth, 1.0)
-        currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
-    else
-        -- 单机模式：位置和缩放都使用 lerp 平滑
-        local smooth = Config.CameraSmoothSpeed * dt
-        smooth = math.min(smooth, 1.0)
-        currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
-        currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
-    end
+    -- 统一 lerp 平滑：位置和缩放均平滑过渡
+    local smooth = Config.CameraSmoothSpeed * dt
+    smooth = math.min(smooth, 1.0)
+    currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
+    currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
 
     -- 应用屏幕震动偏移
     local shakeOffX, shakeOffY = 0, 0
@@ -321,7 +292,9 @@ function Camera.SetFixedForMap(mapWidth, mapHeight, padding)
     local orthoFromH = totalH
     local ortho = math.max(orthoFromW, orthoFromH)
 
-    Camera.SetImmediate(Vector3(cx, cy, 0), ortho)
+    -- 只设 target，让固定模式块内的 lerp 平滑过渡过去
+    targetCenter_ = Vector3(cx, cy, 0)
+    targetOrtho_ = ortho
     print("[Camera] Fixed mode: center=(" .. string.format("%.1f,%.1f", cx, cy) ..
           ") ortho=" .. string.format("%.1f", ortho) ..
           " map=" .. mapWidth .. "x" .. mapHeight)
@@ -415,11 +388,9 @@ function Camera.Shake(intensity, duration)
 end
 
 --- 释放固定模式（恢复自动跟随）
---- 利用已有的 lerp 平滑，从当前位置自然过渡到玩家跟随视角
+--- currentCenter_ 保持当前值，lerp 自然平滑过渡到玩家跟随位置
 function Camera.ReleaseFixed()
     Camera.fixedMode = false
-    -- 启动回切平滑计时器，让 lerp 从全景位置自然过渡到玩家跟随位置
-    recoverTimer_ = recoverDuration_
     print("[Camera] Fixed mode released")
 end
 

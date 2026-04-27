@@ -28,12 +28,17 @@ Camera.isNetworkClient = false
 -- 固定模式（游戏时显示全局地图，禁用自动跟随）
 Camera.fixedMode = false
 
+-- 回切平滑：玩家掉出屏幕后恢复跟踪时，用 lerp 平滑回来而非硬切
+local lostTracking_ = false           -- 上一帧是否无可跟踪玩家
+local recoverTimer_ = 0               -- 回切平滑剩余时间
+local recoverDuration_ = 0.6          -- 回切平滑总时长（秒）
+
 -- 屏幕震动状态
 local shakeTimer_ = 0
 local shakeDuration_ = 0
 local shakeIntensity_ = 0
 
--- 动画过渡状态
+-- 动画过渡状态（仅供 intro 开场镜头使用，由 GameManager 手动驱动）
 local animating_ = false
 local animStartCenter_ = Vector3(0, 0, 0)
 local animEndCenter_ = Vector3(0, 0, 0)
@@ -69,12 +74,11 @@ function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
     if Camera.manualMode then return end
 
-    -- 固定模式：仍需处理屏幕震动（但动画中不覆盖位置）
+    -- intro 动画期间由 GameManager 完全控制相机，跳过自动逻辑
+    if animating_ then return end
+
+    -- 固定模式：仍需处理屏幕震动
     if Camera.fixedMode then
-        if animating_ then
-            -- 动画过渡中，位置由 UpdateAnimation 控制，这里不干预
-            return
-        end
         if shakeTimer_ > 0 then
             shakeTimer_ = shakeTimer_ - dt
             local progress = shakeTimer_ / shakeDuration_
@@ -116,8 +120,22 @@ function Camera.Update(dt, playerPositions, humanPos)
         end
     end
 
-    -- 无可跟踪玩家时保持当前位置不动
-    if #positions == 0 then return end
+    -- 无可跟踪玩家时保持当前位置不动，并标记丢失追踪
+    if #positions == 0 then
+        lostTracking_ = true
+        return
+    end
+
+    -- 刚从"无可跟踪"恢复：启动回切平滑计时器
+    if lostTracking_ then
+        lostTracking_ = false
+        recoverTimer_ = recoverDuration_
+    end
+
+    -- 回切平滑倒计时
+    if recoverTimer_ > 0 then
+        recoverTimer_ = recoverTimer_ - dt
+    end
 
     local minX, maxX = math.huge, -math.huge
     local minY, maxY = math.huge, -math.huge
@@ -148,9 +166,15 @@ function Camera.Update(dt, playerPositions, humanPos)
     targetOrtho_ = math.max(Config.CameraMinOrtho, math.min(Config.CameraMaxOrtho, targetOrtho_))
 
     if Camera.isNetworkClient then
-        -- 多人模式：玩家位置已由 SmoothedTransform 插值，直接跟随计算中心
-        -- 避免与 SmoothedTransform 双重平滑导致相机抖动（见 network-game-guide §8.2）
-        currentCenter_ = targetCenter_
+        -- 多人模式：玩家位置已由 SmoothedTransform 插值，通常直接跟随
+        -- 但回切恢复期间使用 lerp 平滑过渡，避免硬切
+        if recoverTimer_ > 0 then
+            -- 回切平滑：用较快的 lerp 速度追回目标
+            local recoverSmooth = math.min(Config.CameraSmoothSpeed * 2.0 * dt, 1.0)
+            currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * recoverSmooth
+        else
+            currentCenter_ = targetCenter_
+        end
         -- 正交尺寸（缩放）不受 SmoothedTransform 影响，保持 lerp 平滑过渡
         local smooth = Config.CameraSmoothSpeed * dt
         smooth = math.min(smooth, 1.0)
@@ -391,8 +415,11 @@ function Camera.Shake(intensity, duration)
 end
 
 --- 释放固定模式（恢复自动跟随）
+--- 利用已有的 lerp 平滑，从当前位置自然过渡到玩家跟随视角
 function Camera.ReleaseFixed()
     Camera.fixedMode = false
+    -- 启动回切平滑计时器，让 lerp 从全景位置自然过渡到玩家跟随位置
+    recoverTimer_ = recoverDuration_
     print("[Camera] Fixed mode released")
 end
 

@@ -1,9 +1,2 @@
 .build/
 dist/
-.tmp/
-.agent/
-.cli/
-.claude/
-logs/
-*.log
-.DS_Store

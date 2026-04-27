@@ -234,29 +234,48 @@ function Client.CreateScene()
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
 
-    -- 光照：直接走 fallback 路径（保证所有节点都是 LOCAL）
-    -- 之前用 LightGroup XML 会创建 REPLICATED 子节点，被服务端 scene 同步覆盖→画面变灰
-    Client.CreateFallbackLighting()
+    -- 光照：与 Standalone 一致，优先加载 LightGroup/Daytime.xml（含 IBL 环境贴图）
+    -- 关键：成功加载时不创建 fallback，避免双 Zone 冲突导致 IBL 被覆盖
+    local lightGroupLoaded = false
+    local lightGroupFile = cache:GetResource("XMLFile", "LightGroup/Daytime.xml")
+    if lightGroupFile then
+        local lightGroup = scene_:CreateChild("LightGroup")
+        lightGroup:LoadXML(lightGroupFile:GetRoot())
+        local zoneComp = lightGroup:GetComponent("Zone")
+        if not zoneComp then
+            for i = 0, lightGroup.numChildren - 1 do
+                local child = lightGroup:GetChild(i)
+                zoneComp = child:GetComponent("Zone")
+                if zoneComp then break end
+            end
+        end
+        if zoneComp then
+            zoneComp.fogColor = Color(0.95, 0.82, 0.68)
+            lightGroupLoaded = true
+            print("[Client] LightGroup/Daytime.xml loaded (IBL active)")
+        end
+    end
 
-    -- 死亡区域：客户端不再创建（无玩家物理体，trigger 碰撞不会触发）
-    -- 死亡判定完全由服务端处理
+    if not lightGroupLoaded then
+        Client.CreateFallbackLighting()
+        print("[Client] LightGroup not available, using fallback lighting")
+    end
 
     print("[Client] Scene created")
 end
 
 function Client.CreateFallbackLighting()
-    -- LOCAL：客户端本地灯光节点，不参与服务端同步
-    local zoneNode = scene_:CreateChild("Zone", LOCAL)
-    local zone = zoneNode:CreateComponent("Zone", LOCAL)
+    local zoneNode = scene_:CreateChild("Zone")
+    local zone = zoneNode:CreateComponent("Zone")
     zone.boundingBox = BoundingBox(-200.0, 200.0)
     zone.ambientColor = Color(0.40, 0.35, 0.30)
     zone.fogColor = Color(0.95, 0.82, 0.68)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
 
-    local lightNode = scene_:CreateChild("DirectionalLight", LOCAL)
+    local lightNode = scene_:CreateChild("DirectionalLight")
     lightNode.direction = Vector3(0.5, -1.0, 0.3)
-    local light = lightNode:CreateComponent("Light", LOCAL)
+    local light = lightNode:CreateComponent("Light")
     light.lightType = LIGHT_DIRECTIONAL
     light.color = Color(1.0, 0.95, 0.9)
     light.castShadows = true
@@ -269,7 +288,7 @@ function Client.CreateBackgroundPlane()
     local botColor = Config.BgColorBot
     local size = 200
     local strips = 8
-    local bgNode = scene_:CreateChild("BackgroundGradient", LOCAL)
+    local bgNode = scene_:CreateChild("BackgroundGradient")
     bgNode.position = Vector3(0, 0, 5)
 
     local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
@@ -287,13 +306,13 @@ function Client.CreateBackgroundPlane()
         local midG = (g0 + g1) * 0.5
         local midB = (b0 + b1) * 0.5
 
-        local stripNode = bgNode:CreateChild("Strip" .. i, LOCAL)
+        local stripNode = bgNode:CreateChild("Strip" .. i)
         local yTop = size * (1 - t0 * 2)
         local yBot = size * (1 - t1 * 2)
         stripNode.position = Vector3(0, (yTop + yBot) * 0.5, 0)
         stripNode.scale = Vector3(size * 2, yTop - yBot, 0.1)
 
-        local model = stripNode:CreateComponent("StaticModel", LOCAL)
+        local model = stripNode:CreateComponent("StaticModel")
         model.model = cache:GetResource("Model", "Models/Box.mdl")
         model.castShadows = false
 

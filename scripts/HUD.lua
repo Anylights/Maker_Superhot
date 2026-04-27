@@ -404,7 +404,7 @@ function HUD.DrawAnimatedBgPattern(palette)
     local speed = palette.speed or 30            -- 平移速度（逻辑像素/秒）
     local spinSpeed = palette.spinSpeed or 0.3   -- 自转角速度（弧度/秒）
     -- ⚠️ 用引擎时间，os.clock() 在某些环境下不会持续增长
-    local t = (time and time.elapsedTime) or os.clock()
+    local t = (time and time.GetElapsedTime) and time:GetElapsedTime() or os.clock()
     -- 向左下平移：dx<0, dy>0；垂直周期是 2*tile（错位栅格）
     local offX = -((t * speed) % tile)
     local offY =  ((t * speed) % (tile * 2))
@@ -434,15 +434,20 @@ function HUD.DrawAnimatedBgPattern(palette)
 end
 
 function HUD.DrawBackground()
-    -- 简约山丘剪影（远景层，半透明）
-    local t = (os.clock() or 0) * 0.02  -- 极慢平移视差
+    -- 山丘水平滚动 + 视差（sin 函数自身周期保证无缝循环）
+    -- ⚠️ 用引擎时间，os.clock() 在某些环境下不增长
+    local t = (time and time.GetElapsedTime) and time:GetElapsedTime() or os.clock()
+    -- 远景滚动慢，近景滚动快，形成视差
+    local farScroll  = t * 8    -- 远山平移速度（逻辑像素/秒）
+    local nearScroll = t * 22   -- 近山平移速度
+
     -- 远山（浅色）
     nvgBeginPath(vg_)
     nvgMoveTo(vg_, 0, logH_)
     local hillY1 = logH_ * 0.72
     for x = 0, logW_, 4 do
-        local y = hillY1 + math.sin((x + t * 30) * 0.008) * logH_ * 0.06
-                        + math.sin((x + t * 50) * 0.015) * logH_ * 0.03
+        local y = hillY1 + math.sin((x + farScroll) * 0.008) * logH_ * 0.06
+                        + math.sin((x + farScroll * 1.6) * 0.015) * logH_ * 0.03
         nvgLineTo(vg_, x, y)
     end
     nvgLineTo(vg_, logW_, logH_)
@@ -455,8 +460,8 @@ function HUD.DrawBackground()
     nvgMoveTo(vg_, 0, logH_)
     local hillY2 = logH_ * 0.82
     for x = 0, logW_, 4 do
-        local y = hillY2 + math.sin((x + t * 60) * 0.012) * logH_ * 0.04
-                        + math.sin((x + t * 80) * 0.025) * logH_ * 0.02
+        local y = hillY2 + math.sin((x + nearScroll) * 0.012) * logH_ * 0.04
+                        + math.sin((x + nearScroll * 1.4) * 0.025) * logH_ * 0.02
         nvgLineTo(vg_, x, y)
     end
     nvgLineTo(vg_, logW_, logH_)

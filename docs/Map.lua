@@ -34,21 +34,15 @@ local respawnAnims_ = {}
 
 -- 网络模式：服务端跳过视觉组件
 local skipVisuals_ = false
--- 网络模式：客户端跳过物理组件（无动态刚体，不需要碰撞）
-local skipPhysics_ = false
+
+-- 编辑器预览模式：所有节点强制 LOCAL，避免客户端创建 REPLICATED 节点导致 socket 崩溃
+local editorPreviewMode_ = false
 
 --- 设置是否跳过视觉组件（必须在 Init 之前调用）
 ---@param skip boolean
 function Map.SetSkipVisuals(skip)
     skipVisuals_ = skip
     print("[Map] Skip visuals set to: " .. tostring(skip))
-end
-
---- 设置是否跳过物理组件（客户端不需要地图碰撞）
----@param skip boolean
-function Map.SetSkipPhysics(skip)
-    skipPhysics_ = skip
-    print("[Map] Skip physics set to: " .. tostring(skip))
 end
 
 -- 描边材质缓存
@@ -206,10 +200,7 @@ function Map.Init(scene)
         outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
     end
 
-    -- 诊断：记录材质缓存数量
-    local matCount = 0
-    for _ in pairs(materialCache_) do matCount = matCount + 1 end
-    print("[Map] Initialized (skipVisuals=" .. tostring(skipVisuals_) .. ", skipPhysics=" .. tostring(skipPhysics_) .. ", materialsCached=" .. matCount .. ")")
+    print("[Map] Initialized (skipVisuals=" .. tostring(skipVisuals_) .. ")")
 end
 
 --- 创建方块材质
@@ -223,7 +214,7 @@ function Map.CreateBlockMaterial(color, blockType)
     mat:SetShaderParameter("Metallic", Variant(Config.RubberMetallic))
     mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
 
-    -- 所有方块都设自发光，确保在无 IBL 的 fallback 光照下颜色不失真
+    -- 特殊方块的自发光
     if blockType == Config.BLOCK_ENERGY_PAD then
         mat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.1, 0.25, 0.3)))
     elseif blockType == Config.BLOCK_SPAWN then
@@ -232,9 +223,6 @@ function Map.CreateBlockMaterial(color, blockType)
         mat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.6, 0.5, 0.05)))
     elseif Config.SpawnBlockEmissive[blockType] then
         mat:SetShaderParameter("MatEmissiveColor", Variant(Config.SpawnBlockEmissive[blockType]))
-    else
-        -- 普通/安全方块：微弱自发光，补偿 fallback 光照不足
-        mat:SetShaderParameter("MatEmissiveColor", Variant(Color(color.r * 0.15, color.g * 0.15, color.b * 0.15)))
     end
 
     return mat
@@ -248,8 +236,8 @@ function Map.Build()
     -- 生成网格数据
     grid_ = MapData.Generate()
 
-    -- 创建地图父节点（LOCAL 防止服务端场景复制到客户端，双方各自建图）
-    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
+    -- 创建地图父节点（服务端用 LOCAL 防止复制冲突）
+    local mapRoot = scene_:CreateChild("MapRoot", skipVisuals_ and LOCAL or REPLICATED)
 
     -- 遍历网格，创建方块节点
     blockNodes_ = {}
@@ -286,28 +274,27 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local wx = (gx - 1) * bs + bs * 0.5
     local wy = (gy - 1) * bs + bs * 0.5
 
-    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, LOCAL)
+    local createMode = (skipVisuals_ or editorPreviewMode_) and LOCAL or REPLICATED
+    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, createMode)
     node.position = Vector3(wx, wy, 0)
 
     -- 视觉组件（服务端跳过）
     if not skipVisuals_ then
         -- 使用 CustomGeometry 创建圆角方块
-        local geom = node:CreateComponent("CustomGeometry", LOCAL)
+        local geom = node:CreateComponent("CustomGeometry")
         buildRoundedBox(geom, bs, 0.1)  -- 0.1 米圆角半径（微妙圆角）
         geom.castShadows = true
 
         local mat = materialCache_[blockType]
         if mat then
             geom:SetMaterial(mat)
-        else
-            print("[Map] WARNING: No material cached for blockType=" .. tostring(blockType) .. " at (" .. gx .. "," .. gy .. ") → block will be GRAY!")
         end
 
         -- 描边子节点（在方块后面 Z+0.1，略大）
-        local outlineNode = node:CreateChild("Outline", LOCAL)
+        local outlineNode = node:CreateChild("Outline")
         outlineNode.position = Vector3(0, 0, 0.1)
         outlineNode.scale = Vector3(1.12, 1.12, 1.0)
-        local outlineGeom = outlineNode:CreateComponent("CustomGeometry", LOCAL)
+        local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
         buildRoundedBox(outlineGeom, bs, 0.1)
         outlineGeom.castShadows = false
         if outlineMat_ then
@@ -320,14 +307,12 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         end
     end
 
-    -- 物理碰撞（静态刚体，mass=0）- 客户端跳过（无动态刚体，节省内存）
-    if not skipPhysics_ then
-        local body = node:CreateComponent("RigidBody", LOCAL)
-        body.collisionLayer = 1
+    -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
+    local body = node:CreateComponent("RigidBody")
+    body.collisionLayer = 1
 
-        local shape = node:CreateComponent("CollisionShape", LOCAL)
-        shape:SetBox(Vector3(bs, bs, bs))
-    end
+    local shape = node:CreateComponent("CollisionShape")
+    shape:SetBox(Vector3(bs, bs, bs))
 
     return node
 end
@@ -339,12 +324,12 @@ function Map.CreateFlag(parentNode, bs)
     local halfBS = bs * 0.5
 
     -- 旗杆（细长圆柱）
-    local poleNode = parentNode:CreateChild("FlagPole", LOCAL)
+    local poleNode = parentNode:CreateChild("FlagPole")
     local poleHeight = bs * 2.0
     local poleRadius = bs * 0.04
     poleNode.position = Vector3(0, halfBS + poleHeight * 0.5, -0.05)
     poleNode.scale = Vector3(poleRadius * 2, poleHeight, poleRadius * 2)
-    local poleModel = poleNode:CreateComponent("StaticModel", LOCAL)
+    local poleModel = poleNode:CreateComponent("StaticModel")
     poleModel:SetModel(cache:GetResource("Model", "Models/Cylinder.mdl"))
     -- 白色旗杆
     local poleMat = Material:new()
@@ -355,9 +340,9 @@ function Map.CreateFlag(parentNode, bs)
     poleModel:SetMaterial(poleMat)
 
     -- 三角旗（使用 CustomGeometry）
-    local flagNode = parentNode:CreateChild("Flag", LOCAL)
+    local flagNode = parentNode:CreateChild("Flag")
     flagNode.position = Vector3(0, halfBS + poleHeight * 0.75, -0.06)
-    local flagGeom = flagNode:CreateComponent("CustomGeometry", LOCAL)
+    local flagGeom = flagNode:CreateComponent("CustomGeometry")
     flagGeom:SetNumGeometries(1)
     flagGeom:BeginGeometry(0, TRIANGLE_LIST)
 
@@ -538,8 +523,6 @@ function Map.DestroyBlock(gx, gy, explodeCX, explodeCY)
     if blockType ~= Config.BLOCK_NORMAL and blockType ~= Config.BLOCK_ENERGY_PAD then
         return false
     end
-
-    print("[Map] DestroyBlock(" .. gx .. "," .. gy .. ") type=" .. blockType .. " skipVisuals=" .. tostring(skipVisuals_))
 
     -- 处理节点
     if blockNodes_[gy] and blockNodes_[gy][gx] then
@@ -758,10 +741,12 @@ function Map.SetBlock(gx, gy, blockType)
         return
     end
 
-    -- 创建新方块节点
+    -- 创建新方块节点（编辑器调用：强制 LOCAL 防止客户端创建 REPLICATED 节点导致网络崩溃）
     local mapRoot = scene_:GetChild("MapRoot")
     if mapRoot then
+        editorPreviewMode_ = true
         local node = Map.CreateBlockNode(mapRoot, gx, gy, blockType)
+        editorPreviewMode_ = false
         if not blockNodes_[gy] then blockNodes_[gy] = {} end
         blockNodes_[gy][gx] = node
     end
@@ -801,7 +786,8 @@ function Map.BuildFromGrid(externalGrid)
         end
     end
 
-    -- 创建地图父节点（LOCAL 防止服务端场景复制到客户端）
+    -- 编辑器预览强制 LOCAL：客户端不能创建 REPLICATED 节点（会触发 socket 网络回调越界崩溃）
+    editorPreviewMode_ = true
     local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
     blockNodes_ = {}
     local blockCount = 0
@@ -817,11 +803,12 @@ function Map.BuildFromGrid(externalGrid)
             end
         end
     end
+    editorPreviewMode_ = false
 
     destroyed_ = {}
     debris_ = {}
 
-    print("[Map] Built from external grid: " .. blockCount .. " blocks")
+    print("[Map] Built from external grid: " .. blockCount .. " blocks (LOCAL preview)")
 end
 
 return Map

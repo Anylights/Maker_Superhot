@@ -278,7 +278,9 @@ function Pickup.Update(dt)
     for i = #pickups_, 1, -1 do
         if pickups_[i].collected then
             if pickups_[i].node then
-                pickups_[i].node:Remove()
+                -- 服务端 REPLICATED 节点使用 Dispose() 立即断开引用并触发网络同步删除
+                -- Remove() 依赖 GC，可能延迟数帧导致客户端看到"幽灵"节点
+                pickups_[i].node:Dispose()
             end
             table.remove(pickups_, i)
         end
@@ -366,7 +368,12 @@ function Pickup.ClearAll()
     end
     for _, pk in ipairs(pickups_) do
         if pk.node then
-            pk.node:Remove()
+            -- 服务端 REPLICATED 节点用 Dispose() 确保即时网络同步
+            if networkMode_ == "server" then
+                pk.node:Dispose()
+            else
+                pk.node:Remove()
+            end
         end
     end
     pickups_ = {}

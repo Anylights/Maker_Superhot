@@ -19,7 +19,6 @@ local LevelManager = require("LevelManager")
 
 local EVENTS = Shared.EVENTS
 local CTRL = Shared.CTRL
-local VARS = Shared.VARS
 
 local Server = {}
 

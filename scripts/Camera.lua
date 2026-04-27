@@ -22,6 +22,9 @@ local targetOrtho_ = Config.CameraMinOrtho
 -- 手动模式（编辑器用，禁用自动跟随）
 Camera.manualMode = false
 
+-- 网络客户端标记：跳过相机位置 lerp，避免与 SmoothedTransform 双重平滑导致抖动
+Camera.isNetworkClient = false
+
 -- 固定模式（游戏时显示全局地图，禁用自动跟随）
 Camera.fixedMode = false
 
@@ -144,11 +147,21 @@ function Camera.Update(dt, playerPositions, humanPos)
     targetOrtho_ = math.max(orthoFromX, orthoFromY)
     targetOrtho_ = math.max(Config.CameraMinOrtho, math.min(Config.CameraMaxOrtho, targetOrtho_))
 
-    local smooth = Config.CameraSmoothSpeed * dt
-    smooth = math.min(smooth, 1.0)
-
-    currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
-    currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
+    if Camera.isNetworkClient then
+        -- 多人模式：玩家位置已由 SmoothedTransform 插值，直接跟随计算中心
+        -- 避免与 SmoothedTransform 双重平滑导致相机抖动（见 network-game-guide §8.2）
+        currentCenter_ = targetCenter_
+        -- 正交尺寸（缩放）不受 SmoothedTransform 影响，保持 lerp 平滑过渡
+        local smooth = Config.CameraSmoothSpeed * dt
+        smooth = math.min(smooth, 1.0)
+        currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
+    else
+        -- 单机模式：位置和缩放都使用 lerp 平滑
+        local smooth = Config.CameraSmoothSpeed * dt
+        smooth = math.min(smooth, 1.0)
+        currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
+        currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
+    end
 
     -- 应用屏幕震动偏移
     local shakeOffX, shakeOffY = 0, 0

@@ -7,6 +7,7 @@ local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
 local Camera = require("Camera")
+local FXDiag = require("FXDiag")
 
 local Player = {}
 
@@ -21,6 +22,8 @@ local mapModule_ = nil  -- Map 模块引用
 -- PBR 技术缓存
 local pbrTechnique_ = nil
 local pbrAlphaTechnique_ = nil
+-- 粒子专用 Unlit 技术（PBR 着色器与 BillboardSet 顶点格式不兼容）
+local particleUnlitTechnique_ = nil
 
 -- 网络模式："standalone" | "server" | "client"
 local networkMode_ = "standalone"
@@ -44,8 +47,15 @@ function Player.Init(scene, mapRef)
     mapModule_ = mapRef
     pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
     pbrAlphaTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml")
+    -- 粒子技术：PBR 着色器与 BillboardSet 不兼容，需要 Unlit + Alpha + 顶点颜色
+    -- DiffUnlitAlpha 走 Diffuse 管线，支持 ColorFrame 顶点颜色动画 + Alpha 混合
+    particleUnlitTechnique_ = cache:GetResource("Technique", "Techniques/DiffUnlitAlpha.xml")
+    if particleUnlitTechnique_ == nil then
+        -- 回退：NoTextureUnlit（不支持顶点颜色，需手动设 MatDiffColor）
+        particleUnlitTechnique_ = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
+    end
     Player.list = {}
-    print("[Player] Initialized")
+    print("[Player] Initialized, particleTech=" .. tostring(particleUnlitTechnique_ ~= nil))
 end
 
 --- 在节点上创建视觉组件（模型、描边、眼睛）
@@ -115,17 +125,19 @@ function Player.CreateVisuals(node, index)
     eyeRModel.castShadows = false
     eyeRModel:SetMaterial(eyeMat)
 
-    return visualNode, mat, outlineMat
+    return visualNode, mat, outlineMat, eyeL, eyeR
 end
 
 --- 为已有玩家数据补挂视觉组件（客户端收到 REPLICATED 节点后调用）
 ---@param p table 玩家数据
 function Player.AttachVisuals(p)
     if p.visualNode then return end  -- 已有视觉
-    local visualNode, mat, outlineMat = Player.CreateVisuals(p.node, p.index)
+    local visualNode, mat, outlineMat, eyeL, eyeR = Player.CreateVisuals(p.node, p.index)
     p.visualNode = visualNode
     p.material = mat
     p.outlineMat = outlineMat
+    p.eyeNodeL = eyeL
+    p.eyeNodeR = eyeR
     print("[Player] Visuals attached to player " .. p.index)
 end
 
@@ -162,8 +174,10 @@ function Player.Create(index, isHuman, opts)
     local eyeBaseZ = -0.48
     local eyeRadius = 0.22
 
+    local eyeNodeL = nil
+    local eyeNodeR = nil
     if not opts.skipVisuals then
-        visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
+        visualNode, mat, outlineMat, eyeNodeL, eyeNodeR = Player.CreateVisuals(node, index)
     end
 
     -- 动态刚体（仅服务端/单机需要物理，客户端不创建——避免与服务端复制冲突）
@@ -210,6 +224,8 @@ function Player.Create(index, isHuman, opts)
         body = body,
         material = mat,
         outlineMat = outlineMat,
+        eyeNodeL = eyeNodeL,
+        eyeNodeR = eyeNodeR,
         isHuman = isHuman,
 
         -- 移动
@@ -218,6 +234,7 @@ function Player.Create(index, isHuman, opts)
         hitCeiling = false,    -- 本帧是否撞到天花板
         hitWallX = 0,          -- 本帧撞墙方向：-1 左墙, 1 右墙, 0 无
         jumpCount = 0,
+        jumpCooldown = 0,      -- 两次跳跃之间的最小间隔冷却（防止网络脉冲导致瞬间双跳）
         prevVelY = 0,          -- 上一帧 Y 速度（用于计算落地冲击力）
 
         -- 土狼时间 & 跳跃缓冲
@@ -254,19 +271,17 @@ function Player.Create(index, isHuman, opts)
         multiKillCount = 0,    -- 短时间内连续击杀数
         multiKillTimer = 0,    -- 连杀判定计时器
 
-        -- 下砸
-        slamming = false,      -- 是否正在下砸中
-        slamLanded = false,    -- 下砸是否已着地（触发击退）
-        slamRecovery = 0,      -- 下砸着地后摇
-
         -- 输入缓存（AI 或人类写入）
         inputMoveX = 0,
         inputJump = false,
         inputDash = false,
-        inputSlam = false,           -- S键/↓键（下砸）
         inputCharging = false,       -- 右键按住中
         inputExplodeRelease = false, -- 右键松开（触发爆炸）
         wasChargingInput = false,    -- 上帧右键状态（用于松开检测）
+        -- 服务端边沿检测状态（ProcessInputs 用于检测 0→1 跳变）
+        wasJumpDown = false,
+        wasDashDown = false,
+        wasExplodeReleaseDown = false,
 
         -- 视觉动效（squash & stretch）
         squashScaleX = 1.0,    -- 当前形变 X 比例
@@ -435,9 +450,10 @@ function Player.UpdateOne(p, dt)
     if p.jumpBufferTimer > 0 then
         p.jumpBufferTimer = p.jumpBufferTimer - dt
     end
-    -- 新的跳跃输入 → 设置缓冲
+    -- 新的跳跃输入 → 设置缓冲（联机模式用更宽的窗口补偿 RTT）
     if p.inputJump then
-        p.jumpBufferTimer = Config.JumpBufferTime
+        local bufTime = (networkMode_ == "server") and Config.NetJumpBufferTime or Config.JumpBufferTime
+        p.jumpBufferTimer = bufTime
         p.inputJump = false  -- 消费输入信号，后续由 buffer 驱动
     end
 
@@ -456,22 +472,8 @@ function Player.UpdateOne(p, dt)
             p.squashVelY = 0
             p.squashVelX = 0
         end
-
-        -- 下砸着地：触发击退 + 后摇
-        if p.slamming then
-            p.slamming = false
-            p.slamLanded = true
-            p.slamRecovery = Config.SlamRecovery
-            Player.DoSlamImpact(p)
-            -- 更强的落地压扁
-            p.squashScaleY = 0.55
-            p.squashScaleX = 1.45
-            p.squashVelY = 0
-            p.squashVelX = 0
-        end
-
         -- 着陆时检查跳跃缓冲：缓冲窗口内有按键 → 自动起跳
-        if p.jumpBufferTimer > 0 and p.slamRecovery <= 0 then
+        if p.jumpBufferTimer > 0 then
             p.jumpBufferTimer = 0
             Player.DoJump(p)
         end
@@ -496,19 +498,6 @@ function Player.UpdateOne(p, dt)
         if p.invincibleTimer <= 0 then
             if p.visualNode then p.visualNode.enabled = true end
         end
-    end
-
-    -- 下砸后摇（着地短暂不接受输入）
-    if p.slamRecovery > 0 then
-        p.slamRecovery = p.slamRecovery - dt
-        p.inputMoveX = 0
-        p.inputJump = false
-        p.inputDash = false
-        p.inputSlam = false
-        if p.slamRecovery <= 0 then
-            p.slamLanded = false
-        end
-        goto updateVisuals
     end
 
     -- 爆炸后摇（后摇期间不接受输入，但重力和物理仍生效）
@@ -630,7 +619,9 @@ end
 ---@param p table
 function Player.DoJump(p)
     p.jumpCount = p.jumpCount + 1
-    p.coyoteTimer = Config.CoyoteTime + 1  -- 跳跃后禁止再次土狼跳
+    p.jumpCooldown = 0.02  -- 20ms 安全网（主要防御已由服务端边沿检测承担）
+    local coyote = (networkMode_ == "server") and Config.NetCoyoteTime or Config.CoyoteTime
+    p.coyoteTimer = coyote + 1  -- 跳跃后禁止再次土狼跳
 
     -- 设置向上初速度
     if p.body then
@@ -654,16 +645,6 @@ function Player.UpdateMovement(p, dt)
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
         p.body.linearVelocity = Vector3(p.dashDir * Config.DashSpeed, 0, 0)
-        return
-    end
-
-    -- 下砸中：锁定向下高速，水平速度为 0
-    if p.slamming then
-        p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
-        -- 跳跃/冲刺在下砸中不处理
-        p.inputJump = false
-        p.inputDash = false
-        p.jumpBufferTimer = 0
         return
     end
 
@@ -715,27 +696,30 @@ function Player.UpdateMovement(p, dt)
     p.body.linearVelocity = Vector3(finalVx, vy, 0)
 
     -- =====================
-    -- 跳跃输入（土狼时间 + 缓冲联合判定 + 空中起跳）
+    -- 跳跃冷却递减（防御性措施：两次跳跃最少间隔 100ms）
     -- =====================
-    if p.jumpBufferTimer > 0 then
+    if p.jumpCooldown > 0 then
+        p.jumpCooldown = p.jumpCooldown - dt
+    end
+
+    -- =====================
+    -- 跳跃输入（土狼时间 + 缓冲联合判定）
+    -- =====================
+    if p.jumpBufferTimer > 0 and p.jumpCooldown <= 0 then
         local canJump = false
+        local coyote = (networkMode_ == "server") and Config.NetCoyoteTime or Config.CoyoteTime
 
         if p.onGround then
             canJump = (p.jumpCount < Config.MaxJumps)
-        elseif p.coyoteTimer <= Config.CoyoteTime then
+        elseif p.coyoteTimer <= coyote then
             canJump = (p.jumpCount < Config.MaxJumps)
         elseif p.jumpCount < Config.MaxJumps then
-            -- 空中跳跃：无论 jumpCount 是 0（走下平台）还是 1（已跳一次），
-            -- 只要 jumpCount < MaxJumps 就允许跳跃
+            -- 空中跳跃（含空中起跳第一段 + 二段跳）
             canJump = true
         end
 
         if canJump then
             p.jumpBufferTimer = 0
-            -- 空中起跳时（走下平台，jumpCount=0），消耗第一次跳跃次数
-            if not p.onGround and p.coyoteTimer > Config.CoyoteTime and p.jumpCount == 0 then
-                p.jumpCount = 1  -- 标记为已用一次，这样二段跳是第二次
-            end
             Player.DoJump(p)
         end
     end
@@ -748,110 +732,11 @@ function Player.UpdateMovement(p, dt)
             p.dashTimer = Config.DashDuration
             p.dashDir = p.lastFaceDir
             p.dashCooldown = Config.DashCooldown
-            p.slamming = false  -- 冲刺取消下砸
             if networkMode_ ~= "server" then
                 SFX.Play("dash", 0.6)
             end
         end
         p.inputDash = false
-    end
-
-    -- =====================
-    -- 下砸输入（S 键，仅空中触发）
-    -- =====================
-    if p.inputSlam then
-        if not p.onGround and not p.slamming and p.dashTimer <= 0 then
-            p.slamming = true
-            p.slamLanded = false
-            -- 立即设置向下速度，取消水平速度
-            p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
-            if networkMode_ ~= "server" then
-                SFX.Play("dash", 0.4)  -- 复用音效
-            end
-        end
-        p.inputSlam = false
-    end
-
-    -- =====================
-    -- 冲刺中击退检测（服务端/单机权威）
-    -- =====================
-    if p.dashTimer > 0 and networkMode_ ~= "client" then
-        Player.CheckDashKnockback(p)
-    end
-end
-
---- 下砸着地击退：对周围敌人施加水平击退力（服务端/单机权威）
----@param p table
-function Player.DoSlamImpact(p)
-    if networkMode_ == "client" then return end
-    if p.node == nil then return end
-
-    local pos = p.node.position
-    local radius = Config.SlamKnockRadius * Config.BlockSize
-
-    for _, other in ipairs(Player.list) do
-        if other.index ~= p.index and other.alive and other.node and other.invincibleTimer <= 0 then
-            local diff = other.node.position - pos
-            local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
-            if dist <= radius and dist > 0.01 then
-                -- 水平方向击退
-                local dir = (diff.x >= 0) and 1 or -1
-                if other.body then
-                    other.body.linearVelocity = Vector3(
-                        dir * Config.SlamKnockForce,
-                        Config.SlamKnockUpForce,
-                        0
-                    )
-                end
-                -- 视觉：被击退的玩家 squash
-                other.squashScaleX = 0.7
-                other.squashScaleY = 1.3
-                other.squashVelX = 0
-                other.squashVelY = 0
-            end
-        end
-    end
-
-    -- 屏幕震动
-    if networkMode_ ~= "server" then
-        Camera.Shake(0.2, 0.15)
-        SFX.Play("explosion", 0.4)
-    end
-end
-
---- 冲刺击退检测：冲刺中碰到敌人施加更大的水平击退力
----@param p table
-function Player.CheckDashKnockback(p)
-    if p.node == nil then return end
-
-    local pos = p.node.position
-    local radius = Config.DashKnockRadius * Config.BlockSize
-
-    for _, other in ipairs(Player.list) do
-        if other.index ~= p.index and other.alive and other.node and other.invincibleTimer <= 0 then
-            local diff = other.node.position - pos
-            local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
-            if dist <= radius and dist > 0.01 then
-                -- 冲刺方向击退（比下砸更远）
-                local dir = p.dashDir
-                if other.body then
-                    other.body.linearVelocity = Vector3(
-                        dir * Config.DashKnockForce,
-                        Config.DashKnockUpForce,
-                        0
-                    )
-                end
-                -- 视觉：被撞飞的玩家 squash
-                other.squashScaleX = 0.65
-                other.squashScaleY = 1.35
-                other.squashVelX = 0
-                other.squashVelY = 0
-
-                if networkMode_ ~= "server" then
-                    Camera.Shake(0.25, 0.2)
-                end
-            end
-        end
     end
 end
 
@@ -1034,8 +919,8 @@ end
 function Player.UpdateEyes(p, dt)
     if not p.visualNode then return end
 
-    local eyeL = p.visualNode:GetChild("EyeL")
-    local eyeR = p.visualNode:GetChild("EyeR")
+    local eyeL = p.eyeNodeL
+    local eyeR = p.eyeNodeR
     if eyeL == nil or eyeR == nil then return end
 
     local bx = p.eyeBaseX
@@ -1316,6 +1201,10 @@ end
 ---@param pos Vector3 爆炸中心
 ---@param playerIndex number 玩家编号（用于颜色）
 function Player.SpawnExplosionFX(pos, playerIndex)
+    FXDiag.Log("SpawnExplFX: idx=" .. tostring(playerIndex)
+        .. " pos=" .. tostring(pos)
+        .. " tech=" .. tostring(particleUnlitTechnique_ ~= nil)
+        .. " scene=" .. tostring(scene_ ~= nil), 255, 128, 255)
     if scene_ == nil then return end
 
     local fxNode = scene_:CreateChild("ExplosionFX", LOCAL)
@@ -1324,24 +1213,22 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     -- 程序化创建粒子效果
     local effect = ParticleEffect:new()
 
-    -- 创建粒子材质（透明）- 极高饱和度颜色
-    local mat = Material:new()
-    mat:SetTechnique(0, pbrAlphaTechnique_)
+    -- 计算玩家饱和色
     local color = Config.PlayerColors[playerIndex]
-    -- 将颜色推向极高饱和度：找到最大通道，压低其他通道
     local maxC = math.max(color.r, color.g, color.b, 0.01)
-    local satR = math.min(1.0, (color.r / maxC) ^ 0.3) * 1.0  -- 增强对比
+    local satR = math.min(1.0, (color.r / maxC) ^ 0.3) * 1.0
     local satG = math.min(1.0, (color.g / maxC) ^ 0.3) * 1.0
     local satB = math.min(1.0, (color.b / maxC) ^ 0.3) * 1.0
-    -- 再压低非主导通道，拉到极致饱和
     local minSat = math.min(satR, satG, satB)
     satR = math.min(1.0, satR - minSat * 0.6 + 0.05)
     satG = math.min(1.0, satG - minSat * 0.6 + 0.05)
     satB = math.min(1.0, satB - minSat * 0.6 + 0.05)
+
+    -- 粒子材质：Unlit 技术（PBR 与 BillboardSet 不兼容）
+    -- MatDiffColor 设为玩家色，作为兜底着色（若 DiffUnlitAlpha 支持顶点颜色则由 ColorFrame 调制）
+    local mat = Material:new()
+    mat:SetTechnique(0, particleUnlitTechnique_)
     mat:SetShaderParameter("MatDiffColor", Variant(Color(satR, satG, satB, 0.95)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(satR * 0.8, satG * 0.8, satB * 0.8)))
-    mat:SetShaderParameter("Metallic", Variant(0.0))
-    mat:SetShaderParameter("Roughness", Variant(0.3))
     effect:SetMaterial(mat)
 
     -- 粒子参数
@@ -1395,11 +1282,8 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     local ringEffect = ParticleEffect:new()
 
     local ringMat = Material:new()
-    ringMat:SetTechnique(0, pbrAlphaTechnique_)
-    ringMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.6, 0.0, 0.85)))
-    ringMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1.0, 0.4, 0.0)))
-    ringMat:SetShaderParameter("Metallic", Variant(0.0))
-    ringMat:SetShaderParameter("Roughness", Variant(0.3))
+    ringMat:SetTechnique(0, particleUnlitTechnique_)
+    ringMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.7, 0.1, 0.85)))
     ringEffect:SetMaterial(ringMat)
 
     ringEffect:SetNumParticles(20)
@@ -1527,6 +1411,9 @@ end
 ---@param pos Vector3 死亡位置
 ---@param playerIndex number 玩家编号（用于颜色）
 function Player.SpawnSplatFX(pos, playerIndex)
+    FXDiag.Log("SpawnSplatFX: idx=" .. tostring(playerIndex)
+        .. " pos=" .. tostring(pos)
+        .. " tech=" .. tostring(particleUnlitTechnique_ ~= nil), 255, 128, 255)
     if scene_ == nil then return end
 
     local color = Config.PlayerColors[playerIndex]
@@ -1538,11 +1425,8 @@ function Player.SpawnSplatFX(pos, playerIndex)
 
     local effect = ParticleEffect:new()
     local mat = Material:new()
-    mat:SetTechnique(0, pbrAlphaTechnique_)
+    mat:SetTechnique(0, particleUnlitTechnique_)
     mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.5, g * 0.5, b * 0.5)))
-    mat:SetShaderParameter("Metallic", Variant(0.05))
-    mat:SetShaderParameter("Roughness", Variant(0.5))
     effect:SetMaterial(mat)
 
     effect:SetNumParticles(120)
@@ -1586,11 +1470,8 @@ function Player.SpawnSplatFX(pos, playerIndex)
 
     local flashEffect = ParticleEffect:new()
     local flashMat = Material:new()
-    flashMat:SetTechnique(0, pbrAlphaTechnique_)
-    flashMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1.0)))
-    flashMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.8)))
-    flashMat:SetShaderParameter("Metallic", Variant(0.0))
-    flashMat:SetShaderParameter("Roughness", Variant(0.2))
+    flashMat:SetTechnique(0, particleUnlitTechnique_)
+    flashMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 1.0, 0.8, 1.0)))
     flashEffect:SetMaterial(flashMat)
 
     flashEffect:SetNumParticles(8)
@@ -1631,11 +1512,8 @@ function Player.SpawnSplatFX(pos, playerIndex)
 
     local starEffect = ParticleEffect:new()
     local starMat = Material:new()
-    starMat:SetTechnique(0, pbrAlphaTechnique_)
-    starMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 0.9, 1.0)))
-    starMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.7)))
-    starMat:SetShaderParameter("Metallic", Variant(0.0))
-    starMat:SetShaderParameter("Roughness", Variant(0.3))
+    starMat:SetTechnique(0, particleUnlitTechnique_)
+    starMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 1.0, 0.7, 1.0)))
     starEffect:SetMaterial(starMat)
 
     starEffect:SetNumParticles(30)
@@ -1741,13 +1619,14 @@ function Player.Respawn(p)
     p.explodeRecovery = 0
     Player.RestoreMaterial(p)
     p.jumpCount = 0
+    p.jumpCooldown = 0
     p.wasOnGround = false
     p.dashTimer = 0
     p.dashCooldown = 0
-    p.slamming = false
-    p.slamLanded = false
-    p.slamRecovery = 0
-    p.inputSlam = false
+    -- 重置服务端边沿检测状态
+    p.wasJumpDown = false
+    p.wasDashDown = false
+    p.wasExplodeReleaseDown = false
 
     -- 重置视觉动效
     p.squashScaleX = 1.0
@@ -1796,19 +1675,20 @@ function Player.ResetAll()
         p.invincibleTimer = 0
         p.respawnTimer = 0
         p.jumpCount = 0
+        p.jumpCooldown = 0
         p.wasOnGround = false
         p.dashTimer = 0
         p.dashCooldown = 0
         p.inputMoveX = 0
         p.inputJump = false
         p.inputDash = false
-        p.inputSlam = false
         p.inputCharging = false
         p.inputExplodeRelease = false
         p.wasChargingInput = false
-        p.slamming = false
-        p.slamLanded = false
-        p.slamRecovery = 0
+        -- 重置服务端边沿检测状态
+        p.wasJumpDown = false
+        p.wasDashDown = false
+        p.wasExplodeReleaseDown = false
 
         -- 重置视觉动效
         p.squashScaleX = 1.0
@@ -2006,11 +1886,18 @@ function Player.HandleRemoteExplode(playerIndex, centerGX, centerGY, actualRadiu
 
     -- 找到爆炸者的位置用于特效
     local pos = nil
+    local foundPlayer = false
     for _, p in ipairs(Player.list) do
         if p.index == playerIndex then
+            foundPlayer = true
             if p.node then
                 pos = p.node.position
             end
+            FXDiag.Log("RemoteExplode: p=" .. playerIndex
+                .. " node=" .. tostring(p.node ~= nil)
+                .. " vis=" .. tostring(p.visualNode ~= nil)
+                .. " alive=" .. tostring(p.alive)
+                .. " pos=" .. tostring(pos), 100, 200, 255)
             -- 重置该玩家的蓄力视觉
             p.charging = false
             p.chargeTimer = 0
@@ -2023,6 +1910,10 @@ function Player.HandleRemoteExplode(playerIndex, centerGX, centerGY, actualRadiu
         end
     end
 
+    if not foundPlayer then
+        FXDiag.Log("RemoteExplode: p=" .. playerIndex .. " NOT FOUND! list#=" .. #Player.list, 255, 80, 80)
+    end
+
     if pos then
         -- 视觉特效
         Player.SpawnExplosionFX(pos, playerIndex)
@@ -2031,6 +1922,8 @@ function Player.HandleRemoteExplode(playerIndex, centerGX, centerGY, actualRadiu
         Camera.Shake(shakeIntensity, 0.25)
         -- 音效
         SFX.Play("explosion", 0.8)
+    else
+        FXDiag.Log("RemoteExplode: pos=NIL SKIP FX! p=" .. playerIndex, 255, 50, 50)
     end
 
     print("[Player] Remote explode: player=" .. playerIndex .. " radius=" .. actualRadius)
@@ -2043,7 +1936,10 @@ end
 function Player.ClientDeath(playerIndex, reason, killerIndex)
     for _, p in ipairs(Player.list) do
         if p.index == playerIndex then
-            if not p.alive then return end  -- 已经死了，不重复处理
+            if not p.alive then
+                FXDiag.Log("ClientDeath: p=" .. playerIndex .. " already dead, skip", 255, 200, 0)
+                return
+            end
 
             p.alive = false
             p.respawnTimer = Config.RespawnDelay
@@ -2052,6 +1948,8 @@ function Player.ClientDeath(playerIndex, reason, killerIndex)
             -- 隐藏玩家 + 停止物理
             if p.node then
                 local deathPos = p.node.position
+                FXDiag.Log("ClientDeath: p=" .. playerIndex .. " reason=" .. reason
+                    .. " pos=" .. tostring(deathPos), 100, 200, 255)
 
                 if p.body then
                     p.body.linearVelocity = Vector3.ZERO
@@ -2066,6 +1964,9 @@ function Player.ClientDeath(playerIndex, reason, killerIndex)
                     Player.SpawnSplatFX(deathPos, p.index)
                     Player.SpawnDeathFace(p, deathPos)
                 end
+            else
+                FXDiag.Log("ClientDeath: p=" .. playerIndex .. " reason=" .. reason
+                    .. " node=NIL SKIP FX!", 255, 50, 50)
             end
 
             SFX.Play("death", 0.7)
@@ -2073,6 +1974,7 @@ function Player.ClientDeath(playerIndex, reason, killerIndex)
             return
         end
     end
+    FXDiag.Log("ClientDeath: p=" .. playerIndex .. " NOT FOUND! list#=" .. #Player.list, 255, 80, 80)
 end
 
 --- 获取人类玩家位置（即使死亡也返回重生点，保证相机始终能跟踪）

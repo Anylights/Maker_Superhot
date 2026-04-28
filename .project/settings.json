@@ -24,11 +24,6 @@
     "multiplayer": {
       "enabled": true,
       "max_players": 16,
-      "match_info": {
-        "desc_name": "free_match_with_ai",
-        "match_timeout": 10,
-        "player_number": 4
-      },
       "background_match": false,
       "persistent_world": {
         "enabled": true

@@ -212,7 +212,7 @@ function HandleClientConnected(eventType, eventData)
     -- 等客户端发送 CLIENT_READY 后再设置，否则会导致场景同步时序问题
 
     -- 设置脉冲按钮掩码（一次性输入走 reliable 通道，防止丢包）
-    connection:SetPulseButtonMask(CTRL.JUMP | CTRL.DASH | CTRL.EXPLODE_RELEASE | CTRL.SLAM)
+    connection:SetPulseButtonMask(CTRL.JUMP | CTRL.DASH | CTRL.EXPLODE_RELEASE)
 
     connections_[connKey] = {
         conn = connection,
@@ -910,7 +910,15 @@ function Server.EndGame()
     end
 
     activeGame_ = nil
+
+    -- 移除旧的 REPLICATED 玩家节点，防止下一局 CreateChild 产生重名节点
+    for _, p in ipairs(Player.list) do
+        if p.node then
+            p.node:Remove()
+        end
+    end
     Player.list = {}
+
     Map.Clear()
 
     print("[Server] Game ended, returning to lobby")
@@ -983,6 +991,8 @@ end
 
 function Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadius)
     if not activeGame_ then return end
+    print("[Server.FX-DIAG] BroadcastExplodeSync: player=" .. playerIndex
+        .. " gx=" .. centerGX .. " gy=" .. centerGY .. " r=" .. actualRadius)
 
     local data = VariantMap()
     data["PlayerIndex"] = Variant(playerIndex)
@@ -990,11 +1000,14 @@ function Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadi
     data["CenterGY"] = Variant(centerGY)
     data["Radius"] = Variant(actualRadius)
 
+    local sentCount = 0
     for _, gp in ipairs(activeGame_.players) do
         if gp.conn and not gp.disconnected then
             gp.conn:SendRemoteEvent(EVENTS.EXPLODE_SYNC, true, data)
+            sentCount = sentCount + 1
         end
     end
+    print("[Server.FX-DIAG] EXPLODE_SYNC sent to " .. sentCount .. " clients")
 end
 
 function Server.BroadcastPlayerDeath(playerIndex, reason, killerIndex)
@@ -1031,17 +1044,24 @@ function Server.ProcessInputs()
                     if buttons & CTRL.LEFT ~= 0 then p.inputMoveX = -1 end
                     if buttons & CTRL.RIGHT ~= 0 then p.inputMoveX = 1 end
 
-                    -- 脉冲按钮（一次性消费）
-                    if buttons & CTRL.JUMP ~= 0 then p.inputJump = true end
-                    if buttons & CTRL.DASH ~= 0 then p.inputDash = true end
-                    if buttons & CTRL.SLAM ~= 0 then p.inputSlam = true end
+                    -- 脉冲按钮（上升沿检测：仅 0→1 跳变时触发，防止 pulse hold 多帧重复触发）
+                    local jumpDown = (buttons & CTRL.JUMP ~= 0)
+                    if jumpDown and not p.wasJumpDown then p.inputJump = true end
+                    p.wasJumpDown = jumpDown
+
+                    local dashDown = (buttons & CTRL.DASH ~= 0)
+                    if dashDown and not p.wasDashDown then p.inputDash = true end
+                    p.wasDashDown = dashDown
+
+                    local explodeReleaseDown = (buttons & CTRL.EXPLODE_RELEASE ~= 0)
+                    if explodeReleaseDown and not p.wasExplodeReleaseDown then
+                        p.inputExplodeRelease = true
+                    end
+                    p.wasExplodeReleaseDown = explodeReleaseDown
 
                     -- 蓄力
                     local chargeDown = (buttons & CTRL.CHARGE ~= 0)
                     if chargeDown then p.inputCharging = true end
-                    if buttons & CTRL.EXPLODE_RELEASE ~= 0 then
-                        p.inputExplodeRelease = true
-                    end
                     p.wasChargingInput = chargeDown
                     break
                 end

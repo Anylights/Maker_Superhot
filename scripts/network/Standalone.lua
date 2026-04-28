@@ -398,7 +398,6 @@ function Standalone.HandlePlayerInput()
 
             if input:GetKeyPress(KEY_SPACE) then p.inputJump = true end
             if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then p.inputDash = true end
-            if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then p.inputSlam = true end
 
             local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
             if leftDown then p.inputCharging = true end

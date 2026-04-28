@@ -8,6 +8,7 @@
 local Config = require("Config")
 local Camera = require("Camera")
 local LevelManager = require("LevelManager")
+local FXDiag = require("FXDiag")
 
 local HUD = {}
 
@@ -372,6 +373,9 @@ function HandleNanoVGRender(eventType, eventData)
         HUD.DrawMatchEnd()
     end
 
+    -- FX 诊断面板（常驻右上角，有消息时自动显示）
+    HUD.DrawFXDiagPanel()
+
     nvgEndFrame(vg_)
 end
 
@@ -416,23 +420,40 @@ function HUD.DrawAnimatedBgPattern(palette)
 
     nvgFillColor(vg_, nvgRGBA(accent[1], accent[2], accent[3], accent[4] or 90))
     local sz = tile * 0.22                        -- 菱形相对小，留出充足间距
-    local r  = sz * 0.4   -- 圆角半径
     local baseRot = math.pi * 0.25                -- 45° = 菱形姿态
 
+    -- 性能优化：预计算旋转 cos/sin，用手动顶点替代 per-tile nvgSave/Translate/Rotate/Restore
+    -- 菱形 = 旋转 45°+spin 的正方形，4 个顶点在旋转后坐标
+    local angle = baseRot + spin
+    local cosA = math.cos(angle)
+    local sinA = math.sin(angle)
+    -- 正方形 4 顶点（局部空间 -sz,-sz 到 sz,sz）
+    local dx1 = -sz * cosA - (-sz) * sinA  -- 左上
+    local dy1 = -sz * sinA + (-sz) * cosA
+    local dx2 =  sz * cosA - (-sz) * sinA  -- 右上
+    local dy2 =  sz * sinA + (-sz) * cosA
+    local dx3 =  sz * cosA -   sz  * sinA  -- 右下
+    local dy3 =  sz * sinA +   sz  * cosA
+    local dx4 = -sz * cosA -   sz  * sinA  -- 左下
+    local dy4 = -sz * sinA +   sz  * cosA
+
+    -- 合并为单路径批量绘制（无圆角，但视觉差异极小——菱形本身很小）
+    nvgBeginPath(vg_)
+    local halfTile = tile * 0.5
     for ri = -2, rows do
+        local rowOdd = (ri % 2 ~= 0) and halfTile or 0
+        local baseY = ri * tile + offY
         for ci = -2, cols do
-            -- 错位栅格：奇数行水平偏移半格
-            local cx = ci * tile + offX + ((ri % 2 ~= 0) and tile * 0.5 or 0)
-            local cy = ri * tile + offY
-            nvgSave(vg_)
-            nvgTranslate(vg_, cx, cy)
-            nvgRotate(vg_, baseRot + spin)        -- 菱形姿态 + 自转
-            nvgBeginPath(vg_)
-            nvgRoundedRect(vg_, -sz, -sz, sz * 2, sz * 2, r)
-            nvgFill(vg_)
-            nvgRestore(vg_)
+            local cx = ci * tile + offX + rowOdd
+            local cy = baseY
+            nvgMoveTo(vg_, cx + dx1, cy + dy1)
+            nvgLineTo(vg_, cx + dx2, cy + dy2)
+            nvgLineTo(vg_, cx + dx3, cy + dy3)
+            nvgLineTo(vg_, cx + dx4, cy + dy4)
+            nvgClosePath(vg_)
         end
     end
+    nvgFill(vg_)
 end
 
 function HUD.DrawBackground()
@@ -1767,6 +1788,59 @@ function HUD.DrawDebugOverlay()
         end
     else
         line("  GetNetLog not available", 255, 100, 100)
+    end
+
+    nvgRestore(vg_)
+end
+
+--- FX 诊断面板（右上角常驻显示，不受 F2 控制）
+--- 显示 FXDiag 环形缓冲区中的诊断消息
+function HUD.DrawFXDiagPanel()
+    local entries = FXDiag.GetEntries()
+    if #entries == 0 then return end
+
+    nvgSave(vg_)
+
+    local panelW = 380
+    local lineH = 14
+    local pad = 6
+    local maxLines = 20
+    local startIdx = math.max(1, #entries - maxLines + 1)
+    local visibleCount = #entries - startIdx + 1
+    local panelH = visibleCount * lineH + pad * 2 + lineH  -- +lineH for title
+    local panelX = logW_ - panelW - 8
+    local panelY = 8
+
+    -- 半透明黑底
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, panelX, panelY, panelW, panelH, 4)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 200))
+    nvgFill(vg_)
+
+    -- 标题
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 13)
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(255, 220, 0, 255))
+    nvgText(vg_, panelX + pad, panelY + pad, "[FX DIAG] " .. #entries .. " msgs")
+
+    -- 日志条目（从最新到最旧）
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 12)
+    local dy = panelY + pad + lineH
+    local now = os.clock()
+    for i = #entries, startIdx, -1 do
+        local e = entries[i]
+        local age = now - e.time
+        local ageStr = string.format("%.1fs", age)
+        -- 超过 30 秒的日志变暗
+        local alpha = age < 30 and 255 or 100
+        local r = math.floor(e.r * alpha / 255)
+        local g = math.floor(e.g * alpha / 255)
+        local b = math.floor(e.b * alpha / 255)
+        nvgFillColor(vg_, nvgRGBA(r, g, b, alpha))
+        nvgText(vg_, panelX + pad, dy, "[" .. ageStr .. "] " .. e.msg)
+        dy = dy + lineH
     end
 
     nvgRestore(vg_)

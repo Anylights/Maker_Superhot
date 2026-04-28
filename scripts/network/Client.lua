@@ -18,6 +18,7 @@ local HUD    = require("HUD")
 local SFX    = require("SFX")
 local BGM    = require("BGM")
 local RandomPickup = require("RandomPickup")
+local FXDiag = require("FXDiag")
 local LevelManager = require("LevelManager")
 local LevelEditor  = require("LevelEditor")
 
@@ -404,10 +405,48 @@ function HandleAssignRole(eventType, eventData)
     -- 从场景中查找已复制的玩家节点并创建 Player 数据
     -- 关键：客户端必须传 skipVisuals=true，让 AttachVisuals 单独以 LOCAL 模式创建视觉子节点
     -- 否则 visual 子节点直接创建在 REPLICATED 父节点下，会与服务端同步冲突导致丢失
+
+    -- 防御性清理：移除旧 Player.list 中残留的 LOCAL 视觉子节点
+    for _, p in ipairs(Player.list) do
+        if p.visualNode then
+            p.visualNode:Remove()
+            p.visualNode = nil
+        end
+    end
+    -- 额外兜底：扫描场景中所有 Player_* 节点，移除残留的 LOCAL Visual 子节点
+    -- （防止 Player.list 已被清空但场景节点仍存在的情况）
+    local sceneChildren = scene_:GetChildren(false)
+    for i = 1, #sceneChildren do
+        local child = sceneChildren[i]
+        local cname = child.name
+        if cname and cname:sub(1, 7) == "Player_" then
+            local vis = child:GetChild("Visual", false)
+            if vis then
+                vis:Remove()
+            end
+        end
+    end
+
+    -- 构建名称→最新节点的映射（按 Node ID 取最大值，确保找到的是服务端最新创建的 REPLICATED 节点）
+    -- 避免 GetChild 在存在新旧同名节点时返回旧节点
+    local latestPlayerNodes = {}
+    for ci = 1, #sceneChildren do
+        local child = sceneChildren[ci]
+        local cname = child.name
+        if cname and cname:sub(1, 7) == "Player_" then
+            local idx = tonumber(cname:sub(8))
+            if idx then
+                local prev = latestPlayerNodes[idx]
+                if not prev or child:GetID() > prev:GetID() then
+                    latestPlayerNodes[idx] = child
+                end
+            end
+        end
+    end
+
     Player.list = {}
     for i = 1, Config.NumPlayers do
-        local nodeName = "Player_" .. i
-        local existingNode = scene_:GetChild(nodeName, true)
+        local existingNode = latestPlayerNodes[i]
         if existingNode then
             local p = Player.Create(i, (i == mySlot_), {
                 existingNode = existingNode,
@@ -426,7 +465,7 @@ function HandleAssignRole(eventType, eventData)
             if i ~= mySlot_ then
                 p.isHuman = false
             end
-            print("[Client] Player " .. nodeName .. " node not yet replicated, created nodeless placeholder (waiting for NodeAdded)")
+            print("[Client] Player_" .. i .. " node not yet replicated, created nodeless placeholder (waiting for NodeAdded)")
         end
     end
 
@@ -439,7 +478,10 @@ function HandleAssignRole(eventType, eventData)
     -- 进入游戏状态
     clientState_ = "playing"
     -- StartMatch 内部会调用 StartRound → Map.Build + Pickup.Reset + RandomPickup.Reset
-    GameManager.StartMatch()
+    local ok, err = pcall(GameManager.StartMatch)
+    if not ok then
+        print("[Client] ERROR in GameManager.StartMatch(): " .. tostring(err))
+    end
 
     print("[Client] Game started, I am player " .. mySlot_)
 end
@@ -579,7 +621,10 @@ function HandleGameState(eventType, eventData)
             -- 调用 StartRound 重置所有子系统 + 初始化 intro 动画状态
             -- （introPhase_、introTextAlpha_ 等局部变量必须通过 StartRound 重置）
             -- StartRound 内部会 SetState(INTRO)，round 会被 +1（随后被服务端值覆盖）
-            GameManager.StartRound()
+            local ok2, err2 = pcall(GameManager.StartRound)
+            if not ok2 then
+                print("[Client] ERROR in StartRound: " .. tostring(err2))
+            end
             -- StartRound 已经设置了 Camera.SetFixedForMap，不需要额外处理
         else
             GameManager.SetState(serverState)
@@ -596,6 +641,13 @@ function HandleGameState(eventType, eventData)
     if serverState == GameManager.STATE_MENU then
         clientState_ = "menu"
         mySlot_ = 0
+        -- 主动清理 LOCAL 视觉子节点，避免依赖 REPLICATED 级联删除的时序
+        for _, p in ipairs(Player.list) do
+            if p.visualNode then
+                p.visualNode:Remove()
+                p.visualNode = nil
+            end
+        end
         Player.list = {}
         Map.Clear()
     end
@@ -642,20 +694,25 @@ function HandleKillEvent(eventType, eventData)
 end
 
 function HandleExplodeSync(eventType, eventData)
+    FXDiag.Log("EXPLODE_SYNC recv, state=" .. tostring(clientState_), 0, 255, 128)
     if clientState_ ~= "playing" then return end
     local playerIndex = eventData["PlayerIndex"]:GetInt()
     local centerGX = eventData["CenterGX"]:GetFloat()
     local centerGY = eventData["CenterGY"]:GetFloat()
     local radius = eventData["Radius"]:GetFloat()
+    FXDiag.Log("EXPLODE: p=" .. playerIndex .. " gx=" .. string.format("%.1f", centerGX)
+        .. " gy=" .. string.format("%.1f", centerGY) .. " r=" .. string.format("%.1f", radius), 0, 255, 128)
 
     Player.HandleRemoteExplode(playerIndex, centerGX, centerGY, radius)
 end
 
 function HandlePlayerDeath(eventType, eventData)
+    FXDiag.Log("DEATH_SYNC recv, state=" .. tostring(clientState_), 255, 180, 0)
     if clientState_ ~= "playing" then return end
     local playerIndex = eventData["PlayerIndex"]:GetInt()
     local reason = eventData["Reason"]:GetString()
     local killerIndex = eventData["KillerIndex"]:GetInt()
+    FXDiag.Log("DEATH: p=" .. playerIndex .. " reason=" .. reason .. " killer=" .. killerIndex, 255, 180, 0)
 
     Player.ClientDeath(playerIndex, reason, killerIndex)
 end
@@ -689,9 +746,6 @@ function Client.CollectInput()
     if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then
         buttons = buttons | CTRL.DASH
     end
-    if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then
-        buttons = buttons | CTRL.SLAM
-    end
     if input:GetMouseButtonDown(MOUSEB_LEFT) then
         buttons = buttons | CTRL.CHARGE
     end
@@ -711,14 +765,18 @@ end
 
 -- 左键追踪（用于检测松开事件）
 local wasLeftDown_ = false
--- 脉冲按钮 latch：按下后保持若干帧，确保通过网络节流后仍被服务端读取
--- SetPulseButtonMask 会保证服务端侧只消费一次，所以多帧重复发送是安全的
-local jumpLatchFrames_ = 0
-local dashLatchFrames_ = 0
-local explodeLatchFrames_ = 0
-local slamLatchFrames_ = 0
--- 网络帧率已对齐 60Hz，仅需 2 帧冗余以应对偶发抖动
-local PULSE_LATCH_FRAMES = 2
+
+-- 【脉冲按钮累积机制】
+-- 问题：GetKeyPress 仅产生 1 帧脉冲，但网络发送不一定在该帧。
+-- 如果 controls.buttons 每帧直接赋值，脉冲可能在发送前被 0 覆盖。
+-- SetPulseButtonMask 只在发送时做 current XOR lastSent 比较，
+-- 无法追踪帧间 0→1→0 瞬态。
+--
+-- 解决：每个脉冲位独立保持 PULSE_HOLD_FRAMES 帧，保证至少覆盖一个网络 tick。
+-- 服务端 jumpCooldown=100ms 防止保持期内重复触发。
+local PULSE_HOLD_FRAMES = 2
+---@type table<integer, integer>  -- bit → remaining frames
+local pulseHold_ = {}
 
 -- 网络发送频率统计（每秒采样一次）
 local netSendCount_ = 0
@@ -730,63 +788,52 @@ function Client.CollectInputAdvanced()
     if clientState_ ~= "playing" then return end
     if not GameManager.CanPlayersMove() then
         serverConnection_.controls.buttons = 0
-        jumpLatchFrames_ = 0
-        dashLatchFrames_ = 0
-        explodeLatchFrames_ = 0
-        slamLatchFrames_ = 0
+        -- 不可移动时也要衰减脉冲计数器，避免恢复移动后残留脉冲
+        for bit, frames in pairs(pulseHold_) do
+            if frames > 0 then pulseHold_[bit] = frames - 1
+            else pulseHold_[bit] = nil end
+        end
         return
     end
 
-    local buttons = 0
-
+    -- ── 1. 持续按钮：每帧直接读取状态 ──
+    local continuous = 0
     if input:GetKeyDown(KEY_A) or input:GetKeyDown(KEY_LEFT) then
-        buttons = buttons | CTRL.LEFT
+        continuous = continuous | CTRL.LEFT
     end
     if input:GetKeyDown(KEY_D) or input:GetKeyDown(KEY_RIGHT) then
-        buttons = buttons | CTRL.RIGHT
+        continuous = continuous | CTRL.RIGHT
     end
-
-    -- 跳跃：按下时启动 latch，持续若干帧
-    if input:GetKeyPress(KEY_SPACE) then
-        jumpLatchFrames_ = PULSE_LATCH_FRAMES
-    end
-    if jumpLatchFrames_ > 0 then
-        buttons = buttons | CTRL.JUMP
-        jumpLatchFrames_ = jumpLatchFrames_ - 1
-    end
-
-    -- 闪避
-    if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then
-        dashLatchFrames_ = PULSE_LATCH_FRAMES
-    end
-    if dashLatchFrames_ > 0 then
-        buttons = buttons | CTRL.DASH
-        dashLatchFrames_ = dashLatchFrames_ - 1
-    end
-
-    -- 下砸
-    if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then
-        slamLatchFrames_ = PULSE_LATCH_FRAMES
-    end
-    if slamLatchFrames_ > 0 then
-        buttons = buttons | CTRL.SLAM
-        slamLatchFrames_ = slamLatchFrames_ - 1
-    end
-
     local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
     if leftDown then
-        buttons = buttons | CTRL.CHARGE
+        continuous = continuous | CTRL.CHARGE
+    end
+
+    -- ── 2. 脉冲按钮：累积新按下，独立保持 PULSE_HOLD_FRAMES 帧 ──
+    if input:GetKeyPress(KEY_SPACE) then
+        pulseHold_[CTRL.JUMP] = PULSE_HOLD_FRAMES
+    end
+    if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then
+        pulseHold_[CTRL.DASH] = PULSE_HOLD_FRAMES
     end
     if wasLeftDown_ and not leftDown then
-        explodeLatchFrames_ = PULSE_LATCH_FRAMES
-    end
-    if explodeLatchFrames_ > 0 then
-        buttons = buttons | CTRL.EXPLODE_RELEASE
-        explodeLatchFrames_ = explodeLatchFrames_ - 1
+        pulseHold_[CTRL.EXPLODE_RELEASE] = PULSE_HOLD_FRAMES
     end
     wasLeftDown_ = leftDown
 
-    serverConnection_.controls.buttons = buttons
+    -- 构建脉冲位并衰减计数器
+    local pulse = 0
+    for bit, frames in pairs(pulseHold_) do
+        if frames > 0 then
+            pulse = pulse | bit
+            pulseHold_[bit] = frames - 1
+        else
+            pulseHold_[bit] = nil
+        end
+    end
+
+    -- ── 3. 合并写入 controls ──
+    serverConnection_.controls.buttons = continuous | pulse
 
     -- 网络发送频率统计：每次 controls 写入都计为一次"潜在网络帧"
     -- 使用引擎 wall-clock 时间（os.clock 在 WASM 下不可靠）

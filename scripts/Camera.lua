@@ -58,6 +58,9 @@ function Camera.Init(scene)
     print("[Camera] Initialized orthographic side-view camera")
 end
 
+-- 调试：每2秒打印一次相机状态
+local dbgTimer_ = 0
+
 --- 每帧更新：根据玩家位置调整相机
 ---@param dt number
 ---@param playerPositions table
@@ -65,6 +68,19 @@ end
 function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
     if Camera.manualMode then return end
+
+    -- 调试日志：每2秒打印一次核心状态
+    dbgTimer_ = dbgTimer_ + dt
+    if dbgTimer_ >= 2.0 then
+        dbgTimer_ = 0
+        local posCount = playerPositions and #playerPositions or 0
+        local hasHuman = humanPos ~= nil
+        print("[Camera.Update] fixedMode=" .. tostring(Camera.fixedMode)
+            .. " animating=" .. tostring(animating_)
+            .. " positions=" .. posCount
+            .. " humanPos=" .. tostring(hasHuman)
+            .. " center=(" .. string.format("%.1f,%.1f", currentCenter_.x, currentCenter_.y) .. ")")
+    end
 
     -- intro 动画期间由 GameManager 完全控制相机，跳过自动逻辑
     if animating_ then return end
@@ -292,18 +308,15 @@ function Camera.SetFixedForMap(mapWidth, mapHeight, padding)
     local orthoFromH = totalH
     local ortho = math.max(orthoFromW, orthoFromH)
 
-    -- 如果 current 和 target 距离很远（首次进入或跨地图），直接设置 current 避免长时间漂移
-    local dx = cx - currentCenter_.x
-    local dy = cy - currentCenter_.y
-    local dist = math.sqrt(dx * dx + dy * dy)
-    if dist > 20.0 then
-        -- 距离过远，直接跳到目标附近（保留少量偏移让 lerp 有微小平滑感）
-        Camera.SetImmediate(Vector3(cx, cy, 0), ortho)
-    else
-        -- 正常距离，只设 target 让 lerp 平滑过渡
-        targetCenter_ = Vector3(cx, cy, 0)
-        targetOrtho_ = ortho
+    targetCenter_ = Vector3(cx, cy, 0)
+    targetOrtho_ = ortho
+
+    -- 距离较大时直接跳到目标位置，避免从左下角缓慢滑过去
+    local dist = (targetCenter_ - currentCenter_):Length()
+    if dist > 20 then
+        Camera.SetImmediate(targetCenter_, ortho)
     end
+
     print("[Camera] Fixed mode: center=(" .. string.format("%.1f,%.1f", cx, cy) ..
           ") ortho=" .. string.format("%.1f", ortho) ..
           " map=" .. mapWidth .. "x" .. mapHeight)
@@ -400,7 +413,13 @@ end
 --- currentCenter_ 保持当前值，lerp 自然平滑过渡到玩家跟随位置
 function Camera.ReleaseFixed()
     Camera.fixedMode = false
-    print("[Camera] Fixed mode released")
+    -- 防止 animating_ 卡住导致 Update 永远跳过跟随逻辑
+    if animating_ then
+        animating_ = false
+        print("[Camera] Fixed mode released (also stopped stuck animation)")
+    else
+        print("[Camera] Fixed mode released")
+    end
 end
 
 --- 屏幕逻辑坐标 → 世界坐标（WorldToScreen 的逆变换）

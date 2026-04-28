@@ -39,7 +39,10 @@ end
 function HandleUpdate(eventType, eventData)
     if Module and Module.HandleUpdate then
         local dt = eventData["TimeStep"]:GetFloat()
-        Module.HandleUpdate(dt)
+        local ok, err = pcall(Module.HandleUpdate, dt)
+        if not ok then
+            print("[FATAL:Update] " .. tostring(err))
+        end
     end
 end
 
@@ -48,6 +51,9 @@ end
 function HandlePostUpdate(eventType, eventData)
     if Module and Module.HandlePostUpdate then
         local dt = eventData["TimeStep"]:GetFloat()
-        Module.HandlePostUpdate(dt)
+        local ok, err = pcall(Module.HandlePostUpdate, dt)
+        if not ok then
+            print("[FATAL:PostUpdate] " .. tostring(err))
+        end
     end
 end

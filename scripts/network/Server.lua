@@ -80,10 +80,16 @@ function Server.Start()
     graphics.windowTitle = Config.Title .. " [Server]"
     print("=== " .. Config.Title .. " (Server) ===")
 
-    -- 将网络帧率提升到 60Hz，与渲染帧率对齐，消除输入延迟与卡顿
-    network:SetUpdateFps(60)
+    -- 网络发送频率与服务器实际 tick rate 对齐
+    -- SERVER_TICK_RATE 由框架注入，代表服务器实际物理/逻辑更新频率
+    -- 如果 SetUpdateFps > SERVER_TICK_RATE，多出的网络包只是重复发送相同位置数据（浪费带宽）
+    -- 如果 SetUpdateFps < SERVER_TICK_RATE，物理步进间的位置更新会被跳过（增大延迟）
+    ---@diagnostic disable-next-line: undefined-global
+    local serverTickRate = SERVER_TICK_RATE or 60
+    network:SetUpdateFps(serverTickRate)
+    print("[Server] network:SetUpdateFps(" .. serverTickRate .. ") — aligned with SERVER_TICK_RATE")
 
-    -- [DIAG] 输出实际服务器 tick rate（框架注入的全局变量）
+    -- [DIAG] 输出服务器配置信息
     ---@diagnostic disable-next-line: undefined-global
     print("[Server.DIAG] SERVER_TICK_RATE = " .. tostring(SERVER_TICK_RATE or "nil"))
     ---@diagnostic disable-next-line: undefined-global
@@ -150,6 +156,9 @@ function Server.CreateScene()
 
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
+    -- 禁用服务端物理插值：确保发送给客户端的是干净的物理步进位置，
+    -- 而非 Bullet 在渲染帧间插值的中间态（中间态会导致客户端抖动）
+    physicsWorld.interpolation = false
 
     -- 死亡区域（服务端独有 LOCAL，不复制到客户端）
     local deathZone = scene_:CreateChild("DeathZone", LOCAL)

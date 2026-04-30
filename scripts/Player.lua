@@ -2087,11 +2087,21 @@ function Player.UpdateOneClient(p, dt)
         end
         p.prevPosition = Vector3(curPos.x, curPos.y, curPos.z)
 
-        -- [已禁用] 外推偏移应用：降低 smoothingConstant 后插值已铺满 tick 间隔，
-        -- 外推反而引入回弹抖动（速度来自衰减曲线而非真实角色速度）。
-        -- 保留跟踪变量(extrapOffX/Y)用于诊断日志。
+        -- 受限外推偏移应用：在 SmoothedTransform 追上目标后、下一个服务端数据到达前，
+        -- 用上一次观测到的速度做短距离外推，防止角色完全停住。
+        -- 配合 smoothingConstant=25.0，插值跨 4-5 帧 + 外推最多 2 帧 ≈ 覆盖一个 tick 间隔。
+        -- 衰减因子 0.8 防止累积过大偏移导致回弹。
         if p.visualNode then
-            p.visualNode.position = Vector3(0, 0, 0)
+            if p.extrapStillFrames and p.extrapStillFrames > 0
+               and p.extrapStillFrames <= 2 and p.extrapOffX then
+                p.visualNode.position = Vector3(
+                    p.extrapOffX * 0.8,
+                    p.extrapOffY * 0.8,
+                    0
+                )
+            else
+                p.visualNode.position = Vector3(0, 0, 0)
+            end
         end
     end
 

@@ -130,7 +130,9 @@ function Client.Start()
     graphics.windowTitle = Config.Title
     print("=== " .. Config.Title .. " (Client) ===")
 
-    -- 将网络帧率提升到 60Hz，与渲染帧率对齐，消除输入延迟与卡顿
+    -- 客户端网络发送频率：设为 60Hz 确保输入信号及时送达
+    -- 客户端发送的是 controls（按钮状态），数据量极小，60Hz 不会造成带宽压力
+    -- 高频发送可减少输入延迟（服务端越早收到输入越好）
     network:SetUpdateFps(60)
 
     -- 创建场景
@@ -232,8 +234,9 @@ function Client.CreateScene()
     -- SmoothedTransform 指数衰减速率调优（默认 50.0）：
     -- 50.0 → 2-3帧追完，产生 stop-start 卡顿
     -- 15.0 → 跨多 tick 收敛，运动曲线严重失真（跳跃绵软、方向迟滞）
-    -- 40.0 → 1 tick(3帧)后剩余~25%，落地更锐利，尾部仍有余量防停顿
-    scene_.smoothingConstant = 40.0
+    -- 40.0 → 1 tick(3帧)后剩余~25%，落地更锐利，但如果 tick rate < 60 仍有停顿
+    -- 25.0 → 跨 ~4-5 帧衰减到 ~10%，在 20-30 tick rate 下铺满更多帧，减少 stop-start
+    scene_.smoothingConstant = 25.0
     scene_:CreateComponent("Octree")
     scene_:CreateComponent("DebugRenderer", LOCAL)
 

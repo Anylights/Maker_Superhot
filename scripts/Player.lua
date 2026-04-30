@@ -1636,8 +1636,16 @@ function Player.Respawn(p)
     p.dashRoll = 0
     p.prevVelY = 0
     p.hitWallX = 0
+    -- 重置客户端视觉外推状态
+    p.extrapVelX = 0
+    p.extrapVelY = 0
+    p.extrapOffX = 0
+    p.extrapOffY = 0
+    p.extrapStillFrames = 0
+    p.prevPosition = nil
     if p.visualNode then
         p.visualNode.scale = Vector3(0.9, 0.9, 0.9)
+        p.visualNode.position = Vector3(0, 0, 0)
         p.visualNode.rotation = Quaternion.IDENTITY
         p.visualNode.enabled = true
     end
@@ -1698,8 +1706,16 @@ function Player.ResetAll()
         p.dashRoll = 0
         p.prevVelY = 0
         p.hitWallX = 0
+        -- 重置客户端视觉外推状态
+        p.extrapVelX = 0
+        p.extrapVelY = 0
+        p.extrapOffX = 0
+        p.extrapOffY = 0
+        p.extrapStillFrames = 0
+        p.prevPosition = nil
         if p.visualNode then
             p.visualNode.scale = Vector3(0.9, 0.9, 0.9)
+            p.visualNode.position = Vector3(0, 0, 0)
             p.visualNode.rotation = Quaternion.IDENTITY
             p.visualNode.enabled = true
         end
@@ -1842,12 +1858,16 @@ function Player.UpdateOneClient(p, dt)
         if p.multiKillTimer <= 0 then p.multiKillCount = 0 end
     end
 
-    -- 面朝方向（客户端无物理体，从位置变化推断）
+    -- 面朝方向 + 客户端视觉外推（解决 20 FPS tick rate 导致的卡顿）
+    -- 原理：服务器 20 FPS → SmoothedTransform 在几帧内追上目标 → 剩余帧位置静止
+    -- 解决：在静止帧中，用保存的速度外推 visualNode 的本地位置偏移
     if p.node and p.node.enabled then
         local curPos = p.node.position
         if p.prevPosition then
             local dx = curPos.x - p.prevPosition.x
             local dy = curPos.y - p.prevPosition.y
+            local moved = (math.abs(dx) > 0.0001 or math.abs(dy) > 0.0001)
+
             -- 用位置差值推断水平方向
             if dx > 0.02 then p.lastFaceDir = 1
             elseif dx < -0.02 then p.lastFaceDir = -1 end
@@ -1857,12 +1877,48 @@ function Player.UpdateOneClient(p, dt)
             else
                 p.inputMoveX = 0
             end
-            -- 垂直速度估算（保留供其他视觉用，squash 由 UpdateVisualEffects 自行估算）
+            -- 垂直速度估算
             if dt > 0 then
                 p.prevVelY = dy / dt
             end
+
+            -- === 客户端视觉外推 ===
+            if moved then
+                -- 节点位置变了（SmoothedTransform 在插值或收到新数据）
+                -- 记录当前速度，重置视觉偏移
+                if dt > 0 then
+                    p.extrapVelX = dx / dt
+                    p.extrapVelY = dy / dt
+                end
+                p.extrapOffX = 0
+                p.extrapOffY = 0
+                p.extrapStillFrames = 0
+            else
+                -- 节点位置没变（SmoothedTransform 已追上，等待下次服务器数据）
+                -- 用保存的速度外推视觉位置
+                p.extrapStillFrames = (p.extrapStillFrames or 0) + 1
+                -- 最多外推 3 帧（~50ms），防止过度预测导致回弹
+                if p.extrapStillFrames <= 3 and p.extrapVelX then
+                    p.extrapOffX = (p.extrapOffX or 0) + p.extrapVelX * dt
+                    p.extrapOffY = (p.extrapOffY or 0) + p.extrapVelY * dt
+                end
+            end
+        else
+            -- 第一帧，初始化
+            p.extrapVelX = 0
+            p.extrapVelY = 0
+            p.extrapOffX = 0
+            p.extrapOffY = 0
+            p.extrapStillFrames = 0
         end
         p.prevPosition = Vector3(curPos.x, curPos.y, curPos.z)
+
+        -- [已禁用] 外推偏移应用：降低 smoothingConstant 后插值已铺满 tick 间隔，
+        -- 外推反而引入回弹抖动（速度来自衰减曲线而非真实角色速度）。
+        -- 保留跟踪变量(extrapOffX/Y)用于诊断日志。
+        if p.visualNode then
+            p.visualNode.position = Vector3(0, 0, 0)
+        end
     end
 
     -- 视觉动效（squash & stretch、眼睛动画）

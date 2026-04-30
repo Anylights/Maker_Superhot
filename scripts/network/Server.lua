@@ -83,6 +83,14 @@ function Server.Start()
     -- 将网络帧率提升到 60Hz，与渲染帧率对齐，消除输入延迟与卡顿
     network:SetUpdateFps(60)
 
+    -- [DIAG] 输出实际服务器 tick rate（框架注入的全局变量）
+    ---@diagnostic disable-next-line: undefined-global
+    print("[Server.DIAG] SERVER_TICK_RATE = " .. tostring(SERVER_TICK_RATE or "nil"))
+    ---@diagnostic disable-next-line: undefined-global
+    print("[Server.DIAG] SERVER_MAX_PLAYERS = " .. tostring(SERVER_MAX_PLAYERS or "nil"))
+    ---@diagnostic disable-next-line: undefined-global
+    print("[Server.DIAG] SERVER_MODE = " .. tostring(SERVER_MODE or "nil"))
+
     -- 创建场景
     Server.CreateScene()
 

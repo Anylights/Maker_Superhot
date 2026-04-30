@@ -229,6 +229,11 @@ end
 
 function Client.CreateScene()
     scene_ = Scene()
+    -- SmoothedTransform 指数衰减速率调优（默认 50.0）：
+    -- 50.0 → 2-3帧追完，产生 stop-start 卡顿
+    -- 15.0 → 跨多 tick 收敛，运动曲线严重失真（跳跃绵软、方向迟滞）
+    -- 40.0 → 1 tick(3帧)后剩余~25%，落地更锐利，尾部仍有余量防停顿
+    scene_.smoothingConstant = 40.0
     scene_:CreateComponent("Octree")
     scene_:CreateComponent("DebugRenderer", LOCAL)
 

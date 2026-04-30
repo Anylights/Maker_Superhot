@@ -61,6 +61,13 @@ end
 -- 调试：每2秒打印一次相机状态
 local dbgTimer_ = 0
 
+-- [DIAG] 位置变化跟踪：检测 REPLICATED 节点位置更新频率
+local diagTimer_ = 0
+local diagLastHumanPos_ = nil
+local diagPosChangeCount_ = 0    -- 人类玩家位置变化次数
+local diagTotalFrames_ = 0       -- 总帧数
+local diagStillFrames_ = 0       -- 位置完全不变的帧数
+
 --- 每帧更新：根据玩家位置调整相机
 ---@param dt number
 ---@param playerPositions table
@@ -68,6 +75,34 @@ local dbgTimer_ = 0
 function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
     if Camera.manualMode then return end
+
+    -- [DIAG] 统计人类玩家位置变化频率
+    diagTotalFrames_ = diagTotalFrames_ + 1
+    if humanPos then
+        if diagLastHumanPos_ then
+            local dx = math.abs(humanPos.x - diagLastHumanPos_.x)
+            local dy = math.abs(humanPos.y - diagLastHumanPos_.y)
+            if dx > 0.0001 or dy > 0.0001 then
+                diagPosChangeCount_ = diagPosChangeCount_ + 1
+            else
+                diagStillFrames_ = diagStillFrames_ + 1
+            end
+        end
+        diagLastHumanPos_ = Vector3(humanPos.x, humanPos.y, humanPos.z)
+    end
+
+    diagTimer_ = diagTimer_ + dt
+    if diagTimer_ >= 3.0 then
+        local fps = diagTotalFrames_ / diagTimer_
+        local changeRate = diagPosChangeCount_ / diagTimer_
+        local stillPct = (diagTotalFrames_ > 0) and (diagStillFrames_ / diagTotalFrames_ * 100) or 0
+        print(string.format("[Camera.DIAG] %.0f FPS | pos changes: %d (%.1f/s) | still frames: %d (%.0f%%)",
+            fps, diagPosChangeCount_, changeRate, diagStillFrames_, stillPct))
+        diagTimer_ = 0
+        diagPosChangeCount_ = 0
+        diagTotalFrames_ = 0
+        diagStillFrames_ = 0
+    end
 
     -- 调试日志：每2秒打印一次核心状态
     dbgTimer_ = dbgTimer_ + dt

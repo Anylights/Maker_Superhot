@@ -1924,11 +1924,11 @@ end
 
 --- 主菜单界面
 function HUD.DrawMenu()
-    -- 清爽青蓝色调：底色单一柔和，菱形仅有微弱明度差
+    -- 偏红暖色调：深红渐变底色，菱形略亮
     HUD.DrawAnimatedBgPattern({
-        bgTop    = { 86, 130, 168 },
-        bgBottom = { 64, 104, 142 },
-        accent   = { 102, 148, 184, 90 },  -- 比底色略亮
+        bgTop    = { 168, 72, 72 },
+        bgBottom = { 132, 48, 56 },
+        accent   = { 188, 96, 92, 90 },  -- 比底色略亮
     })
     local t = os.clock()
 

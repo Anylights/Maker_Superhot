@@ -938,6 +938,7 @@ function Server.BroadcastGameState()
     local data = VariantMap()
     data["State"] = Variant(GameManager.state)
     data["Round"] = Variant(GameManager.round)
+    data["NumRounds"] = Variant(Config.NumRounds)
     data["RoundTimer"] = Variant(GameManager.GetRoundTime())
     data["CountdownTimer"] = Variant(GameManager.stateTimer)
 

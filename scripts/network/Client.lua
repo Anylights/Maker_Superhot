@@ -619,6 +619,12 @@ function HandleGameState(eventType, eventData)
 
     GameManager.round = round
 
+    -- 同步总回合数（服务端权威）
+    local numRoundsVar = eventData["NumRounds"]
+    if numRoundsVar then
+        GameManager.numRounds = numRoundsVar:GetInt()
+    end
+
     -- 同步状态（如果变化了）
     if serverState ~= GameManager.state then
         -- 新回合开始：服务端进入 INTRO，客户端也需要重置地图/玩家/道具

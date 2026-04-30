@@ -431,7 +431,46 @@ function Player.UpdateOne(p, dt)
     end
 
     if p.finished then
-        -- 已完成，不再更新移动
+        -- 已到达终点：庆祝动画（原地跳跃 + 翻转 + 礼花粒子）
+        p.celebrationTimer = (p.celebrationTimer or 0) + dt
+
+        -- 锁定水平速度，只保留垂直
+        if p.body then
+            local vel = p.body.linearVelocity
+            p.body.linearVelocity = Vector3(0, vel.y, 0)
+
+            -- 地面检测：着地后定时起跳
+            if p.onGround then
+                if p.celebrationTimer >= Config.CelebrationJumpInterval then
+                    p.celebrationTimer = 0
+                    p.body.linearVelocity = Vector3(0, Config.CelebrationJumpSpeed, 0)
+                    if networkMode_ ~= "server" then
+                        SFX.Play("jump", 0.3)
+                    end
+                end
+            end
+        end
+
+        -- 持续翻转（通过 dashRoll 驱动视觉旋转）
+        p.dashRoll = p.dashRoll + Config.CelebrationFlipSpeed * dt * p.lastFaceDir
+
+        -- 首次到达终点时生成礼花（只生成一次）
+        if not p.celebrationFXSpawned then
+            p.celebrationFXSpawned = true
+            if networkMode_ ~= "server" and p.node then
+                Player.SpawnFireworkFX(p.node.position, p.index)
+                SFX.Play("explosion", 0.5)
+            end
+        end
+
+        -- 碰撞状态仍需重置
+        p.wasOnGround = p.onGround
+        p.onGround = false
+        p.hitCeiling = false
+        p.hitWallX = 0
+
+        -- 视觉动效（squash & stretch + 旋转 + 眼睛）
+        Player.UpdateVisualEffects(p, dt)
         return
     end
 
@@ -591,6 +630,11 @@ function Player.UpdateOne(p, dt)
     if networkMode_ ~= "client" then
         if p.node and MapData.IsAtFinish(p.node.position.x, p.node.position.y) then
             p.finished = true
+            p.celebrationTimer = 0  -- 初始化庆祝计时器
+            -- 立刻停住玩家
+            if p.body then
+                p.body.linearVelocity = Vector3.ZERO
+            end
             print("[Player] Player " .. p.index .. " reached the finish!")
         end
     end
@@ -1318,6 +1362,112 @@ function Player.SpawnExplosionFX(pos, playerIndex)
 end
 
 -- ============================================================================
+-- 礼花粒子特效（终点庆祝）
+-- ============================================================================
+
+--- 生成礼花粒子特效（终点庆祝用）
+---@param pos Vector3 玩家到达终点的位置
+---@param playerIndex number 玩家编号（用于颜色）
+function Player.SpawnFireworkFX(pos, playerIndex)
+    if scene_ == nil then return end
+
+    local color = Config.PlayerColors[playerIndex]
+    local r, g, b = color.r, color.g, color.b
+
+    -- === 第 1 层：向上喷射的彩色碎纸屑 ===
+    local fxNode = scene_:CreateChild("FireworkFX", LOCAL)
+    fxNode.position = Vector3(pos.x, pos.y + 0.5, -0.5)
+
+    local effect = ParticleEffect:new()
+    local mat = Material:new()
+    mat:SetTechnique(0, particleUnlitTechnique_)
+    mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
+    effect:SetMaterial(mat)
+
+    effect:SetNumParticles(80)
+    effect:SetEmitterType(EMITTER_SPHERE)
+    effect:SetEmitterSize(Vector3(0.3, 0.1, 0.3))
+
+    -- 主要向上喷射
+    effect:SetMinDirection(Vector3(-0.8, 0.5, -0.1))
+    effect:SetMaxDirection(Vector3(0.8, 1.0, 0.1))
+    effect:SetMinVelocity(5.0)
+    effect:SetMaxVelocity(12.0)
+    effect:SetDampingForce(1.5)
+    effect:SetConstantForce(Vector3(0, -8, 0))  -- 重力让碎纸屑飘落
+
+    effect:SetMinParticleSize(Vector2(0.08, 0.08))
+    effect:SetMaxParticleSize(Vector2(0.2, 0.2))
+
+    effect:SetMinTimeToLive(0.6)
+    effect:SetMaxTimeToLive(1.5)
+
+    effect:SetMinRotationSpeed(-300)
+    effect:SetMaxRotationSpeed(300)
+
+    effect:SetMinEmissionRate(150)
+    effect:SetMaxEmissionRate(250)
+    effect:SetActiveTime(0.3)
+    effect:SetInactiveTime(999)
+
+    -- 颜色渐变：明亮闪光 → 玩家色 → 渐隐
+    effect:SetNumColorFrames(3)
+    effect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.5, 1.0), 0.0))
+    effect:SetColorFrame(1, ColorFrame(Color(r, g, b, 0.9), 0.3))
+    effect:SetColorFrame(2, ColorFrame(Color(r * 0.3, g * 0.3, b * 0.3, 0.0), 1.0))
+
+    local emitter = fxNode:CreateComponent("ParticleEmitter")
+    emitter.effect = effect
+    emitter.emitting = true
+    emitter.autoRemoveMode = REMOVE_NODE
+
+    -- === 第 2 层：金色星光点缀 ===
+    local starNode = scene_:CreateChild("FireworkStars", LOCAL)
+    starNode.position = Vector3(pos.x, pos.y + 0.5, -0.4)
+
+    local starEffect = ParticleEffect:new()
+    local starMat = Material:new()
+    starMat:SetTechnique(0, particleUnlitTechnique_)
+    starMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.9, 0.3, 1.0)))
+    starEffect:SetMaterial(starMat)
+
+    starEffect:SetNumParticles(30)
+    starEffect:SetEmitterType(EMITTER_SPHERE)
+    starEffect:SetEmitterSize(Vector3(0.2, 0.1, 0.1))
+
+    starEffect:SetMinDirection(Vector3(-1, 0.3, -0.05))
+    starEffect:SetMaxDirection(Vector3(1, 1.5, 0.05))
+    starEffect:SetMinVelocity(4.0)
+    starEffect:SetMaxVelocity(10.0)
+    starEffect:SetDampingForce(2.0)
+    starEffect:SetConstantForce(Vector3(0, -5, 0))
+
+    starEffect:SetMinParticleSize(Vector2(0.03, 0.03))
+    starEffect:SetMaxParticleSize(Vector2(0.08, 0.08))
+
+    starEffect:SetMinTimeToLive(0.5)
+    starEffect:SetMaxTimeToLive(1.2)
+
+    starEffect:SetMinRotationSpeed(-400)
+    starEffect:SetMaxRotationSpeed(400)
+
+    starEffect:SetMinEmissionRate(100)
+    starEffect:SetMaxEmissionRate(150)
+    starEffect:SetActiveTime(0.25)
+    starEffect:SetInactiveTime(999)
+
+    starEffect:SetNumColorFrames(3)
+    starEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.8, 1.0), 0.0))
+    starEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.85, 0.2, 0.8), 0.3))
+    starEffect:SetColorFrame(2, ColorFrame(Color(1.0, 0.5, 0.0, 0.0), 1.0))
+
+    local starEmitter = starNode:CreateComponent("ParticleEmitter")
+    starEmitter.effect = starEffect
+    starEmitter.emitting = true
+    starEmitter.autoRemoveMode = REMOVE_NODE
+end
+
+-- ============================================================================
 -- 死亡与重生
 -- ============================================================================
 
@@ -1340,6 +1490,7 @@ Player.onDeath = nil
 function Player.Kill(p, reason, killerIndex)
     if not p.alive then return end
     if p.invincibleTimer > 0 then return end
+    if p.finished then return end  -- 到达终点后无敌
 
     p.alive = false
     p.respawnTimer = Config.RespawnDelay
@@ -1670,6 +1821,8 @@ function Player.ResetAll()
         p.alive = true
         p.finished = false
         p.finishOrder = 0
+        p.celebrationTimer = 0
+        p.celebrationFXSpawned = false
         p.kills = 0
         p.killStreak = 0
         p.multiKillCount = 0
@@ -1810,7 +1963,28 @@ function Player.UpdateOneClient(p, dt)
         return
     end
 
-    if p.finished then return end
+    if p.finished then
+        -- 客户端庆祝动画：翻转 + 礼花
+        p.celebrationTimer = (p.celebrationTimer or 0) + dt
+        p.dashRoll = p.dashRoll + Config.CelebrationFlipSpeed * dt * p.lastFaceDir
+
+        -- 首次到达终点时生成礼花（只生成一次）
+        if not p.celebrationFXSpawned then
+            p.celebrationFXSpawned = true
+            if p.node then
+                Player.SpawnFireworkFX(p.node.position, p.index)
+                SFX.Play("explosion", 0.5)
+            end
+        end
+
+        -- 视觉动效
+        Player.UpdateVisualEffects(p, dt)
+        p.wasOnGround = p.onGround
+        p.onGround = false
+        p.hitCeiling = false
+        p.hitWallX = 0
+        return
+    end
 
     -- 无敌闪烁
     if p.invincibleTimer > 0 then

@@ -28,6 +28,7 @@ GameManager.stateTimer = 0
 
 -- 比赛数据
 GameManager.round = 1
+GameManager.numRounds = Config.NumRounds  -- 总回合数（客户端会被服务端覆盖）
 GameManager.roundTimer = 0
 GameManager.scores = { 0, 0, 0, 0 }
 GameManager.finishCount = 0      -- 当前回合已到达终点的人数
@@ -297,31 +298,47 @@ function GameManager.UpdateIntro(dt)
             introPhase_ = 2
             introPhaseTimer_ = Config.IntroPanToSpawnTime
 
-            -- 计算所有出生点的中心
-            local sx, sy = 0, 0
+            -- 计算所有出生点的包围盒，动态确定相机范围
+            local minX, maxX = math.huge, -math.huge
+            local minY, maxY = math.huge, -math.huge
             local count = 0
             for i = 1, Config.NumPlayers do
                 local sp = MapData.SpawnPositions[i]
                 if sp then
-                    sx = sx + sp.x
-                    sy = sy + sp.y
+                    if sp.x < minX then minX = sp.x end
+                    if sp.x > maxX then maxX = sp.x end
+                    if sp.y < minY then minY = sp.y end
+                    if sp.y > maxY then maxY = sp.y end
                     count = count + 1
                 end
             end
+            local sx, sy
             if count > 0 then
-                sx = sx / count
-                sy = sy / count
+                sx = (minX + maxX) * 0.5
+                sy = (minY + maxY) * 0.5
             else
                 sx = MapData.SpawnX
                 sy = MapData.SpawnY
+                minX, maxX = sx - 2, sx + 2
+                minY, maxY = sy - 2, sy + 2
             end
 
             -- 保存出生点中心供阶段3复用
             introSpawnCenterX_ = sx
             introSpawnCenterY_ = sy
 
+            -- 动态计算 ortho 尺寸：确保所有玩家都在画面内
+            local padding = Config.CameraPadding
+            local spanX = (maxX - minX) + padding * 2
+            local spanY = (maxY - minY) + padding * 2
+            local aspect = cameraModule_ and cameraModule_.camera and cameraModule_.camera.aspectRatio or (16.0 / 9.0)
+            if aspect <= 0 then aspect = 16.0 / 9.0 end
+            local dynamicOrtho = math.max(spanX / aspect, spanY)
+            -- 至少保持一个最小范围
+            dynamicOrtho = math.max(dynamicOrtho, Config.IntroSpawnOrtho)
+
             if cameraModule_ then
-                cameraModule_.AnimateTo(Vector3(sx, sy, 0), Config.IntroSpawnOrtho, Config.IntroPanToSpawnTime * 0.9)
+                cameraModule_.AnimateTo(Vector3(sx, sy, 0), dynamicOrtho, Config.IntroPanToSpawnTime * 0.9)
             end
             print("[GameManager] Intro phase 2: pan to spawn at (" .. string.format("%.1f,%.1f", sx, sy) .. ")")
         end
@@ -468,16 +485,8 @@ end
 function GameManager.UpdateRoundEnd(dt)
     GameManager.stateTimer = GameManager.stateTimer - dt
     if GameManager.stateTimer <= 0 then
-        -- 检查是否有人达到胜利分数
-        local matchOver = false
-        for i = 1, Config.NumPlayers do
-            if GameManager.scores[i] >= Config.WinScore then
-                matchOver = true
-                break
-            end
-        end
-
-        if matchOver then
+        -- 回合制：打完 NumRounds 回合后结束比赛
+        if GameManager.round >= Config.NumRounds then
             GameManager.SetState(GameManager.STATE_MATCH_END, 5.0)
         else
             GameManager.SetState(GameManager.STATE_SCORE, 3.0)
@@ -511,8 +520,15 @@ end
 function GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, killStreak)
     -- 击杀加分
     local killPts = Config.KillScore
+    -- 双杀及以上额外加分
+    if multiKillCount >= 2 then
+        killPts = killPts + Config.MultiKillBonus
+    end
     GameManager.scores[killerIndex] = GameManager.scores[killerIndex] + killPts
     GameManager.killScores[killerIndex] = GameManager.killScores[killerIndex] + killPts
+
+    -- 死亡扣分（受害者）
+    GameManager.scores[victimIndex] = GameManager.scores[victimIndex] - Config.DeathPenalty
 
     -- 生成击杀事件（供 HUD 显示）
     local event = {
@@ -531,7 +547,8 @@ function GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, kill
 
     print("[GameManager] Kill event: P" .. killerIndex .. " killed P" .. victimIndex
         .. " (multi=" .. multiKillCount .. ", streak=" .. killStreak
-        .. ", score=" .. GameManager.scores[killerIndex] .. ")")
+        .. ", killPts=" .. killPts .. ", victimPenalty=-" .. Config.DeathPenalty
+        .. ", scores=" .. GameManager.scores[killerIndex] .. "/" .. GameManager.scores[victimIndex] .. ")")
 end
 
 --- 结束当前回合，计算积分

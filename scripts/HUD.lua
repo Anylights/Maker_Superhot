@@ -991,10 +991,11 @@ function HUD.DrawScores()
         nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
         nvgText(vg_, x, y, text)
 
-        -- 胜利目标线
-        if score >= Config.WinScore then
+        -- 已到达终点标记
+        local p = playerModule_.list[i]
+        if p and p.finished then
             nvgFillColor(vg_, nvgRGBA(255, 215, 0, 255))
-            nvgText(vg_, x - 60, y, "胜!")
+            nvgText(vg_, x - 60, y, "🏁")
         end
     end
 end
@@ -1047,7 +1048,8 @@ function HUD.DrawRoundInfo()
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     nvgFillColor(vg_, nvgRGBA(120, 90, 70, 200))
 
-    local roundText = "ROUND " .. gameManager_.round
+    local totalRounds = gameManager_.numRounds or Config.NumRounds
+    local roundText = "ROUND " .. gameManager_.round .. " / " .. totalRounds
     nvgText(vg_, logW_ * 0.5, 46, roundText)
 end
 
@@ -1546,7 +1548,13 @@ function HUD.DrawScoreScreen()
         return gameManager_.scores[a] > gameManager_.scores[b]
     end)
 
-    local maxScore = math.max(1, Config.WinScore)
+    -- 动态最大分数：取所有玩家中的最高分，至少为 1
+    local maxScore = 1
+    for i = 1, Config.NumPlayers do
+        if gameManager_.scores[i] > maxScore then
+            maxScore = gameManager_.scores[i]
+        end
+    end
 
     for rank, idx in ipairs(sorted) do
         local y = startY + (rank - 1) * (barH + gap)
@@ -1582,7 +1590,7 @@ function HUD.DrawScoreScreen()
         nvgFillColor(vg_, nvgRGBA(255, 255, 255, 240))
         nvgFontSize(vg_, 15)
         nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
-        nvgText(vg_, bx + 8, y + barH * 0.5, tostring(score) .. " / " .. Config.WinScore)
+        nvgText(vg_, bx + 8, y + barH * 0.5, tostring(score) .. " pts")
     end
 
     -- 提示

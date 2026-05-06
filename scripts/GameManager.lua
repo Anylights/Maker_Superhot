@@ -7,6 +7,7 @@ local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
 local BGM = require("BGM")
+local Background = require("Background")
 
 local GameManager = {}
 
@@ -158,6 +159,9 @@ function GameManager.StartRound()
 
     -- 重置倒计时音效跟踪
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
+
+    -- 切换背景配色
+    Background.SetPaletteForRound(GameManager.round)
 
     -- 进入开场镜头动画
     introPhase_ = 0

@@ -457,41 +457,8 @@ function HUD.DrawAnimatedBgPattern(palette)
 end
 
 function HUD.DrawBackground()
-    -- 山丘水平滚动 + 视差（sin 函数自身周期保证无缝循环）
-    -- ⚠️ 用引擎时间，os.clock() 在某些环境下不增长
-    local t = (time and time.GetElapsedTime) and time:GetElapsedTime() or os.clock()
-    -- 远景滚动慢，近景滚动快，形成视差
-    local farScroll  = t * 8    -- 远山平移速度（逻辑像素/秒）
-    local nearScroll = t * 22   -- 近山平移速度
-
-    -- 远山（浅色）— 步长增大到12像素，减少 sin() 调用和 lineTo 顶点数
-    local hillStep = 12
-    nvgBeginPath(vg_)
-    nvgMoveTo(vg_, 0, logH_)
-    local hillY1 = logH_ * 0.72
-    for x = 0, logW_, hillStep do
-        local y = hillY1 + math.sin((x + farScroll) * 0.008) * logH_ * 0.06
-                        + math.sin((x + farScroll * 1.6) * 0.015) * logH_ * 0.03
-        nvgLineTo(vg_, x, y)
-    end
-    nvgLineTo(vg_, logW_, logH_)
-    nvgClosePath(vg_)
-    nvgFillColor(vg_, nvgRGBA(180, 140, 110, 35))
-    nvgFill(vg_)
-
-    -- 近山（深色）
-    nvgBeginPath(vg_)
-    nvgMoveTo(vg_, 0, logH_)
-    local hillY2 = logH_ * 0.82
-    for x = 0, logW_, hillStep do
-        local y = hillY2 + math.sin((x + nearScroll) * 0.012) * logH_ * 0.04
-                        + math.sin((x + nearScroll * 1.4) * 0.025) * logH_ * 0.02
-        nvgLineTo(vg_, x, y)
-    end
-    nvgLineTo(vg_, logW_, logH_)
-    nvgClosePath(vg_)
-    nvgFillColor(vg_, nvgRGBA(140, 100, 80, 45))
-    nvgFill(vg_)
+    -- 背景已由 Background.lua 在 3D 场景中渲染（渐变底色 + 动态菱形）
+    -- 此函数保留为空，供调用点兼容
 end
 
 -- ============================================================================

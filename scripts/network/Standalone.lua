@@ -18,6 +18,7 @@ local SFX = require("SFX")
 local BGM = require("BGM")
 local RandomPickup = require("RandomPickup")
 local LevelEditor = require("LevelEditor")
+local Background = require("Background")
 local LevelManager = require("LevelManager")
 
 local Standalone = {}
@@ -166,48 +167,7 @@ end
 -- 游戏内容
 -- ============================================================================
 
-function Standalone.CreateBackgroundPlane()
-    local topColor = Config.BgColorTop
-    local botColor = Config.BgColorBot
-    local size = 200
-    local strips = 8
-    local bgNode = scene_:CreateChild("BackgroundGradient")
-    bgNode.position = Vector3(0, 0, 5)
-
-    local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
-
-    for i = 0, strips - 1 do
-        local t0 = i / strips
-        local t1 = (i + 1) / strips
-        local r0 = topColor[1] + (botColor[1] - topColor[1]) * t0
-        local g0 = topColor[2] + (botColor[2] - topColor[2]) * t0
-        local b0 = topColor[3] + (botColor[3] - topColor[3]) * t0
-        local r1 = topColor[1] + (botColor[1] - topColor[1]) * t1
-        local g1 = topColor[2] + (botColor[2] - topColor[2]) * t1
-        local b1 = topColor[3] + (botColor[3] - topColor[3]) * t1
-        local midR = (r0 + r1) * 0.5
-        local midG = (g0 + g1) * 0.5
-        local midB = (b0 + b1) * 0.5
-
-        local stripNode = bgNode:CreateChild("Strip" .. i)
-        local yTop = size * (1 - t0 * 2)
-        local yBot = size * (1 - t1 * 2)
-        stripNode.position = Vector3(0, (yTop + yBot) * 0.5, 0)
-        stripNode.scale = Vector3(size * 2, yTop - yBot, 0.1)
-
-        local model = stripNode:CreateComponent("StaticModel")
-        model.model = cache:GetResource("Model", "Models/Box.mdl")
-        model.castShadows = false
-
-        local mat = Material:new()
-        mat:SetTechnique(0, pbrTech)
-        mat:SetShaderParameter("MatDiffColor", Variant(Color(midR, midG, midB, 1.0)))
-        mat:SetShaderParameter("MatEmissiveColor", Variant(Color(midR * 0.3, midG * 0.3, midB * 0.3)))
-        mat:SetShaderParameter("Metallic", Variant(0.0))
-        mat:SetShaderParameter("Roughness", Variant(1.0))
-        model:SetMaterial(mat)
-    end
-end
+-- CreateBackgroundPlane 已迁移到 Background.lua 模块
 
 function Standalone.UpdateDeathZone()
     if scene_ == nil then return end
@@ -219,7 +179,7 @@ function Standalone.UpdateDeathZone()
 end
 
 function Standalone.CreateGameContent()
-    Standalone.CreateBackgroundPlane()
+    Background.Create(scene_, false)  -- 非 LOCAL 模式
     Map.Build()
     Player.CreateAll()
 
@@ -340,6 +300,7 @@ function Standalone.HandleUpdate(dt)
     end
 
     Map.Update(dt)
+    Background.Update(dt)
 
     if GameManager.CanPlayersMove() then
         Standalone.HandlePlayerInput()

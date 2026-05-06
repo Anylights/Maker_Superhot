@@ -10,6 +10,7 @@ local Shared = require("network.Shared")
 local Camera = require("Camera")
 local Map    = require("Map")
 local MapData = require("MapData")
+local Background = require("Background")
 local Player = require("Player")
 local Pickup = require("Pickup")
 local AIController = require("AIController")
@@ -161,7 +162,7 @@ function Client.Start()
     renderer.defaultZone.fogColor = Color(0.95, 0.82, 0.68)
 
     -- 创建背景
-    Client.CreateBackgroundPlane()
+    Background.Create(scene_, true)  -- LOCAL 模式，客户端节点
 
     -- 初始化 HUD
     HUD.Init(Player, GameManager, Map)
@@ -297,49 +298,7 @@ function Client.CreateFallbackLighting()
     light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
 end
 
-function Client.CreateBackgroundPlane()
-    local topColor = Config.BgColorTop
-    local botColor = Config.BgColorBot
-    local size = 200
-    local strips = 8
-    -- 客户端所有节点必须 LOCAL，否则会被服务端场景复制删除
-    local bgNode = scene_:CreateChild("BackgroundGradient", LOCAL)
-    bgNode.position = Vector3(0, 0, 5)
-
-    local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
-
-    for i = 0, strips - 1 do
-        local t0 = i / strips
-        local t1 = (i + 1) / strips
-        local r0 = topColor[1] + (botColor[1] - topColor[1]) * t0
-        local g0 = topColor[2] + (botColor[2] - topColor[2]) * t0
-        local b0 = topColor[3] + (botColor[3] - topColor[3]) * t0
-        local r1 = topColor[1] + (botColor[1] - topColor[1]) * t1
-        local g1 = topColor[2] + (botColor[2] - topColor[2]) * t1
-        local b1 = topColor[3] + (botColor[3] - topColor[3]) * t1
-        local midR = (r0 + r1) * 0.5
-        local midG = (g0 + g1) * 0.5
-        local midB = (b0 + b1) * 0.5
-
-        local stripNode = bgNode:CreateChild("Strip" .. i, LOCAL)
-        local yTop = size * (1 - t0 * 2)
-        local yBot = size * (1 - t1 * 2)
-        stripNode.position = Vector3(0, (yTop + yBot) * 0.5, 0)
-        stripNode.scale = Vector3(size * 2, yTop - yBot, 0.1)
-
-        local model = stripNode:CreateComponent("StaticModel", LOCAL)
-        model.model = cache:GetResource("Model", "Models/Box.mdl")
-        model.castShadows = false
-
-        local mat = Material:new()
-        mat:SetTechnique(0, pbrTech)
-        mat:SetShaderParameter("MatDiffColor", Variant(Color(midR, midG, midB, 1.0)))
-        mat:SetShaderParameter("MatEmissiveColor", Variant(Color(midR * 0.3, midG * 0.3, midB * 0.3)))
-        mat:SetShaderParameter("Metallic", Variant(0.0))
-        mat:SetShaderParameter("Roughness", Variant(1.0))
-        model:SetMaterial(mat)
-    end
-end
+-- CreateBackgroundPlane 已迁移到 Background.lua 模块
 
 -- ============================================================================
 -- Connection Events
@@ -1263,6 +1222,9 @@ function Client.HandlePlayingUpdate(dt)
 
     -- 更新道具视觉（仅旋转+浮动动画，不做碰撞/收集）
     Pickup.UpdateVisuals(dt)
+
+    -- 更新背景动画
+    Background.Update(dt)
 
     -- 注意：不调用 RandomPickup.Update(dt)
     -- 道具生成由服务端控制，客户端通过场景复制接收道具节点

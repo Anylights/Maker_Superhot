@@ -283,7 +283,7 @@ function Background.EnsureShadows(sceneRef)
     -- 遍历 LightGroup 子节点，找到方向光并启用阴影
     local lightGroup = sceneRef:GetChild("LightGroup", true)
     if lightGroup then
-        for i = 0, lightGroup.numChildren - 1 do
+        for i = 0, lightGroup:GetNumChildren(false) - 1 do
             local child = lightGroup:GetChild(i)
             local light = child:GetComponent("Light")
             if light and light.lightType == LIGHT_DIRECTIONAL then
@@ -293,7 +293,7 @@ function Background.EnsureShadows(sceneRef)
                 print("[Background] Enabled shadows on directional light")
             end
             -- 递归检查子节点
-            for j = 0, child.numChildren - 1 do
+            for j = 0, child:GetNumChildren(false) - 1 do
                 local grandchild = child:GetChild(j)
                 local light2 = grandchild:GetComponent("Light")
                 if light2 and light2.lightType == LIGHT_DIRECTIONAL then

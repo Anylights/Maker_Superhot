@@ -341,12 +341,20 @@ end
 -- 分块渲染（客户端专用）
 -- ============================================================================
 
+local chunkDiagFirstCall_ = true
+
 --- 更新可见区域（根据相机 Y 位置，创建/移除方块节点）
 --- 应在每帧或相机移动后调用
 ---@param cameraY number 相机中心世界 Y 坐标
 function Map.UpdateVisibleChunk(cameraY)
     if skipVisuals_ then return end  -- 服务端不分块
-    if not mapRoot_ then return end
+    if not mapRoot_ then
+        if chunkDiagFirstCall_ then
+            chunkDiagFirstCall_ = false
+            print("[Map.DIAG] UpdateVisibleChunk called but mapRoot_ is nil!")
+        end
+        return
+    end
 
     local buffer = Config.ChunkRenderBuffer
     local bs = Config.BlockSize
@@ -354,6 +362,16 @@ function Map.UpdateVisibleChunk(cameraY)
     -- 计算新的可见行范围
     local newMinY = math.max(1, math.floor((cameraY - buffer) / bs) + 1)
     local newMaxY = math.min(MapData.Height, math.ceil((cameraY + buffer) / bs) + 1)
+
+    -- 首次调用诊断
+    if chunkDiagFirstCall_ then
+        chunkDiagFirstCall_ = false
+        local gridRows = 0
+        for _ in pairs(grid_) do gridRows = gridRows + 1 end
+        print(string.format(
+            "[Map.DIAG] UpdateVisibleChunk FIRST CALL: cameraY=%.1f range=[%d,%d] gridRows=%d skipVisuals=%s mapRoot=%s",
+            cameraY, newMinY, newMaxY, gridRows, tostring(skipVisuals_), tostring(mapRoot_ ~= nil)))
+    end
 
     -- 如果范围没有变化，跳过
     if newMinY == visibleMinY_ and newMaxY == visibleMaxY_ then

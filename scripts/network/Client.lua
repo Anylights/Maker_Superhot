@@ -227,7 +227,7 @@ function Client.CreateScene()
             lightGroup.name = "LightGroup"
             local zoneComp = lightGroup:GetComponent("Zone")
             if not zoneComp then
-                for i = 0, lightGroup.numChildren - 1 do
+                for i = 0, lightGroup:GetNumChildren(false) - 1 do
                     local child = lightGroup:GetChild(i)
                     zoneComp = child:GetComponent("Zone")
                     if zoneComp then break end
@@ -785,7 +785,49 @@ function Client.HandleUpdate(dt)
     end
 end
 
+local playingDiagTimer_ = 0
+local playingDiagFirstFrame_ = true
+
 function Client.HandlePlayingUpdate(dt)
+    -- 首帧诊断：输出完整状态快照
+    if playingDiagFirstFrame_ then
+        playingDiagFirstFrame_ = false
+        local canMove = GameManager.CanPlayersMove()
+        local humanPos = Player.GetHumanPosition()
+        local nPlayers = #Player.list
+        local hasNode = false
+        local sessionActive = false
+        for _, p in ipairs(Player.list) do
+            if p.isHuman then
+                hasNode = p.node ~= nil
+                sessionActive = p.session.active
+            end
+        end
+        print(string.format(
+            "[Client.DIAG] === PLAYING FIRST FRAME === players=%d canMove=%s humanNode=%s sessionActive=%s humanPos=%s serverConn=%s mySlot=%d",
+            nPlayers, tostring(canMove), tostring(hasNode), tostring(sessionActive),
+            humanPos and string.format("(%.1f,%.1f)", humanPos.x, humanPos.y) or "nil",
+            tostring(serverConnection_ ~= nil), mySlot_))
+    end
+
+    -- 每 5 秒输出摘要诊断
+    playingDiagTimer_ = playingDiagTimer_ + dt
+    if playingDiagTimer_ >= 5.0 then
+        playingDiagTimer_ = 0
+        local canMove = GameManager.CanPlayersMove()
+        local humanPos = Player.GetHumanPosition()
+        local nPlayers = #Player.list
+        local hasNode = false
+        for _, p in ipairs(Player.list) do
+            if p.isHuman and p.node then hasNode = true end
+        end
+        print(string.format(
+            "[Client.DIAG] players=%d canMove=%s humanNode=%s humanPos=%s buttons=%s",
+            nPlayers, tostring(canMove), tostring(hasNode),
+            humanPos and string.format("(%.1f,%.1f)", humanPos.x, humanPos.y) or "nil",
+            serverConnection_ and tostring(serverConnection_.controls.buttons) or "noConn"))
+    end
+
     -- 收集输入并发给服务端
     Client.CollectInputAdvanced()
 

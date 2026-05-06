@@ -202,20 +202,29 @@ function MapData.Generate(seed)
     MapData.Checkpoints = {}
 
     -- ------------------------------------------------------------------
-    -- 3) 逐层生成平台（y=4 到 H）
+    -- 3) 出生安全区上方留空（y=4~5 保证空旷，不卡玩家）
     -- ------------------------------------------------------------------
+    -- y=4,5 全部留空，确保出生在 y=3 顶面的玩家不会卡进方块
+    -- （grid 初始化时已全部为 E，无需额外操作）
+
+    -- ------------------------------------------------------------------
+    -- 4) 逐层生成平台（y=6 到 H）
+    -- ------------------------------------------------------------------
+    -- 设计理念：稀疏跳板，大量空白，玩家需要在散落的平台间跳跃攀爬
+    -- 每隔 2~4 行才出现一排平台，每排只有 1~2 段短平台
     -- 难度参数随高度变化：
-    --   - 低层(0~100): 平台宽 5~8, 间距短, 密度高
-    --   - 中层(100~300): 平台宽 4~7, 间距中等
-    --   - 高层(300~500): 平台宽 3~6, 间距大, 密度低
+    --   - 低区(0~20%): 平台宽 4~7, 间距 2~3 行, 每排 1~2 段
+    --   - 中区(20~60%): 平台宽 3~6, 间距 2~4 行, 每排 1~2 段
+    --   - 高区(60~100%): 平台宽 2~5, 间距 3~4 行, 每排 1~2 段
     -- ------------------------------------------------------------------
 
-    -- 追踪上一个有平台的行，确保垂直可达性
     local lastPlatformY = 3
+    -- 下一个平台行的目标 Y（从 y=6 开始，跳过出生安全区）
+    local nextPlatformY = 6
 
-    local y = 4
+    local y = 6
     while y <= H do
-        local baseY = 3  -- 安全区顶部
+        local baseY = 5  -- 生成区起始
 
         -- ----- 检查点行 -----
         if MapData.IsCheckpoint(y) then
@@ -230,79 +239,80 @@ function MapData.Generate(seed)
             end
             table.insert(MapData.Checkpoints, y)
             lastPlatformY = y
+
+            -- 检查点上方留 1 行空白（不卡重生玩家）
+            if y + 1 <= H then
+                for x = 1, W do grid[y + 1][x] = E end
+            end
+
+            -- 下一个平台至少间隔 2 行
+            nextPlatformY = y + 2
             y = y + 1
-        else
-            -- ----- 普通行：根据难度生成随机平台 -----
-            local progress = (y - baseY) / (H - baseY)  -- 0~1 进度
+        elseif y >= nextPlatformY then
+            -- ----- 该行放平台 -----
+            local progress = math.min(1.0, (y - baseY) / math.max(1, H - baseY))
 
             -- 难度曲线
             local minPlatWidth, maxPlatWidth
-            local platformDensity  -- 每行平台数的期望值
-            local gapChance        -- 某行完全无平台的概率
+            local maxSegments  -- 每行最大平台段数
+            local minGap, maxGap  -- 到下一个平台行的行间距
 
             if progress < 0.2 then
-                -- 低区：简单
-                minPlatWidth = 5
-                maxPlatWidth = 8
-                platformDensity = 3.5
-                gapChance = 0.05
-            elseif progress < 0.6 then
-                -- 中区：中等
+                -- 低区：较宽平台，间距小
                 minPlatWidth = 4
                 maxPlatWidth = 7
-                platformDensity = 2.8
-                gapChance = 0.15
-            else
-                -- 高区：困难
+                maxSegments = 2
+                minGap = 2
+                maxGap = 3
+            elseif progress < 0.6 then
+                -- 中区
                 minPlatWidth = 3
                 maxPlatWidth = 6
-                platformDensity = 2.2
-                gapChance = 0.25
+                maxSegments = 2
+                minGap = 2
+                maxGap = 4
+            else
+                -- 高区：窄平台，间距大
+                minPlatWidth = 2
+                maxPlatWidth = 5
+                maxSegments = 2
+                minGap = 3
+                maxGap = 4
             end
 
-            -- 垂直间距控制：如果距离上一个平台太远，强制生成
-            local gapFromLast = y - lastPlatformY
-            local forceGenerate = (gapFromLast >= 3)  -- 双跳最大高度约6m，间距3保证可达
+            -- 每行 1~maxSegments 段平台
+            local numSegments = rng:nextInt(1, maxSegments)
 
-            if forceGenerate or rng:next() > gapChance then
-                -- 生成这一行的平台
-                local numPlatforms = rng:nextInt(
-                    math.max(1, math.floor(platformDensity - 1)),
-                    math.floor(platformDensity + 1)
-                )
+            -- 随机分布平台在 X 轴上
+            for seg = 1, numSegments do
+                local platWidth = rng:nextInt(minPlatWidth, maxPlatWidth)
 
-                -- 将地图宽度分成若干段，每段放一个平台
-                local sectionWidth = math.floor(W / numPlatforms)
+                -- 随机 X 位置，留边距避免总是贴墙
+                local margin = 2
+                local startX = rng:nextInt(margin, math.max(margin, W - platWidth - margin + 1))
+                if startX + platWidth - 1 > W then
+                    startX = W - platWidth + 1
+                end
+                if startX < 1 then startX = 1 end
 
-                for p = 1, numPlatforms do
-                    local platWidth = rng:nextInt(minPlatWidth, maxPlatWidth)
-                    -- 段的起始和结束
-                    local secStart = (p - 1) * sectionWidth + 1
-                    local secEnd = p * sectionWidth
-                    if p == numPlatforms then secEnd = W end  -- 最后一段取满
-
-                    -- 平台在段内随机偏移
-                    local maxStart = math.max(secStart, secEnd - platWidth + 1)
-                    local startX = rng:nextInt(secStart, maxStart)
-
-                    -- 确保不超边界
-                    if startX + platWidth - 1 > W then
-                        startX = W - platWidth + 1
-                    end
-                    if startX < 1 then startX = 1 end
-
-                    -- 偶尔放安全方块（不可破坏支撑点）
-                    local blockType = N
-                    if rng:next() < 0.12 then
-                        blockType = S  -- 12% 概率为安全方块
-                    end
-
-                    placePlatform(startX, y, platWidth, blockType)
+                -- 偶尔放安全方块（不可破坏支撑点）
+                local blockType = N
+                if rng:next() < 0.10 then
+                    blockType = S
                 end
 
-                lastPlatformY = y
+                placePlatform(startX, y, platWidth, blockType)
             end
 
+            lastPlatformY = y
+
+            -- 确定下一个平台行的间距
+            local gap = rng:nextInt(minGap, maxGap)
+            nextPlatformY = y + gap
+
+            y = y + 1
+        else
+            -- 空行，跳过
             y = y + 1
         end
     end
@@ -332,7 +342,8 @@ function MapData.Generate(seed)
         local fromY = allCheckpoints[i]
         local toY = allCheckpoints[i + 1]
 
-        -- 检查这个区间内是否有连续超过3行无平台的情况
+        -- 检查这个区间内是否有连续超过5行无平台的情况
+        -- （双跳 + 冲刺可覆盖约5~6m，留5行余量保证可达）
         local emptyStreak = 0
         for checkY = fromY + 1, toY - 1 do
             local hasBlock = false
@@ -346,10 +357,10 @@ function MapData.Generate(seed)
                 emptyStreak = 0
             else
                 emptyStreak = emptyStreak + 1
-                if emptyStreak >= 3 then
-                    -- 补救：在这里插入一个小平台
-                    local repairWidth = rng:nextInt(4, 7)
-                    local repairX = rng:nextInt(1, W - repairWidth + 1)
+                if emptyStreak >= 5 then
+                    -- 补救：在这里插入一个短平台
+                    local repairWidth = rng:nextInt(3, 5)
+                    local repairX = rng:nextInt(2, math.max(2, W - repairWidth - 1))
                     placePlatform(repairX, checkY, repairWidth, N)
                     emptyStreak = 0
                 end

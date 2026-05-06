@@ -115,7 +115,7 @@ function Standalone.CreateScene()
         lightGroup:LoadXML(lightGroupFile:GetRoot())
         local zoneComp = lightGroup:GetComponent("Zone")
         if not zoneComp then
-            for i = 0, lightGroup.numChildren - 1 do
+            for i = 0, lightGroup:GetNumChildren(false) - 1 do
                 local child = lightGroup:GetChild(i)
                 zoneComp = child:GetComponent("Zone")
                 if zoneComp then break end

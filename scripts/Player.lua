@@ -148,7 +148,7 @@ end
 ---@return table 玩家数据
 function Player.Create(index, isHuman, opts)
     opts = opts or {}
-    local spawnX, spawnY = MapData.GetSpawnPosition(index)
+    local spawnX, spawnY = MapData.GetRandomSpawnPosition()
 
     local node
     if opts.existingNode then
@@ -261,11 +261,20 @@ function Player.Create(index, isHuman, opts)
         respawnTimer = 0,
         invincibleTimer = 0,
 
-        -- 比赛
-        finished = false,      -- 是否已到达终点
-        finishOrder = 0,       -- 到达终点的名次
+        -- 会话（个人独立计时）
+        session = {
+            active = false,         -- 会话是否进行中
+            timer = 0,              -- 剩余时间
+            heightScore = 0,        -- 高度积分
+            killScore = 0,          -- 击杀积分
+            pickupScore = 0,        -- 拾取积分
+            totalScore = 0,         -- 总分
+            maxGridY = 0,           -- 历史最高网格行
+            bestCheckpointY = 3,    -- 最高已激活检查点行号
+            checkpoints = {},       -- 已激活检查点集合 {[gridY]=true}
+        },
 
-        -- 击杀统计（每回合重置）
+        -- 击杀统计（每会话重置）
         kills = 0,             -- 本回合击杀数
         killStreak = 0,        -- 连续击杀数（死亡重置）
         multiKillCount = 0,    -- 短时间内连续击杀数
@@ -323,11 +332,11 @@ function Player.Create(index, isHuman, opts)
     return p
 end
 
---- 创建全部玩家
+--- 创建全部玩家（单机模式用，多人模式由 Server/Client 按需创建）
 function Player.CreateAll()
     Player.list = {}
-    -- 玩家1 是人类，其余是 AI
-    for i = 1, Config.NumPlayers do
+    -- 玩家1 是人类，其余是 AI（颜色数量决定最大玩家数）
+    for i = 1, Config.NumPlayerColors do
         Player.Create(i, i == 1)
     end
 end
@@ -430,46 +439,15 @@ function Player.UpdateOne(p, dt)
         return
     end
 
-    if p.finished then
-        -- 已到达终点：庆祝动画（原地跳跃 + 翻转 + 礼花粒子）
-        p.celebrationTimer = (p.celebrationTimer or 0) + dt
-
-        -- 锁定水平速度，只保留垂直
+    -- 会话未激活时不允许移动（等待会话开始或结束后等待重开）
+    if not p.session.active then
         if p.body then
-            local vel = p.body.linearVelocity
-            p.body.linearVelocity = Vector3(0, vel.y, 0)
-
-            -- 地面检测：着地后定时起跳
-            if p.onGround then
-                if p.celebrationTimer >= Config.CelebrationJumpInterval then
-                    p.celebrationTimer = 0
-                    p.body.linearVelocity = Vector3(0, Config.CelebrationJumpSpeed, 0)
-                    if networkMode_ ~= "server" then
-                        SFX.Play("jump", 0.3)
-                    end
-                end
-            end
+            p.body.linearVelocity = Vector3.ZERO
         end
-
-        -- 持续翻转（通过 dashRoll 驱动视觉旋转）
-        p.dashRoll = p.dashRoll + Config.CelebrationFlipSpeed * dt * p.lastFaceDir
-
-        -- 首次到达终点时生成礼花（只生成一次）
-        if not p.celebrationFXSpawned then
-            p.celebrationFXSpawned = true
-            if networkMode_ ~= "server" and p.node then
-                Player.SpawnFireworkFX(p.node.position, p.index)
-                SFX.Play("explosion", 0.5)
-            end
-        end
-
-        -- 碰撞状态仍需重置
         p.wasOnGround = p.onGround
         p.onGround = false
         p.hitCeiling = false
         p.hitWallX = 0
-
-        -- 视觉动效（squash & stretch + 旋转 + 眼睛）
         Player.UpdateVisualEffects(p, dt)
         return
     end
@@ -626,16 +604,27 @@ function Player.UpdateOne(p, dt)
         end
     end
 
-    -- 终点检测（服务端权威）
-    if networkMode_ ~= "client" then
-        if p.node and MapData.IsAtFinish(p.node.position.x, p.node.position.y) then
-            p.finished = true
-            p.celebrationTimer = 0  -- 初始化庆祝计时器
-            -- 立刻停住玩家
-            if p.body then
-                p.body.linearVelocity = Vector3.ZERO
+    -- 检查点检测 + 高度积分（服务端权威）
+    if networkMode_ ~= "client" and p.node and p.session.active then
+        local Map = require("Map")
+        local _, gy = Map.WorldToGrid(p.node.position.x, p.node.position.y)
+
+        -- 高度积分：基于当前网格行与历史最高行的差值
+        if gy > p.session.maxGridY then
+            local delta = gy - p.session.maxGridY
+            p.session.heightScore = p.session.heightScore + delta * Config.HeightScorePerBlock
+            p.session.maxGridY = gy
+            p.session.totalScore = Player.CalcTotalScore(p)
+        end
+
+        -- 检查点激活
+        if MapData.IsCheckpoint(gy) and not p.session.checkpoints[gy] then
+            p.session.checkpoints[gy] = true
+            p.session.bestCheckpointY = math.max(p.session.bestCheckpointY, gy)
+            print("[Player] Player " .. p.index .. " activated checkpoint at Y=" .. gy)
+            if Player.onCheckpoint then
+                Player.onCheckpoint(p.index, gy)
             end
-            print("[Player] Player " .. p.index .. " reached the finish!")
         end
     end
 
@@ -1490,10 +1479,16 @@ Player.onDeath = nil
 function Player.Kill(p, reason, killerIndex)
     if not p.alive then return end
     if p.invincibleTimer > 0 then return end
-    if p.finished then return end  -- 到达终点后无敌
+    if not p.session.active then return end  -- 会话未激活不可被击杀
 
     p.alive = false
     p.respawnTimer = Config.RespawnDelay
+
+    -- 死亡扣分
+    if p.session.active then
+        p.session.killScore = math.max(0, p.session.killScore - Config.DeathPenalty)
+        p.session.totalScore = Player.CalcTotalScore(p)
+    end
 
     -- 击杀者统计
     if killerIndex and killerIndex ~= p.index then
@@ -1502,6 +1497,11 @@ function Player.Kill(p, reason, killerIndex)
                 killer.kills = killer.kills + 1
                 killer.killStreak = killer.killStreak + 1
 
+                -- 击杀积分
+                if killer.session.active then
+                    killer.session.killScore = killer.session.killScore + Config.KillScore
+                end
+
                 -- 短时间连杀判定
                 if killer.multiKillTimer > 0 then
                     killer.multiKillCount = killer.multiKillCount + 1
@@ -1509,6 +1509,13 @@ function Player.Kill(p, reason, killerIndex)
                     killer.multiKillCount = 1
                 end
                 killer.multiKillTimer = Config.MultiKillWindow
+
+                -- 连杀奖励积分
+                if killer.session.active and killer.multiKillCount >= 2 then
+                    killer.session.killScore = killer.session.killScore + Config.MultiKillBonus
+                end
+
+                killer.session.totalScore = Player.CalcTotalScore(killer)
 
                 -- 通知 GameManager
                 if Player.onKill then
@@ -1801,8 +1808,13 @@ function Player.Respawn(p)
         p.visualNode.enabled = true
     end
 
-    -- 回到起点
-    local sx, sy = MapData.GetSpawnPosition(p.index)
+    -- 回到最近的已激活检查点
+    local sx, sy
+    if p.session.bestCheckpointY and p.session.bestCheckpointY > 3 then
+        sx, sy = MapData.GetCheckpointSpawnPosition(p.session.bestCheckpointY)
+    else
+        sx, sy = MapData.GetRandomSpawnPosition()
+    end
     if p.node then
         p.node.enabled = true
         p.node.position = Vector3(sx, sy, 0)
@@ -1811,18 +1823,14 @@ function Player.Respawn(p)
         p.body.linearVelocity = Vector3(0, 0, 0)
     end
 
-    print("[Player] Player " .. p.index .. " respawned")
+    print("[Player] Player " .. p.index .. " respawned at checkpoint Y=" .. (p.session.bestCheckpointY or 3))
 end
 
---- 重置所有玩家（新回合）
+--- 重置所有玩家（新会话）
 function Player.ResetAll()
     for _, p in ipairs(Player.list) do
         Player.RemoveDeathFace(p)
         p.alive = true
-        p.finished = false
-        p.finishOrder = 0
-        p.celebrationTimer = 0
-        p.celebrationFXSpawned = false
         p.kills = 0
         p.killStreak = 0
         p.multiKillCount = 0
@@ -1851,6 +1859,19 @@ function Player.ResetAll()
         p.wasDashDown = false
         p.wasExplodeReleaseDown = false
 
+        -- 重置会话数据
+        p.session = {
+            active = false,
+            timer = 0,
+            heightScore = 0,
+            killScore = 0,
+            pickupScore = 0,
+            totalScore = 0,
+            maxGridY = 0,
+            bestCheckpointY = 3,
+            checkpoints = {},
+        }
+
         -- 重置视觉动效
         p.squashScaleX = 1.0
         p.squashScaleY = 1.0
@@ -1873,7 +1894,7 @@ function Player.ResetAll()
             p.visualNode.enabled = true
         end
 
-        local sx, sy = MapData.GetSpawnPosition(p.index)
+        local sx, sy = MapData.GetRandomSpawnPosition()
         if p.node then
             p.node.enabled = true
             p.node.position = Vector3(sx, sy, 0)
@@ -1963,21 +1984,8 @@ function Player.UpdateOneClient(p, dt)
         return
     end
 
-    if p.finished then
-        -- 客户端庆祝动画：翻转 + 礼花
-        p.celebrationTimer = (p.celebrationTimer or 0) + dt
-        p.dashRoll = p.dashRoll + Config.CelebrationFlipSpeed * dt * p.lastFaceDir
-
-        -- 首次到达终点时生成礼花（只生成一次）
-        if not p.celebrationFXSpawned then
-            p.celebrationFXSpawned = true
-            if p.node then
-                Player.SpawnFireworkFX(p.node.position, p.index)
-                SFX.Play("explosion", 0.5)
-            end
-        end
-
-        -- 视觉动效
+    -- 会话未激活时冻结（等待开始或结束后等待重开）
+    if not p.session.active then
         Player.UpdateVisualEffects(p, dt)
         p.wasOnGround = p.onGround
         p.onGround = false
@@ -2225,13 +2233,71 @@ function Player.GetHumanPosition()
             if p.alive and p.node then
                 return p.node.position
             else
-                -- 死亡时返回重生点位置
-                local sx, sy = MapData.GetSpawnPosition(p.index)
+                -- 死亡时返回最近检查点位置
+                local sx, sy
+                if p.session.bestCheckpointY and p.session.bestCheckpointY > 3 then
+                    sx, sy = MapData.GetCheckpointSpawnPosition(p.session.bestCheckpointY)
+                else
+                    sx, sy = MapData.GetRandomSpawnPosition()
+                end
                 return Vector3(sx, sy, 0)
             end
         end
     end
     return nil
 end
+
+-- ============================================================================
+-- 会话管理函数
+-- ============================================================================
+
+--- 计算玩家总分（最低为 0）
+---@param p table 玩家数据
+---@return number
+function Player.CalcTotalScore(p)
+    local total = p.session.heightScore + p.session.killScore + p.session.pickupScore
+    return math.max(0, total)
+end
+
+--- 开始玩家会话（60 秒倒计时）
+---@param p table 玩家数据
+function Player.StartSession(p)
+    p.session.active = true
+    p.session.timer = Config.SessionDuration
+    p.session.heightScore = 0
+    p.session.killScore = 0
+    p.session.pickupScore = 0
+    p.session.totalScore = 0
+    p.session.maxGridY = 0
+    p.session.bestCheckpointY = 3
+    p.session.checkpoints = {}
+    p.kills = 0
+    p.killStreak = 0
+    p.multiKillCount = 0
+    p.multiKillTimer = 0
+    print("[Player] Session started for player " .. p.index .. " duration=" .. Config.SessionDuration)
+end
+
+--- 结束玩家会话
+---@param p table 玩家数据
+function Player.EndSession(p)
+    p.session.active = false
+    p.session.timer = 0
+    p.session.totalScore = Player.CalcTotalScore(p)
+    print("[Player] Session ended for player " .. p.index .. " totalScore=" .. p.session.totalScore)
+end
+
+--- 添加拾取积分
+---@param p table 玩家数据
+---@param amount number 积分值（小拾取 +1，大拾取 +3）
+function Player.AddPickupScore(p, amount)
+    if not p.session.active then return end
+    p.session.pickupScore = p.session.pickupScore + amount
+    p.session.totalScore = Player.CalcTotalScore(p)
+end
+
+--- 检查点激活回调（由 GameManager/Server 注册）
+---@type fun(playerIndex: number, checkpointGridY: number)|nil
+Player.onCheckpoint = nil
 
 return Player

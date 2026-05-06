@@ -23,17 +23,15 @@ Shared.CTRL = {
 -- ============================================================================
 
 Shared.EVENTS = {
-    -- 服务端 → 客户端
-    ASSIGN_ROLE      = "E_AssignRole",          -- 分配玩家角色
-    ROOM_CREATED     = "E_RoomCreated",         -- 房间已创建（含房间码）
-    ROOM_JOINED      = "E_RoomJoined",          -- 成功加入房间
-    ROOM_UPDATE      = "E_RoomUpdate",          -- 房间状态更新（玩家列表等）
-    ROOM_DISMISSED   = "E_RoomDismissed",       -- 房间被解散
-    GAME_STARTING    = "E_GameStarting",        -- 游戏即将开始
-    GAME_STATE       = "E_GameState",           -- 游戏状态同步（分数/回合等）
-    JOIN_FAILED      = "E_JoinFailed",          -- 加入失败
-    MATCH_FOUND      = "E_MatchFound",          -- 快速匹配成功
-    QUICK_UPDATE     = "E_QuickUpdate",         -- 快速匹配队列人数更新
+    -- 服务端 → 客户端（会话事件）
+    SESSION_START          = "E_SessionStart",         -- 会话开始（含 slot/地图种子/初始位置）
+    SESSION_END            = "E_SessionEnd",           -- 会话结束（含最终分数）
+    SCORE_UPDATE           = "E_ScoreUpdate",          -- 分数更新（高度/击杀/拾取）
+    CHECKPOINT_ACTIVATED   = "E_CheckpointActivated",  -- 检查点激活确认
+    LEADERBOARD_UPDATE     = "E_LeaderboardUpdate",    -- 实时排行榜更新
+    GAME_STATE             = "E_GameState",            -- 游戏状态同步（保留，用于通用数据）
+
+    -- 服务端 → 客户端（游戏事件，保留）
     KILL_EVENT       = "E_KillEvent",           -- 击杀事件广播
     EXPLODE_SYNC     = "E_ExplodeSync",         -- 爆炸同步（服务端→客户端）
     PLAYER_DEATH     = "E_PlayerDeath",         -- 玩家死亡同步（服务端→客户端）
@@ -41,14 +39,7 @@ Shared.EVENTS = {
 
     -- 客户端 → 服务端
     CLIENT_READY     = "E_ClientReady",         -- 客户端场景准备完毕
-    REQUEST_CREATE   = "E_RequestCreate",       -- 请求创建房间
-    REQUEST_JOIN     = "E_RequestJoin",         -- 请求加入房间（含房间码）
-    REQUEST_LEAVE    = "E_RequestLeave",        -- 请求离开房间
-    REQUEST_DISMISS  = "E_RequestDismiss",      -- 请求解散房间
-    REQUEST_ADD_AI   = "E_RequestAddAI",        -- 请求添加 AI
-    REQUEST_START    = "E_RequestStart",        -- 请求开始游戏
-    REQUEST_QUICK    = "E_RequestQuick",        -- 请求快速匹配
-    CANCEL_QUICK     = "E_CancelQuick",         -- 取消快速匹配
+    REQUEST_RESTART  = "E_RequestRestart",      -- 请求重新开始会话
 }
 
 -- ============================================================================

@@ -37,10 +37,10 @@ Config.PlayerOutlineColors = {
 -- 方块类型
 Config.BLOCK_EMPTY      = 0
 Config.BLOCK_NORMAL     = 1  -- 普通可破坏（白色）
-Config.BLOCK_SAFE       = 2  -- 永久安全（深色）
+Config.BLOCK_SAFE       = 2  -- 永久安全（深色）— 也用于检查点平台
 Config.BLOCK_ENERGY_PAD = 3  -- 能量托台（亮色）
 Config.BLOCK_SPAWN      = 4  -- 起点（旧版通用，兼容）
-Config.BLOCK_FINISH     = 5  -- 终点
+Config.BLOCK_CHECKPOINT = 5  -- 检查点标记（视觉特殊，不可破坏）
 Config.BLOCK_SPAWN_P1   = 10 -- P1 出生点（番茄红）
 Config.BLOCK_SPAWN_P2   = 11 -- P2 出生点（宝蓝）
 Config.BLOCK_SPAWN_P3   = 12 -- P3 出生点（翠绿）
@@ -52,7 +52,7 @@ Config.BlockColors = {
     [2] = Color(0.45, 0.38, 0.32, 1.0),   -- 安全：浅棕
     [3] = Color(0.50, 0.98, 0.92, 1.0),   -- 能量托台：亮薄荷绿
     [4] = Color(0.58, 1.00, 0.55, 1.0),   -- 起点：亮暖绿
-    [5] = Color(1.00, 0.88, 0.30, 1.0),   -- 终点：亮橙金
+    [5] = Color(0.90, 0.55, 1.00, 1.0),   -- 检查点：亮紫色（醒目标识）
     [10] = Color(1.00, 0.38, 0.32, 1.0),  -- P1 出生点：亮红（同步玩家色）
     [11] = Color(0.40, 0.65, 1.00, 1.0),  -- P2 出生点：亮蓝（同步玩家色）
     [12] = Color(0.35, 1.00, 0.50, 1.0),  -- P3 出生点：亮绿（同步玩家色）
@@ -118,69 +118,65 @@ Config.ExplosionRecovery   = 0.20   -- 爆炸后摇（秒）
 Config.PlatformRespawnTime = 6.0    -- 平台重生时间（秒）
 
 -- 死亡与重生
-Config.RespawnDelay       = 1.5    -- 复活等待（秒）
+Config.RespawnDelay       = 3.0    -- 复活等待（秒）— 检查点复活延迟
 Config.InvincibleDuration = 1.0    -- 出生保护（秒）
 Config.DeathY             = -10.0  -- 死亡区域 Y 坐标
 
--- 比赛系统
-Config.RoundDuration     = 75.0    -- 单局时长（秒）
-Config.NumRounds         = 3       -- 总回合数（打完 N 回合结束比赛）
-Config.PlaceScores       = { 4, 2, 1, 0 }  -- 名次对应积分（1st~4th）
-Config.CountdownTime     = 3.0     -- 开局倒计时（秒）
+-- 会话系统（个人独立计时）
+Config.SessionDuration   = 60.0    -- 个人会话时长（秒）
 
--- 击杀积分
-Config.KillScore         = 1       -- 每次击杀得分
-Config.DeathPenalty      = 1       -- 死亡扣分
-Config.MultiKillWindow   = 2.0     -- 连续击杀判定窗口（秒）
-Config.MultiKillBonus    = 1       -- 双杀/三杀额外加分
-Config.MultiKillTexts    = {       -- 连杀文字（按连续击杀数索引）
+-- 计分系统
+Config.HeightScorePerBlock = 10    -- 每上/下1格 ±10 分
+Config.KillScore           = 10    -- 击杀得分
+Config.DeathPenalty        = 10    -- 死亡扣分
+Config.MultiKillWindow     = 2.0   -- 连续击杀判定窗口（秒）
+Config.MultiKillBonus      = 5     -- 双杀/三杀额外加分
+Config.PickupScoreSmall    = 1     -- 小拾取物得分
+Config.PickupScoreLarge    = 3     -- 大拾取物得分
+Config.MultiKillTexts      = {     -- 连杀文字（按连续击杀数索引）
     [1] = "击杀!",
     [2] = "双杀!",
     [3] = "三杀!",
     [4] = "四杀!",
     [5] = "超神!",
 }
-Config.KillStreakTexts    = {       -- 连杀文字（按连续不死击杀数索引，≥3 显示）
+Config.KillStreakTexts     = {     -- 连杀文字（按连续不死击杀数索引，≥3 显示）
     [3] = "连杀中!",
     [5] = "杀疯了!",
     [7] = "无人能挡!",
 }
 
--- 终点庆祝效果
-Config.CelebrationJumpInterval = 0.5   -- 庆祝跳跃间隔（秒）
-Config.CelebrationJumpSpeed    = 10.0  -- 庆祝跳跃初速度（m/s）
-Config.CelebrationFlipSpeed    = 540   -- 庆祝翻转速度（度/秒）
+-- 检查点系统
+Config.CheckpointInterval = 10     -- 每隔多少层一个检查点
 
--- 开场镜头动画
-Config.IntroFocusFinishTime  = 1.5   -- 聚焦终点持续时间（秒）
-Config.IntroPanToSpawnTime   = 1.5   -- 平移到起点持续时间（秒）
-Config.IntroZoomTextTime     = 1.5   -- 放大+文字显示持续时间（秒）
-Config.IntroZoomOutTime      = 1.0   -- 拉远回全景过渡时间（秒）
-Config.IntroFinishOrtho      = 8.0   -- 聚焦终点时的正交尺寸（拉近）
-Config.IntroSpawnOrtho       = 10.0  -- 聚焦起点时的正交尺寸
+-- AI 密度管理
+Config.AIEntitiesPerSection  = 3   -- 每10层目标实体数（含真人）
+Config.AISectionLayers       = 10  -- 一个分区的层数
+Config.AIMinPerSection       = 1   -- 分区最少AI数
+Config.AIMaxPerSection       = 3   -- 分区最多AI数
+Config.AIDensityUpdateInterval = 5.0  -- AI密度检查间隔（秒）
+Config.AISessionDuration     = 60.0   -- AI会话时长（与人类相同）
 
--- 匹配系统
-Config.MatchingTimeout   = 10.0    -- 匹配超时（秒），超时后 AI 静默补齐
+-- 最大实体数
+Config.MaxTotalEntities  = 24     -- 服务端最大同时实体数（真人+AI）
 
--- 联机配置
-Config.RoomCodeLength    = 6       -- 房间码长度（位数）
-Config.QuickAIInterval   = 10.0    -- 快速匹配中 AI 填充间隔（秒）
-Config.MaxRoomPlayers    = 4       -- 房间最大玩家数
-Config.RoomStartDelay    = 1.5     -- 点击开始后延迟（秒），给客户端准备时间
-
--- 相机
+-- 相机（大世界模式：跟随本地玩家）
 Config.CameraZ           = -40.0   -- 相机 Z 位置（侧视）
 Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸
 Config.CameraMaxOrtho    = 40.0    -- 最大正交尺寸（适配更大地图）
 Config.CameraPadding     = 4.0     -- 相机包围盒边距
 Config.CameraSmoothSpeed = 3.0     -- 相机平滑速度
+Config.CameraFollowOrtho = 14.0    -- 跟随玩家时的正交尺寸
 
--- 玩家数量
-Config.NumPlayers = 4
+-- 分块渲染
+Config.ChunkRenderBuffer = 15.0    -- 相机上下各渲染 ±15m 的方块
 
--- 默认地图尺寸（30x24 固定相机可视全局）
+-- 玩家数量（颜色槽位数，实际在线玩家可超过4，颜色循环使用）
+Config.NumPlayerColors = 4
+
+-- 默认地图尺寸（30x500 大世界）
 Config.DefaultMapWidth  = 30
-Config.DefaultMapHeight = 24
+Config.DefaultMapHeight = 500
 
 -- 出生点方块类型列表（按玩家编号索引）
 Config.SpawnBlockTypes = {
@@ -200,5 +196,18 @@ function Config.IsSpawnBlock(blockType)
         or blockType == Config.BLOCK_SPAWN_P3
         or blockType == Config.BLOCK_SPAWN_P4
 end
+
+--- 判断方块类型是否不可破坏（安全/检查点/出生点）
+---@param blockType number
+---@return boolean
+function Config.IsIndestructible(blockType)
+    return blockType == Config.BLOCK_SAFE
+        or blockType == Config.BLOCK_CHECKPOINT
+        or Config.IsSpawnBlock(blockType)
+end
+
+-- 排行榜
+Config.LeaderboardUpdateInterval = 2.0  -- 排行榜广播间隔（秒）
+Config.LeaderboardMaxEntries     = 16   -- 排行榜最大显示条数
 
 return Config

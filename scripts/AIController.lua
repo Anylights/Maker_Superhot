@@ -1,5 +1,5 @@
 -- ============================================================================
--- AIController.lua - AI 控制器（完全重写 v6）
+-- AIController.lua - AI 控制器（v7 开放世界）
 -- 核心改进：
 --   1) 精确起跳点计算：AI 先移到最佳起跳 X 再跳
 --   2) 空中制导：跳跃中持续修正水平速度对准落点
@@ -7,6 +7,7 @@
 --   4) 更激进的战术：主动寻找爆炸机会、灵活使用冲刺
 --   5) 快速脱困：检测到卡住后立即采取行动
 --   6) 路径选择更聪明：优先选物理上容易执行的路径
+--   7) 开放世界：局部平台扫描 ±25 层，向上寻路（无终点）
 -- ============================================================================
 
 local Config = require("Config")
@@ -50,16 +51,22 @@ local STATE_DASH         = 5   -- 冲刺中
 local STATE_STUCK        = 6   -- 卡住恢复
 
 -- ============================================================================
--- 平台扫描
+-- 平台扫描（局部：仅扫描 minGY..maxGY 范围内的层）
 -- ============================================================================
 
+local AI_SCAN_RANGE = 25  -- 上下各扫描 25 层
+
 ---@param mapModule table
+---@param minGY number 起始网格 Y（>=1）
+---@param maxGY number 结束网格 Y（<=MapData.Height）
 ---@return table platforms
-local function scanPlatforms(mapModule)
+local function scanPlatforms(mapModule, minGY, maxGY)
     local platforms = {}
     local bs = Config.BlockSize
+    minGY = math.max(1, minGY)
+    maxGY = math.min(MapData.Height, maxGY)
 
-    for gy = 1, MapData.Height do
+    for gy = minGY, maxGY do
         local segStart = nil
 
         for gx = 1, MapData.Width + 1 do
@@ -71,19 +78,19 @@ local function scanPlatforms(mapModule)
             local isSolid = (block ~= Config.BLOCK_EMPTY)
             local aboveEmpty = true
             if gx <= MapData.Width then
-                if mapModule.GetBlock(gx, gy + 1) ~= Config.BLOCK_EMPTY then
-                    aboveEmpty = false
+                if gy + 1 <= MapData.Height then
+                    if mapModule.GetBlock(gx, gy + 1) ~= Config.BLOCK_EMPTY then
+                        aboveEmpty = false
+                    end
                 end
             end
 
             local isValidSurface = isSolid and aboveEmpty
-            local isFinish = (block == Config.BLOCK_FINISH)
 
             if isValidSurface then
                 if segStart == nil then
-                    segStart = { x = gx, isFinish = isFinish }
+                    segStart = { x = gx }
                 end
-                if isFinish then segStart.isFinish = true end
             else
                 if segStart then
                     local wx1 = (segStart.x - 1) * bs
@@ -93,7 +100,6 @@ local function scanPlatforms(mapModule)
                         x2 = wx2,
                         y  = gy * bs,                 -- 平台表面 Y
                         charY = gy * bs + CHAR_HALF_H, -- 角色中心 Y
-                        isFinish = segStart.isFinish,
                         width = wx2 - wx1,
                         cx = (wx1 + wx2) * 0.5,       -- 平台中心 X
                         gridY = gy,
@@ -257,158 +263,77 @@ end
 -- A* 寻路 - 优化版
 -- ============================================================================
 
+--- 向上寻路：贪心 BFS 找一条向上攀爬的路径（约 8-12 步）
 ---@param startPlat table
 ---@param platforms table
 ---@return table|nil path, table|nil jumpInfos
-local function findPathToFinish(startPlat, platforms)
-    -- 找终点
-    local finishPlats = {}
-    for _, p in ipairs(platforms) do
-        if p.isFinish then
-            table.insert(finishPlats, p)
-        end
-    end
-    if #finishPlats == 0 then return nil, nil end
-
-    -- 平台索引映射
-    local platIndex = {}
-    for i, p in ipairs(platforms) do
-        platIndex[p] = i
-    end
-    local startIdx = platIndex[startPlat]
-    if not startIdx then return nil, nil end
-
-    -- 构建邻接表（带 jumpInfo）
-    local adjacency = {}
-    local jumpInfoMap = {}  -- [fromIdx][toIdx] = jumpInfo
-
-    for i = 1, #platforms do
-        adjacency[i] = {}
-        jumpInfoMap[i] = {}
-    end
-
+local function findPathUpward(startPlat, platforms)
+    local MAX_PATH_STEPS = 12
     local MAX_DY_UP   = MAX_JUMP_HEIGHT + 1.0
-    local MAX_DY_DOWN = 25.0
+    local MAX_DY_DOWN = 8.0
     local MAX_DX      = 20.0
 
-    for i = 1, #platforms do
-        local pi = platforms[i]
-        for j = 1, #platforms do
-            if i ~= j then
-                local pj = platforms[j]
-                local dy = pj.charY - pi.charY
+    local path = { startPlat }
+    local jumpInfos = {}
+    local visited = { [startPlat] = true }
+    local current = startPlat
+
+    for _ = 1, MAX_PATH_STEPS do
+        -- 从当前平台找最佳的下一个向上平台
+        local bestPlat = nil
+        local bestInfo = nil
+        local bestScore = -math.huge
+
+        for _, plat in ipairs(platforms) do
+            if not visited[plat] and plat ~= current then
+                local dy = plat.charY - current.charY
                 if dy <= MAX_DY_UP and dy >= -MAX_DY_DOWN then
-                    local dxCenter = math.abs(pj.cx - pi.cx)
+                    local dxCenter = math.abs(plat.cx - current.cx)
                     if dxCenter <= MAX_DX then
-                        local reachable, jinfo = analyzeReachability(pi, pj)
+                        local reachable, jinfo = analyzeReachability(current, plat)
                         if reachable and jinfo then
-                            -- 代价函数：优先上升、宽平台、短水平距离
-                            local cost = 1.0
-                            -- 水平距离代价
-                            cost = cost + dxCenter * 0.3
-                            -- 下降惩罚（不鼓励下降，除非必要）
-                            if dy < -0.5 then
-                                cost = cost + math.abs(dy) * 1.5
-                            end
-                            -- 上升奖励（终点在上方）
-                            if dy > 0.5 then
-                                cost = cost + dy * 0.2  -- 低代价 = 鼓励上升
-                            end
-                            -- 跳跃难度惩罚（向上跳高=更难）
-                            if jinfo.type == "jump_up" then
+                            -- 评分：优先高度增益，其次宽平台、近距离
+                            local score = dy * 5.0              -- 高度增益（核心）
+                            score = score - dxCenter * 0.3      -- 水平距离惩罚
+                            score = score + plat.width * 0.2    -- 宽平台加分
+                            -- 跳跃难度惩罚
+                            if jinfo.type == "jump_up" and dy > 0 then
                                 local diffRatio = dy / MAX_JUMP_HEIGHT
-                                cost = cost + diffRatio * diffRatio * 3.0  -- 接近极限时惩罚剧增
+                                score = score - diffRatio * diffRatio * 3.0
                             end
-                            -- 窄平台惩罚（落到窄平台更容易失败）
-                            if pj.width < 2.0 then
-                                cost = cost + (2.0 - pj.width) * 1.5
+                            -- 窄平台惩罚
+                            if plat.width < 2.0 then
+                                score = score - (2.0 - plat.width) * 1.0
                             end
+                            -- 轻微随机扰动避免重复路径
+                            score = score + (math.random() - 0.5) * 1.0
 
-                            table.insert(adjacency[i], { idx = j, cost = cost })
-                            jumpInfoMap[i][j] = jinfo
+                            if score > bestScore then
+                                bestScore = score
+                                bestPlat = plat
+                                bestInfo = jinfo
+                            end
                         end
                     end
                 end
             end
         end
+
+        if not bestPlat then break end
+
+        visited[bestPlat] = true
+        table.insert(path, bestPlat)
+        table.insert(jumpInfos, bestInfo)
+        current = bestPlat
     end
 
-    -- 启发式
-    local function heuristic(idx)
-        local p = platforms[idx]
-        local minH = math.huge
-        for _, fp in ipairs(finishPlats) do
-            local h = math.max(0, fp.charY - p.charY) * 0.2
-                    + math.abs(fp.cx - p.cx) * 0.15
-            if h < minH then minH = h end
-        end
-        return minH
-    end
-
-    -- A*
-    local gScore = { [startIdx] = 0 }
-    local cameFrom = {}
-    local cameEdge = {}  -- 记录使用的边（含 jumpInfo）
-    local closedSet = {}
-    local openSet = { { idx = startIdx, f = heuristic(startIdx) } }
-
-    while #openSet > 0 do
-        -- 找 f 最小
-        local bestI = 1
-        for i = 2, #openSet do
-            if openSet[i].f < openSet[bestI].f then bestI = i end
-        end
-        local current = openSet[bestI]
-        table.remove(openSet, bestI)
-
-        if platforms[current.idx].isFinish then
-            -- 回溯路径
-            local path = {}
-            local jumpInfos = {}
-            local c = current.idx
-            while c do
-                table.insert(path, 1, platforms[c])
-                if cameFrom[c] then
-                    table.insert(jumpInfos, 1, jumpInfoMap[cameFrom[c]][c])
-                end
-                c = cameFrom[c]
-            end
-            return path, jumpInfos
-        end
-
-        closedSet[current.idx] = true
-
-        for _, edge in ipairs(adjacency[current.idx]) do
-            if not closedSet[edge.idx] then
-                local tentG = (gScore[current.idx] or math.huge) + edge.cost
-                if tentG < (gScore[edge.idx] or math.huge) then
-                    gScore[edge.idx] = tentG
-                    cameFrom[edge.idx] = current.idx
-
-                    local found = false
-                    for _, o in ipairs(openSet) do
-                        if o.idx == edge.idx then
-                            o.f = tentG + heuristic(edge.idx)
-                            found = true
-                            break
-                        end
-                    end
-                    if not found then
-                        table.insert(openSet, { idx = edge.idx, f = tentG + heuristic(edge.idx) })
-                    end
-                end
-            end
-        end
-    end
-
-    return nil, nil
+    if #path <= 1 then return nil, nil end
+    return path, jumpInfos
 end
 
 -- ============================================================================
--- 共享缓存
+-- 状态
 -- ============================================================================
-local cachedPlatforms_ = {}
-local platformScanTimer_ = 0
 local aiStates_ = {}
 local playerModule_ = nil
 local mapModule_ = nil
@@ -421,9 +346,7 @@ function AIController.Init(playerRef, mapRef)
     playerModule_ = playerRef
     mapModule_ = mapRef
     aiStates_ = {}
-    cachedPlatforms_ = {}
-    platformScanTimer_ = 0
-    print("[AI] Initialized (smart nav v6)")
+    print("[AI] Initialized (v7 open-world)")
 end
 
 function AIController.Register(playerData)
@@ -438,6 +361,7 @@ function AIController.Register(playerData)
         -- 计时器
         thinkTimer     = math.random() * THINK_INTERVAL,
         repathTimer    = 0,
+        platScanTimer  = 0,           -- 局部平台扫描计时器
 
         -- 移动输出
         moveDir        = 0,
@@ -474,17 +398,27 @@ function AIController.Register(playerData)
 
         -- 上次所在平台
         lastPlatform   = nil,
+
+        -- 局部平台缓存
+        cachedPlatforms = {},
     }
-    print("[AI] Player " .. playerData.index .. " registered (v6, aggr=" ..
+    print("[AI] Player " .. playerData.index .. " registered (v7, aggr=" ..
           string.format("%.2f", personality.aggression) .. ")")
 end
 
---- 取消 AI 注册（玩家切为人类控制时调用）
----@param playerData table
-function AIController.Unregister(playerData)
-    if playerData and aiStates_[playerData.index] then
-        aiStates_[playerData.index] = nil
-        print("[AI] Player " .. playerData.index .. " unregistered")
+--- 取消 AI 注册
+--- 接受 playerData 对象或直接传 slot/index 数字
+---@param playerDataOrIndex table|number
+function AIController.Unregister(playerDataOrIndex)
+    local idx
+    if type(playerDataOrIndex) == "number" then
+        idx = playerDataOrIndex
+    elseif type(playerDataOrIndex) == "table" and playerDataOrIndex.index then
+        idx = playerDataOrIndex.index
+    end
+    if idx and aiStates_[idx] then
+        aiStates_[idx] = nil
+        print("[AI] Player " .. idx .. " unregistered")
     end
 end
 
@@ -495,15 +429,10 @@ end
 function AIController.Update(dt)
     if not playerModule_ or not mapModule_ then return end
 
-    -- 定期扫描平台
-    platformScanTimer_ = platformScanTimer_ - dt
-    if platformScanTimer_ <= 0 then
-        platformScanTimer_ = PLATFORM_SCAN_INTERVAL
-        cachedPlatforms_ = scanPlatforms(mapModule_)
-    end
-
     for _, p in ipairs(playerModule_.list) do
-        if not p.isHuman and p.alive and not p.finished then
+        -- 会话活跃且存活的 AI 才更新
+        local sessionActive = p.session and p.session.active
+        if not p.isHuman and p.alive and sessionActive then
             AIController.UpdateOne(p, dt)
         end
     end
@@ -514,6 +443,17 @@ function AIController.UpdateOne(p, dt)
     if not state then
         AIController.Register(p)
         state = aiStates_[p.index]
+    end
+
+    -- 局部平台扫描（每个 AI 独立，基于自身位置）
+    state.platScanTimer = state.platScanTimer - dt
+    if state.platScanTimer <= 0 then
+        state.platScanTimer = PLATFORM_SCAN_INTERVAL
+        if p.node then
+            local py = p.node.position.y
+            local centerGY = math.floor(py / Config.BlockSize)
+            state.cachedPlatforms = scanPlatforms(mapModule_, centerGY - AI_SCAN_RANGE, centerGY + AI_SCAN_RANGE)
+        end
     end
 
     state.thinkTimer = state.thinkTimer - dt
@@ -595,7 +535,7 @@ function AIController.Think(p, state)
     -- =========================================
     -- 2) 地面行为
     -- =========================================
-    local curPlat = findCurrentPlatform(px, py, cachedPlatforms_)
+    local curPlat = findCurrentPlatform(px, py, state.cachedPlatforms)
     state.lastPlatform = curPlat
 
     -- 获取下一个目标平台和跳跃信息
@@ -749,7 +689,7 @@ function AIController.ThinkInAir(p, state, px, py, vx, vy)
         local bestPlat = nil
         local bestScore = math.huge
 
-        for _, plat in ipairs(cachedPlatforms_) do
+        for _, plat in ipairs(state.cachedPlatforms) do
             -- 只看下方或同层的平台
             if plat.charY <= py + 1.0 then
                 local platDx = math.max(0, plat.x1 - px) + math.max(0, px - plat.x2)
@@ -881,15 +821,17 @@ end
 -- ============================================================================
 
 function AIController.Repath(p, state, px, py)
-    if #cachedPlatforms_ == 0 then
-        cachedPlatforms_ = scanPlatforms(mapModule_)
+    -- 确保有局部平台缓存
+    if #state.cachedPlatforms == 0 then
+        local centerGY = math.floor(py / Config.BlockSize)
+        state.cachedPlatforms = scanPlatforms(mapModule_, centerGY - AI_SCAN_RANGE, centerGY + AI_SCAN_RANGE)
     end
 
-    local curPlat = findCurrentPlatform(px, py, cachedPlatforms_)
+    local curPlat = findCurrentPlatform(px, py, state.cachedPlatforms)
     if not curPlat then
         -- 找最近平台
         local bestDist = math.huge
-        for _, plat in ipairs(cachedPlatforms_) do
+        for _, plat in ipairs(state.cachedPlatforms) do
             local cx = math.max(plat.x1, math.min(plat.x2, px))
             local d = math.abs(cx - px) + math.abs(plat.charY - py) * 2
             if d < bestDist then
@@ -905,7 +847,7 @@ function AIController.Repath(p, state, px, py)
         return
     end
 
-    local path, jumpInfos = findPathToFinish(curPlat, cachedPlatforms_)
+    local path, jumpInfos = findPathUpward(curPlat, state.cachedPlatforms)
     state.path = path
     state.jumpInfos = jumpInfos
     state.pathIdx = 2  -- 跳过当前平台
@@ -967,11 +909,6 @@ function AIController.ThinkExplode(p, state, px, py)
                     end
                 end
 
-                -- 自己接近终点时更保守（别在快赢时浪费能量）
-                if py > 42.0 then
-                    score = score - 15
-                end
-
                 if score > bestScore then
                     bestScore = score
                     bestDist = dist
@@ -1020,21 +957,6 @@ function AIController.ThinkDash(p, state, px, py, curPlat, targetPlat)
         end
     end
 
-    -- 条件2：直线到终点（接近终点时全力冲刺）
-    if py > 46.0 and curPlat.width > 3.0 then
-        -- 接近终点区域，能冲就冲
-        for _, fp in ipairs(cachedPlatforms_) do
-            if fp.isFinish then
-                local dx = fp.cx - px
-                local dy = math.abs(fp.charY - py)
-                if dy < 3.0 and math.abs(dx) > 2.0 then
-                    state.wantDash = true
-                    state.moveDir = dx > 0 and 1 or -1
-                    break
-                end
-            end
-        end
-    end
 end
 
 return AIController

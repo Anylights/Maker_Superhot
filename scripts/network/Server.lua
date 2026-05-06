@@ -1,6 +1,7 @@
 -- ============================================================================
--- Server.lua - 超级红温！ 联机服务端
--- 职责：连接管理、快速匹配队列、房间系统、权威游戏运行
+-- Server.lua - 超级红温！ 联机服务端（持久世界模式）
+-- 职责：连接管理、持久世界、个人会话、AI 密度管理
+-- 架构：无大厅/房间/匹配 → 玩家连接即进入世界，独立 60s 会话
 -- ============================================================================
 
 require "LuaScripts/Utilities/Sample"
@@ -15,7 +16,6 @@ local AIController = require("AIController")
 local GameManager = require("GameManager")
 local SFX = require("SFX")
 local RandomPickup = require("RandomPickup")
-local LevelManager = require("LevelManager")
 
 local EVENTS = Shared.EVENTS
 local CTRL = Shared.CTRL
@@ -50,26 +50,80 @@ end
 local scene_ = nil
 
 -- 连接 → 数据映射（key = tostring(connection)）
-local connections_ = {}  -- { conn, connKey, slot, roomCode, inQuick }
+-- connData: { conn, connKey, slot, ready }
+local connections_ = {}
 
--- 快速匹配队列
-local quickQueue_ = {}        -- { connKey, joinTime }
-local quickAICount_ = 0       -- 快速匹配队列中的 AI 数量
-local quickTimer_ = 0         -- 快速匹配队列计时器
-local quickLastAITime_ = 0    -- 上次添加 AI 的时间
+-- 槽位池：slot → connKey 或 "AI" 或 nil（空闲）
+-- slot 范围 1..MaxTotalEntities
+local slots_ = {}
 
--- 房间系统
-local rooms_ = {}             -- rooms_[roomCode] = { hostKey, players={connKey,...}, aiCount, state }
+-- AI 管理
+local aiSlots_ = {}            -- slot → { spawnSection }
+local aiDensityTimer_ = 0
 
--- 游戏会话
-local activeGame_ = nil       -- { players={...}, roomCode, isQuick, state }
+-- 世界是否已初始化
+local worldReady_ = false
+local mapSeed_ = 0
 
 -- 服务端时间
 local serverTime_ = 0
 
--- 定期广播游戏状态的间隔计时器
-local gameStateBroadcastTimer_ = 0
-local GAME_STATE_BROADCAST_INTERVAL = 1.0  -- 每秒广播一次
+-- 广播计时器
+local leaderboardTimer_ = 0
+local scoreUpdateTimer_ = 0
+local SCORE_UPDATE_INTERVAL = 0.5
+
+-- ============================================================================
+-- Slot Management
+-- ============================================================================
+
+--- 分配一个空闲槽位
+---@return number|nil slot 编号，nil 表示已满
+local function AllocateSlot()
+    for i = 1, Config.MaxTotalEntities do
+        if not slots_[i] then
+            return i
+        end
+    end
+    return nil
+end
+
+--- 释放槽位
+---@param slot number
+local function FreeSlot(slot)
+    slots_[slot] = nil
+end
+
+--- 统计已使用的槽位数
+---@return number humanCount, number aiCount, number totalCount
+local function CountSlots()
+    local humans, ais = 0, 0
+    for i = 1, Config.MaxTotalEntities do
+        if slots_[i] then
+            if slots_[i] == "AI" then
+                ais = ais + 1
+            else
+                humans = humans + 1
+            end
+        end
+    end
+    return humans, ais, humans + ais
+end
+
+-- ============================================================================
+-- Helper: Find player by slot
+-- ============================================================================
+
+---@param slot number
+---@return table|nil player
+function Server.FindPlayerBySlot(slot)
+    for _, p in ipairs(Player.list) do
+        if p.index == slot then
+            return p
+        end
+    end
+    return nil
+end
 
 -- ============================================================================
 -- Entry
@@ -78,18 +132,14 @@ local GAME_STATE_BROADCAST_INTERVAL = 1.0  -- 每秒广播一次
 function Server.Start()
     SampleStart()
     graphics.windowTitle = Config.Title .. " [Server]"
-    print("=== " .. Config.Title .. " (Server) ===")
+    print("=== " .. Config.Title .. " (Server - Persistent World) ===")
 
     -- 网络发送频率与服务器实际 tick rate 对齐
-    -- SERVER_TICK_RATE 由框架注入，代表服务器实际物理/逻辑更新频率
-    -- 如果 SetUpdateFps > SERVER_TICK_RATE，多出的网络包只是重复发送相同位置数据（浪费带宽）
-    -- 如果 SetUpdateFps < SERVER_TICK_RATE，物理步进间的位置更新会被跳过（增大延迟）
     ---@diagnostic disable-next-line: undefined-global
     local serverTickRate = SERVER_TICK_RATE or 60
     network:SetUpdateFps(serverTickRate)
-    print("[Server] network:SetUpdateFps(" .. serverTickRate .. ") — aligned with SERVER_TICK_RATE")
+    print("[Server] network:SetUpdateFps(" .. serverTickRate .. ")")
 
-    -- [DIAG] 输出服务器配置信息
     ---@diagnostic disable-next-line: undefined-global
     print("[Server.DIAG] SERVER_TICK_RATE = " .. tostring(SERVER_TICK_RATE or "nil"))
     ---@diagnostic disable-next-line: undefined-global
@@ -110,39 +160,79 @@ function Server.Start()
     AIController.Init(Player, Map)
     SFX.Init(scene_)
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, nil)
-    RandomPickup.Init(Map, Pickup)
-
-    -- LevelManager.Init() 内部已分离缓存填充和文件 I/O：
-    -- 缓存填充是纯内存操作，永远成功；文件 I/O 已有 pcall 保护
-    -- 因此这里不再需要外层 pcall
-    LevelManager.Init()
+    RandomPickup.Init(Map, Pickup, Player)
 
     -- 监听连接事件
     SubscribeToEvent("ClientConnected", "HandleClientConnected")
     SubscribeToEvent("ClientDisconnected", "HandleClientDisconnected")
 
-    -- 监听客户端远程事件
+    -- 监听客户端远程事件（仅 CLIENT_READY 和 REQUEST_RESTART）
     SubscribeToEvent(EVENTS.CLIENT_READY, "HandleClientReady")
-    SubscribeToEvent(EVENTS.REQUEST_QUICK, "HandleRequestQuick")
-    SubscribeToEvent(EVENTS.CANCEL_QUICK, "HandleCancelQuick")
-    SubscribeToEvent(EVENTS.REQUEST_CREATE, "HandleRequestCreate")
-    SubscribeToEvent(EVENTS.REQUEST_JOIN, "HandleRequestJoin")
-    SubscribeToEvent(EVENTS.REQUEST_LEAVE, "HandleRequestLeave")
-    SubscribeToEvent(EVENTS.REQUEST_DISMISS, "HandleRequestDismiss")
-    SubscribeToEvent(EVENTS.REQUEST_ADD_AI, "HandleRequestAddAI")
-    SubscribeToEvent(EVENTS.REQUEST_START, "HandleRequestStart")
+    SubscribeToEvent(EVENTS.REQUEST_RESTART, "HandleRequestRestart")
 
-    -- GameManager 击杀回调
+    -- GameManager 回调
     GameManager.OnKill(function(killerIdx, victimIdx, multiKill, killStreak)
         Server.BroadcastKillEvent(killerIdx, victimIdx, multiKill, killStreak)
     end)
 
+    GameManager.OnSessionEnd(function(playerIndex, totalScore)
+        Server.OnPlayerSessionEnd(playerIndex, totalScore)
+    end)
+
+    -- 初始化世界
+    Server.InitWorld()
+
     print("[Server] Started, waiting for connections...")
-    print("[Server] ✅ All event handlers registered, server fully ready")
+    print("[Server] All event handlers registered, server fully ready")
 end
 
 function Server.Stop()
     print("[Server] Stopped")
+end
+
+-- ============================================================================
+-- World Init
+-- ============================================================================
+
+function Server.InitWorld()
+    if worldReady_ then return end
+
+    mapSeed_ = os.time()
+    GameManager.InitWorld(mapSeed_)
+    worldReady_ = true
+
+    -- 注册爆炸回调 → 广播给所有客户端
+    Player.onExplode = function(playerIndex, centerGX, centerGY, actualRadius)
+        Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadius)
+    end
+
+    -- 注册死亡回调 → 广播给所有客户端
+    Player.onDeath = function(playerIndex, reason, killerIndex)
+        Server.BroadcastPlayerDeath(playerIndex, reason, killerIndex)
+    end
+
+    -- 道具拾取回调 → 广播给所有客户端
+    Pickup.onCollected = function(nodeId, playerIndex, size)
+        local data = VariantMap()
+        data["NodeID"] = Variant(nodeId)
+        data["PlayerIndex"] = Variant(playerIndex)
+        data["Size"] = Variant(size or "")
+        Server.BroadcastToAll(EVENTS.PICKUP_COLLECTED, data)
+    end
+
+    -- 检查点回调 → 通知对应客户端
+    Player.onCheckpoint = function(playerIndex, checkpointY)
+        for _, cd in pairs(connections_) do
+            if cd.slot == playerIndex and cd.conn and cd.ready then
+                local data = VariantMap()
+                data["CheckpointY"] = Variant(checkpointY)
+                cd.conn:SendRemoteEvent(EVENTS.CHECKPOINT_ACTIVATED, true, data)
+                break
+            end
+        end
+    end
+
+    print("[Server] World initialized with seed=" .. mapSeed_)
 end
 
 -- ============================================================================
@@ -151,16 +241,14 @@ end
 
 function Server.CreateScene()
     scene_ = Scene()
-    -- Octree/PhysicsWorld 必须保持 REPLICATED（默认）：scene 核心组件，影响同步根
     scene_:CreateComponent("Octree")
 
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
-    -- 禁用服务端物理插值：确保发送给客户端的是干净的物理步进位置，
-    -- 而非 Bullet 在渲染帧间插值的中间态（中间态会导致客户端抖动）
+    -- 禁用服务端物理插值：确保发送给客户端的是干净的物理步进位置
     physicsWorld.interpolation = false
 
-    -- 死亡区域（服务端独有 LOCAL，不复制到客户端）
+    -- 死亡区域（底部，与大世界适配）
     local deathZone = scene_:CreateChild("DeathZone", LOCAL)
     deathZone.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
     deathZone.scale = Vector3(MapData.Width + 20, 2, 10)
@@ -175,20 +263,16 @@ function Server.CreateScene()
 end
 
 -- ============================================================================
--- Connection Lookup Helper（防止 tostring 不一致）
+-- Connection Lookup Helper
 -- ============================================================================
 
---- 从 eventData 中提取 connection 并查找对应的 connData
---- 如果 tostring 匹配失败，会遍历 connections_ 按对象引用查找
----@return Connection|nil, string, table|nil
 local function DumpConnections(label)
     local count = 0
     for k, v in pairs(connections_) do
         count = count + 1
         print("[Server] " .. label .. " conn[" .. count .. "]: key=" .. k ..
               " ready=" .. tostring(v.ready) ..
-              " inQuick=" .. tostring(v.inQuick) ..
-              " roomCode=" .. tostring(v.roomCode))
+              " slot=" .. tostring(v.slot))
     end
     if count == 0 then
         print("[Server] " .. label .. " connections_ is EMPTY!")
@@ -234,10 +318,8 @@ function HandleClientConnected(eventType, eventData)
     connections_[connKey] = {
         conn = connection,
         connKey = connKey,
-        slot = 0,         -- 分配的玩家编号（游戏中才有）
-        roomCode = nil,
-        inQuick = false,
-        ready = false,    -- 是否已收到 CLIENT_READY
+        slot = 0,
+        ready = false,
     }
 
     print("[Server] Client connected: " .. connKey .. " (waiting for CLIENT_READY)")
@@ -253,11 +335,29 @@ function HandleClientReady(eventType, eventData)
         return
     end
 
-    -- 现在才设置 connection.scene（客户端已准备好接收场景数据）
+    -- 设置 scene（客户端已准备好接收场景数据）
     connection.scene = scene_
     connData.ready = true
 
-    print("[Server] CLIENT_READY received, scene assigned: " .. connKey)
+    -- 分配槽位
+    local slot = AllocateSlot()
+    if not slot then
+        print("[Server] ERROR: No available slots for player " .. connKey)
+        return
+    end
+
+    connData.slot = slot
+    slots_[slot] = connKey
+
+    -- 创建玩家实体
+    Player.Create(slot, true, { skipVisuals = true })
+
+    -- 延迟一帧后发送 SESSION_START（等待场景复制完成）
+    Shared.DelayOneFrame(function()
+        Server.SendSessionStart(connData)
+    end)
+
+    print("[Server] CLIENT_READY: assigned slot " .. slot .. " to " .. connKey)
     DumpConnections("after-ready")
 end
 
@@ -265,41 +365,30 @@ function HandleClientDisconnected(eventType, eventData)
     local connection, connKey, connData = FindConnection(eventData)
 
     if connData then
-        -- 从快速匹配队列移除
-        if connData.inQuick then
-            Server.RemoveFromQuickQueue(connKey)
-        end
-
-        -- 从房间移除
-        if connData.roomCode then
-            local room = rooms_[connData.roomCode]
-            if room then
-                if room.hostKey == connKey then
-                    -- 房主断线 → 解散房间
-                    Server.DismissRoom(connData.roomCode)
-                else
-                    -- 普通玩家断线 → 从房间移除
-                    Server.RemoveFromRoom(connData.roomCode, connKey)
+        local slot = connData.slot
+        if slot and slot > 0 then
+            -- 结束会话
+            local p = Server.FindPlayerBySlot(slot)
+            if p then
+                if p.session.active then
+                    GameManager.EndPlayerSession(slot)
+                end
+                -- 移除玩家节点
+                if p.node then
+                    p.node:Remove()
                 end
             end
-        end
 
-        -- 从活跃游戏移除（如果正在游戏中）
-        if activeGame_ then
-            for i, gp in ipairs(activeGame_.players) do
-                if gp.connKey == connKey then
-                    gp.disconnected = true
-                    -- 将对应玩家改为 AI 控制
-                    for _, p in ipairs(Player.list) do
-                        if p.index == gp.slot then
-                            p.isHuman = false
-                            AIController.Register(p)
-                            break
-                        end
-                    end
+            -- 从 Player.list 移除
+            for i, pl in ipairs(Player.list) do
+                if pl.index == slot then
+                    table.remove(Player.list, i)
                     break
                 end
             end
+
+            -- 释放槽位
+            FreeSlot(slot)
         end
 
         connections_[connKey] = nil
@@ -309,780 +398,381 @@ function HandleClientDisconnected(eventType, eventData)
 end
 
 -- ============================================================================
--- Quick Match
+-- Session Management
 -- ============================================================================
 
-function HandleRequestQuick(eventType, eventData)
-    print("[Server] >>> HandleRequestQuick ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_QUICK: FindConnection returned nil! connKey=" .. tostring(connKey))
-        DumpConnections("REQUEST_QUICK-fail")
-        return
-    end
-    print("[Server] REQUEST_QUICK from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ", inQuick=" .. tostring(connData.inQuick) .. ", roomCode=" .. tostring(connData.roomCode) .. ")")
+--- 向客户端发送 SESSION_START 并开始会话
+---@param connData table
+function Server.SendSessionStart(connData)
+    if not connData or not connData.conn then return end
 
-    -- 如果已在队列或房间中，忽略
-    if connData.inQuick then
-        print("[Server] REQUEST_QUICK: already in quick queue, ignoring")
-        return
-    end
-    if connData.roomCode then
-        print("[Server] REQUEST_QUICK: already in room " .. connData.roomCode .. ", ignoring")
-        return
-    end
+    local slot = connData.slot
 
-    connData.inQuick = true
-    table.insert(quickQueue_, { connKey = connKey, joinTime = serverTime_ })
+    -- 开始会话（内部会重置计分 + 重生玩家）
+    GameManager.StartPlayerSession(slot)
 
-    -- 重置 AI 计时器（从有新人加入时开始计时）
-    quickLastAITime_ = serverTime_
-
-    print("[Server] Player joined quick queue: " .. connKey .. " (total: " .. #quickQueue_ .. "+" .. quickAICount_ .. " AI)")
-
-    -- 广播当前队列人数
-    Server.BroadcastQuickUpdate()
-end
-
-function HandleCancelQuick(eventType, eventData)
-    print("[Server] >>> HandleCancelQuick ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] CANCEL_QUICK: FindConnection returned nil! connKey=" .. tostring(connKey))
-        return
-    end
-    print("[Server] CANCEL_QUICK from " .. connKey)
-    Server.RemoveFromQuickQueue(connKey)
-end
-
-function Server.RemoveFromQuickQueue(connKey)
-    local connData = connections_[connKey]
-    if connData then connData.inQuick = false end
-
-    for i = #quickQueue_, 1, -1 do
-        if quickQueue_[i].connKey == connKey then
-            table.remove(quickQueue_, i)
-            break
-        end
-    end
-
-    print("[Server] Player left quick queue: " .. connKey)
-    Server.BroadcastQuickUpdate()
-end
-
-function Server.UpdateQuickMatch(dt)
-    local totalPlayers = #quickQueue_ + quickAICount_
-    if totalPlayers == 0 then return end
-
-    -- 每 QuickAIInterval 秒添加 1 个 AI
-    if totalPlayers < Config.NumPlayers then
-        if serverTime_ - quickLastAITime_ >= Config.QuickAIInterval then
-            quickAICount_ = quickAICount_ + 1
-            quickLastAITime_ = serverTime_
-            totalPlayers = #quickQueue_ + quickAICount_
-            print("[Server] Quick match: added AI (total: " .. #quickQueue_ .. " players + " .. quickAICount_ .. " AI)")
-            Server.BroadcastQuickUpdate()
-        end
-    end
-
-    -- 凑满了 → 开始游戏
-    if totalPlayers >= Config.NumPlayers then
-        Server.StartQuickGame()
-    end
-end
-
-function Server.BroadcastQuickUpdate()
-    local totalPlayers = #quickQueue_ + quickAICount_
-    for _, entry in ipairs(quickQueue_) do
-        local connData = connections_[entry.connKey]
-        if connData and connData.conn then
-            local data = VariantMap()
-            data["PlayerCount"] = Variant(totalPlayers)
-            data["HumanCount"] = Variant(#quickQueue_)
-            connData.conn:SendRemoteEvent(EVENTS.QUICK_UPDATE, true, data)
-        end
-    end
-end
-
-function Server.StartQuickGame()
-    print("[Server] Quick match ready! Starting game...")
-
-    -- 收集参与的连接（最多 NumPlayers 个真人，其余 AI）
-    local gamePlayers = {}
-    local slot = 1
-
-    for _, entry in ipairs(quickQueue_) do
-        if slot > Config.NumPlayers then break end
-        local connData = connections_[entry.connKey]
-        if connData then
-            table.insert(gamePlayers, {
-                connKey = entry.connKey,
-                conn = connData.conn,
-                slot = slot,
-                isAI = false,
-                disconnected = false,
-            })
-            connData.inQuick = false
-            slot = slot + 1
-        end
-    end
-
-    -- 补 AI
-    while slot <= Config.NumPlayers do
-        table.insert(gamePlayers, {
-            connKey = nil,
-            conn = nil,
-            slot = slot,
-            isAI = true,
-            disconnected = false,
-        })
-        slot = slot + 1
-    end
-
-    -- 清空队列
-    quickQueue_ = {}
-    quickAICount_ = 0
-    quickLastAITime_ = 0
-
-    -- 通知所有玩家匹配成功
-    for _, gp in ipairs(gamePlayers) do
-        if gp.conn then
-            local data = VariantMap()
-            data["Slot"] = Variant(gp.slot)
-            gp.conn:SendRemoteEvent(EVENTS.MATCH_FOUND, true, data)
-        end
-    end
-
-    -- 延迟一帧后开始游戏
-    Shared.DelayOneFrame(function()
-        Server.StartGame(gamePlayers, true, nil)
-    end)
-end
-
--- ============================================================================
--- Room System
--- ============================================================================
-
-function Server.GenerateRoomCode()
-    local code = ""
-    for i = 1, Config.RoomCodeLength do
-        code = code .. tostring(math.random(0, 9))
-    end
-    -- 确保不重复
-    if rooms_[code] then
-        return Server.GenerateRoomCode()
-    end
-    return code
-end
-
-function HandleRequestCreate(eventType, eventData)
-    print("[Server] >>> HandleRequestCreate ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_CREATE: FindConnection returned nil! connKey=" .. tostring(connKey))
-        DumpConnections("REQUEST_CREATE-fail")
-        return
-    end
-    print("[Server] REQUEST_CREATE from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ", inQuick=" .. tostring(connData.inQuick) .. ", roomCode=" .. tostring(connData.roomCode) .. ")")
-
-    -- 如果已在房间或队列中，忽略
-    if connData.roomCode then
-        print("[Server] REQUEST_CREATE: already in room " .. connData.roomCode .. ", ignoring")
-        return
-    end
-    if connData.inQuick then
-        print("[Server] REQUEST_CREATE: already in quick queue, ignoring")
-        return
-    end
-
-    local roomCode = Server.GenerateRoomCode()
-    rooms_[roomCode] = {
-        hostKey = connKey,
-        players = { connKey },
-        aiCount = 0,
-        state = "waiting",
-    }
-    connData.roomCode = roomCode
-
-    -- 通知房主
     local data = VariantMap()
-    data["RoomCode"] = Variant(roomCode)
-    print("[Server] Sending ROOM_CREATED to " .. connKey .. " with roomCode=" .. roomCode)
-    connection:SendRemoteEvent(EVENTS.ROOM_CREATED, true, data)
+    data["Slot"] = Variant(slot)
+    data["MapSeed"] = Variant(mapSeed_)
+    data["MapWidth"] = Variant(MapData.Width)
+    data["MapHeight"] = Variant(MapData.Height)
+    data["SessionDuration"] = Variant(Config.SessionDuration)
+    connData.conn:SendRemoteEvent(EVENTS.SESSION_START, true, data)
 
-    -- 广播房间状态
-    Server.BroadcastRoomUpdate(roomCode)
-
-    print("[Server] Room created: " .. roomCode .. " by " .. connKey)
+    print("[Server] SESSION_START sent to slot " .. slot)
 end
 
-function HandleRequestJoin(eventType, eventData)
-    print("[Server] >>> HandleRequestJoin ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_JOIN: FindConnection returned nil! connKey=" .. tostring(connKey))
-        DumpConnections("REQUEST_JOIN-fail")
-        return
-    end
-    print("[Server] REQUEST_JOIN from " .. connKey .. " (ready=" .. tostring(connData.ready) .. ")")
-
-    local roomCode = eventData["RoomCode"]:GetString()
-    local room = rooms_[roomCode]
-
-    -- 验证
-    if not room then
-        local data = VariantMap()
-        data["Reason"] = Variant("房间不存在")
-        connection:SendRemoteEvent(EVENTS.JOIN_FAILED, true, data)
+--- 当玩家会话结束时的回调（由 GameManager.OnSessionEnd 触发）
+---@param playerIndex number
+---@param totalScore number
+function Server.OnPlayerSessionEnd(playerIndex, totalScore)
+    -- 检查是否是 AI
+    if aiSlots_[playerIndex] then
+        -- AI 会话结束 → 标记待移除（在 UpdateAIDensity 中处理）
+        aiSlots_[playerIndex].expired = true
+        print("[Server] AI session ended, slot=" .. playerIndex .. " score=" .. totalScore)
         return
     end
 
-    if room.state ~= "waiting" then
-        local data = VariantMap()
-        data["Reason"] = Variant("游戏已开始")
-        connection:SendRemoteEvent(EVENTS.JOIN_FAILED, true, data)
-        return
-    end
-
-    if #room.players + room.aiCount >= Config.MaxRoomPlayers then
-        local data = VariantMap()
-        data["Reason"] = Variant("房间已满")
-        connection:SendRemoteEvent(EVENTS.JOIN_FAILED, true, data)
-        return
-    end
-
-    -- 加入
-    table.insert(room.players, connKey)
-    connData.roomCode = roomCode
-
-    -- 通知加入者
-    local joinData = VariantMap()
-    joinData["RoomCode"] = Variant(roomCode)
-    connection:SendRemoteEvent(EVENTS.ROOM_JOINED, true, joinData)
-
-    -- 广播更新
-    Server.BroadcastRoomUpdate(roomCode)
-
-    print("[Server] Player " .. connKey .. " joined room " .. roomCode)
-end
-
-function HandleRequestLeave(eventType, eventData)
-    print("[Server] >>> HandleRequestLeave ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_LEAVE: FindConnection returned nil!")
-        return
-    end
-    print("[Server] REQUEST_LEAVE from " .. connKey)
-    if not connData.roomCode then
-        print("[Server] REQUEST_LEAVE: not in any room, ignoring")
-        return
-    end
-
-    local roomCode = connData.roomCode
-    local room = rooms_[roomCode]
-    if not room then
-        print("[Server] REQUEST_LEAVE: room " .. roomCode .. " not found, ignoring")
-        return
-    end
-
-    -- 房主不能离开，只能解散
-    if room.hostKey == connKey then
-        print("[Server] REQUEST_LEAVE: is host, must use dismiss instead")
-        return
-    end
-
-    Server.RemoveFromRoom(roomCode, connKey)
-end
-
-function HandleRequestDismiss(eventType, eventData)
-    print("[Server] >>> HandleRequestDismiss ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_DISMISS: FindConnection returned nil!")
-        return
-    end
-    print("[Server] REQUEST_DISMISS from " .. connKey)
-    if not connData.roomCode then
-        print("[Server] REQUEST_DISMISS: not in any room, ignoring")
-        return
-    end
-
-    local roomCode = connData.roomCode
-    local room = rooms_[roomCode]
-    if not room then
-        print("[Server] REQUEST_DISMISS: room " .. roomCode .. " not found")
-        return
-    end
-    if room.hostKey ~= connKey then
-        print("[Server] REQUEST_DISMISS: not host (host=" .. room.hostKey .. "), ignoring")
-        return
-    end
-
-    Server.DismissRoom(roomCode)
-end
-
-function HandleRequestAddAI(eventType, eventData)
-    print("[Server] >>> HandleRequestAddAI ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_ADD_AI: FindConnection returned nil!")
-        return
-    end
-    print("[Server] REQUEST_ADD_AI from " .. connKey)
-    if not connData.roomCode then
-        print("[Server] REQUEST_ADD_AI: not in any room, ignoring")
-        return
-    end
-
-    local roomCode = connData.roomCode
-    local room = rooms_[roomCode]
-    if not room then
-        print("[Server] REQUEST_ADD_AI: room " .. roomCode .. " not found")
-        return
-    end
-    if room.hostKey ~= connKey then
-        print("[Server] REQUEST_ADD_AI: not host, ignoring")
-        return
-    end
-
-    if #room.players + room.aiCount >= Config.MaxRoomPlayers then
-        print("[Server] REQUEST_ADD_AI: room full (" .. #room.players .. "+" .. room.aiCount .. "), ignoring")
-        return
-    end
-
-    room.aiCount = room.aiCount + 1
-    Server.BroadcastRoomUpdate(roomCode)
-
-    print("[Server] AI added to room " .. roomCode .. " (ai=" .. room.aiCount .. ")")
-end
-
-function HandleRequestStart(eventType, eventData)
-    print("[Server] >>> HandleRequestStart ENTERED")
-    local connection, connKey, connData = FindConnection(eventData)
-    if not connData then
-        print("[Server] REQUEST_START: FindConnection returned nil!")
-        return
-    end
-    print("[Server] REQUEST_START from " .. connKey)
-    if not connData.roomCode then
-        print("[Server] REQUEST_START: not in any room, ignoring")
-        return
-    end
-
-    local roomCode = connData.roomCode
-    local room = rooms_[roomCode]
-    if not room then
-        print("[Server] REQUEST_START: room " .. roomCode .. " not found")
-        return
-    end
-    if room.hostKey ~= connKey then
-        print("[Server] REQUEST_START: not host (host=" .. room.hostKey .. "), ignoring")
-        return
-    end
-    if room.state ~= "waiting" then
-        print("[Server] REQUEST_START: room state=" .. room.state .. ", not waiting")
-        return
-    end
-
-    -- 补齐 AI 到 NumPlayers
-    local total = #room.players + room.aiCount
-    if total < Config.NumPlayers then
-        room.aiCount = Config.NumPlayers - #room.players
-    end
-
-    room.state = "starting"
-
-    -- 收集游戏玩家
-    local gamePlayers = {}
-    local slot = 1
-
-    for _, playerKey in ipairs(room.players) do
-        local cd = connections_[playerKey]
-        if cd then
-            table.insert(gamePlayers, {
-                connKey = playerKey,
-                conn = cd.conn,
-                slot = slot,
-                isAI = false,
-                disconnected = false,
-            })
-            slot = slot + 1
-        end
-    end
-
-    -- 补 AI
-    while slot <= Config.NumPlayers do
-        table.insert(gamePlayers, {
-            connKey = nil,
-            conn = nil,
-            slot = slot,
-            isAI = true,
-            disconnected = false,
-        })
-        slot = slot + 1
-    end
-
-    -- 通知所有玩家游戏即将开始
-    for _, gp in ipairs(gamePlayers) do
-        if gp.conn then
+    -- 找到对应的人类连接
+    for _, cd in pairs(connections_) do
+        if cd.slot == playerIndex and cd.conn then
             local data = VariantMap()
-            data["Slot"] = Variant(gp.slot)
-            gp.conn:SendRemoteEvent(EVENTS.GAME_STARTING, true, data)
-        end
-    end
+            data["Slot"] = Variant(playerIndex)
+            data["TotalScore"] = Variant(totalScore)
 
-    -- 延迟后开始
-    Shared.DelayOneFrame(function()
-        Server.StartGame(gamePlayers, false, roomCode)
-    end)
+            -- 获取分项得分
+            local p = Server.FindPlayerBySlot(playerIndex)
+            if p then
+                data["HeightScore"] = Variant(p.session.heightScore)
+                data["KillScore"] = Variant(p.session.killScore)
+                data["PickupScore"] = Variant(p.session.pickupScore)
+            end
 
-    print("[Server] Room " .. roomCode .. " starting game!")
-end
-
-function Server.RemoveFromRoom(roomCode, connKey)
-    local room = rooms_[roomCode]
-    if not room then return end
-
-    for i = #room.players, 1, -1 do
-        if room.players[i] == connKey then
-            table.remove(room.players, i)
+            cd.conn:SendRemoteEvent(EVENTS.SESSION_END, true, data)
+            print("[Server] SESSION_END sent to slot " .. playerIndex .. " score=" .. totalScore)
             break
         end
     end
-
-    local connData = connections_[connKey]
-    if connData then connData.roomCode = nil end
-
-    Server.BroadcastRoomUpdate(roomCode)
-    print("[Server] Player " .. connKey .. " removed from room " .. roomCode)
 end
 
-function Server.DismissRoom(roomCode)
-    local room = rooms_[roomCode]
-    if not room then return end
+--- 处理客户端请求重新开始
+function HandleRequestRestart(eventType, eventData)
+    print("[Server] >>> HandleRequestRestart ENTERED")
+    local connection, connKey, connData = FindConnection(eventData)
 
-    -- 通知所有玩家
-    for _, playerKey in ipairs(room.players) do
-        local cd = connections_[playerKey]
-        if cd then
-            cd.roomCode = nil
-            if cd.conn then
-                cd.conn:SendRemoteEvent(EVENTS.ROOM_DISMISSED, true)
-            end
-        end
-    end
-
-    rooms_[roomCode] = nil
-    print("[Server] Room " .. roomCode .. " dismissed")
-end
-
-function Server.BroadcastRoomUpdate(roomCode)
-    local room = rooms_[roomCode]
-    if not room then return end
-
-    local playerCount = #room.players
-    local aiCount = room.aiCount
-    local total = playerCount + aiCount
-
-    for _, playerKey in ipairs(room.players) do
-        local cd = connections_[playerKey]
-        if cd and cd.conn then
-            local data = VariantMap()
-            data["RoomCode"] = Variant(roomCode)
-            data["PlayerCount"] = Variant(playerCount)
-            data["AICount"] = Variant(aiCount)
-            data["Total"] = Variant(total)
-            data["IsHost"] = Variant(playerKey == room.hostKey)
-            cd.conn:SendRemoteEvent(EVENTS.ROOM_UPDATE, true, data)
-        end
-    end
-end
-
--- ============================================================================
--- Game Session
--- ============================================================================
-
-function Server.StartGame(gamePlayers, isQuick, roomCode)
-    if activeGame_ then
-        print("[Server] WARNING: game already active, ignoring")
+    if not connData then
+        print("[Server] REQUEST_RESTART: unknown connection, ignoring")
         return
     end
 
-    -- 随机选关
-    local grid, fn = LevelManager.GetRandom()
-    if grid then
-        MapData.SetCustomGrid(grid)
-        print("[Server] Selected level: " .. tostring(fn))
-    else
-        MapData.ClearCustomGrid()
-        print("[Server] Using default map")
+    local slot = connData.slot
+    if not slot or slot <= 0 then
+        print("[Server] REQUEST_RESTART: no slot assigned, ignoring")
+        return
     end
 
-    -- 注意：不要在这里调用 Map.Build()！
-    -- GameManager.StartMatch() → StartRound() → Map.Reset() 会调用 Map.Build()
-    -- 重复调用会导致不必要的场景节点翻腾
-
-    -- 创建玩家
-    Player.list = {}
-    for _, gp in ipairs(gamePlayers) do
-        local p = Player.Create(gp.slot, not gp.isAI, { skipVisuals = true })
-        if gp.isAI then
-            AIController.Register(p)
-        end
+    local p = Server.FindPlayerBySlot(slot)
+    if not p then
+        print("[Server] REQUEST_RESTART: player not found for slot " .. slot)
+        return
     end
 
-    -- 注意：不要在这里调用 Pickup.Reset() / RandomPickup.Reset()！
-    -- StartRound() 内部已包含这些调用
-
-    -- 设置活跃游戏
-    activeGame_ = {
-        players = gamePlayers,
-        roomCode = roomCode,
-        isQuick = isQuick,
-        state = "running",
-    }
-
-    -- 为真人玩家分配角色（包含关卡文件名，让客户端加载同一张地图）
-    local levelFile = fn or ""
-    for _, gp in ipairs(gamePlayers) do
-        if gp.conn then
-            local connData = connections_[gp.connKey]
-            if connData then
-                connData.slot = gp.slot
-            end
-
-            Shared.DelayOneFrame(function()
-                local data = VariantMap()
-                data["Slot"] = Variant(gp.slot)
-                data["MapWidth"] = Variant(MapData.Width)
-                data["MapHeight"] = Variant(MapData.Height)
-                data["LevelFile"] = Variant(levelFile)
-                gp.conn:SendRemoteEvent(EVENTS.ASSIGN_ROLE, true, data)
-            end)
-        end
+    -- 如果会话仍在进行，忽略
+    if p.session.active then
+        print("[Server] REQUEST_RESTART: session still active for slot " .. slot .. ", ignoring")
+        return
     end
 
-    -- 注册爆炸回调 → 广播给所有客户端
-    -- 道具拾取广播：服务端 Remove 节点同步可能延迟，主动通知客户端立即移除视觉
-    Pickup.onCollected = function(nodeId, playerIndex, size)
-        if not activeGame_ then return end
-        local data = VariantMap()
-        data["NodeID"] = Variant(nodeId)
-        data["PlayerIndex"] = Variant(playerIndex)
-        data["Size"] = Variant(size or "")
-        for _, gp in ipairs(activeGame_.players) do
-            if gp.conn and not gp.disconnected then
-                gp.conn:SendRemoteEvent(EVENTS.PICKUP_COLLECTED, true, data)
-            end
-        end
-    end
-
-    Player.onExplode = function(playerIndex, centerGX, centerGY, actualRadius)
-        Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadius)
-    end
-
-    -- 注册死亡回调 → 广播给所有客户端
-    Player.onDeath = function(playerIndex, reason, killerIndex)
-        Server.BroadcastPlayerDeath(playerIndex, reason, killerIndex)
-    end
-
-    -- 开始比赛（内部调用 StartRound → Map.Build + Pickup.Reset + RandomPickup.Reset）
-    GameManager.StartMatch()
-
-    -- 状态变化回调
-    GameManager.OnStateChange(function(oldState, newState)
-        Server.BroadcastGameState()
-        -- 比赛结束 → 清理
-        if newState == GameManager.STATE_MENU then
-            Server.EndGame()
-        end
+    -- 开始新会话（内部会重置计分 + 重生玩家）
+    Shared.DelayOneFrame(function()
+        Server.SendSessionStart(connData)
     end)
 
-    print("[Server] Game started! Players: " .. #gamePlayers)
+    print("[Server] Restarting session for slot " .. slot)
 end
 
-function Server.EndGame()
-    if not activeGame_ then return end
+-- ============================================================================
+-- AI Density Management
+-- ============================================================================
 
-    -- 清理房间状态
-    if activeGame_.roomCode then
-        local room = rooms_[activeGame_.roomCode]
-        if room then
-            room.state = "waiting"
-            room.aiCount = 0
+--- 定期检查并调整 AI 密度
+---@param dt number
+function Server.UpdateAIDensity(dt)
+    aiDensityTimer_ = aiDensityTimer_ + dt
+    if aiDensityTimer_ < Config.AIDensityUpdateInterval then return end
+    aiDensityTimer_ = aiDensityTimer_ - Config.AIDensityUpdateInterval
+
+    local humanCount, aiCount, totalCount = CountSlots()
+
+    -- 1) 清理过期 AI（会话结束的）
+    for slot, aiData in pairs(aiSlots_) do
+        if aiData.expired then
+            Server.DespawnAI(slot)
         end
     end
 
-    -- 重置所有玩家连接状态（清空 slot/roomCode/inQuick，否则下一局点匹配/建房会被忽略）
-    for _, gp in ipairs(activeGame_.players) do
-        if gp.connKey then
-            local connData = connections_[gp.connKey]
-            if connData then
-                connData.slot = 0
-                connData.roomCode = nil
-                connData.inQuick = false
+    -- 重新统计
+    humanCount, aiCount, totalCount = CountSlots()
+
+    -- 如果没有人类玩家，不需要 AI
+    if humanCount == 0 then
+        -- 清除所有 AI
+        for slot, _ in pairs(aiSlots_) do
+            Server.DespawnAI(slot)
+        end
+        return
+    end
+
+    -- 2) 计算人类玩家所在分区
+    local activeSections = {}  -- sectionIndex → humanCount
+    for _, cd in pairs(connections_) do
+        if cd.slot and cd.slot > 0 then
+            local p = Server.FindPlayerBySlot(cd.slot)
+            if p and p.node and p.session.active then
+                local gridY = math.floor(p.node.position.y / Config.BlockSize)
+                local section = math.floor(gridY / Config.AISectionLayers)
+                activeSections[section] = (activeSections[section] or 0) + 1
             end
         end
     end
 
-    activeGame_ = nil
+    -- 3) 统计 AI 所在分区
+    local aiPerSection = {}
+    for slot, aiData in pairs(aiSlots_) do
+        local p = Server.FindPlayerBySlot(slot)
+        if p and p.node then
+            local gridY = math.floor(p.node.position.y / Config.BlockSize)
+            local section = math.floor(gridY / Config.AISectionLayers)
+            aiPerSection[section] = (aiPerSection[section] or 0) + 1
+        end
+    end
 
-    -- 移除旧的 REPLICATED 玩家节点，防止下一局 CreateChild 产生重名节点
-    for _, p in ipairs(Player.list) do
+    -- 4) 在人类活跃分区中补充 AI
+    -- 重新统计 totalCount（清理过期后可能变了）
+    humanCount, aiCount, totalCount = CountSlots()
+
+    for section, humansInSection in pairs(activeSections) do
+        local aiInSection = aiPerSection[section] or 0
+        local totalInSection = humansInSection + aiInSection
+        local needed = Config.AIEntitiesPerSection - totalInSection
+
+        if needed > 0 and totalCount < Config.MaxTotalEntities then
+            local toSpawn = math.min(
+                needed,
+                Config.MaxTotalEntities - totalCount,
+                Config.AIMaxPerSection - aiInSection
+            )
+            for _ = 1, toSpawn do
+                Server.SpawnAI(section)
+                totalCount = totalCount + 1
+            end
+        end
+    end
+
+    -- 5) 清除远离人类的 AI（±2 分区外）
+    for slot, aiData in pairs(aiSlots_) do
+        if not aiData.expired then
+            local p = Server.FindPlayerBySlot(slot)
+            if p and p.node then
+                local gridY = math.floor(p.node.position.y / Config.BlockSize)
+                local section = math.floor(gridY / Config.AISectionLayers)
+                local nearHuman = false
+                for s = section - 2, section + 2 do
+                    if activeSections[s] then
+                        nearHuman = true
+                        break
+                    end
+                end
+                if not nearHuman then
+                    Server.DespawnAI(slot)
+                end
+            end
+        end
+    end
+end
+
+--- 在指定分区生成 AI
+---@param section number 分区索引
+function Server.SpawnAI(section)
+    local slot = AllocateSlot()
+    if not slot then return end
+
+    slots_[slot] = "AI"
+
+    -- 创建 AI 玩家实体
+    local p = Player.Create(slot, false, { skipVisuals = true })
+    AIController.Register(p)
+
+    -- 定位到分区中的某个检查点或随机位置
+    local sectionBaseY = section * Config.AISectionLayers
+    local spawnGridY = math.max(3, sectionBaseY + math.random(0, Config.AISectionLayers - 1))
+    local sx, sy = MapData.GetCheckpointSpawnPosition(spawnGridY)
+    if p.node then
+        p.node.position = Vector3(sx, sy, 0)
+    end
+
+    -- 开始 AI 会话
+    GameManager.StartPlayerSession(slot)
+
+    aiSlots_[slot] = { spawnSection = section }
+
+    print("[Server] AI spawned at section " .. section .. " slot=" .. slot)
+end
+
+--- 移除指定 AI
+---@param slot number
+function Server.DespawnAI(slot)
+    local p = Server.FindPlayerBySlot(slot)
+    if p then
+        if p.session.active then
+            Player.EndSession(p)
+        end
+        -- 从 AIController 注销
+        if AIController.Unregister then
+            AIController.Unregister(slot)
+        end
         if p.node then
             p.node:Remove()
         end
     end
-    Player.list = {}
 
-    Map.Clear()
-
-    print("[Server] Game ended, returning to lobby")
-end
-
-function Server.BroadcastGameState()
-    if not activeGame_ then return end
-
-    local data = VariantMap()
-    data["State"] = Variant(GameManager.state)
-    data["Round"] = Variant(GameManager.round)
-    data["NumRounds"] = Variant(Config.NumRounds)
-    data["RoundTimer"] = Variant(GameManager.GetRoundTime())
-    data["CountdownTimer"] = Variant(GameManager.stateTimer)
-
-    -- 分数 + 玩家状态（能量/生命/完赛）
-    for i = 1, Config.NumPlayers do
-        data["Score" .. i] = Variant(GameManager.scores[i])
-        data["KillScore" .. i] = Variant(GameManager.killScores[i])
-        local p = Player.list[i]
-        if p then
-            data["Energy" .. i] = Variant(p.energy or 0)
-            data["Alive" .. i] = Variant(p.alive and 1 or 0)
-            data["Finished" .. i] = Variant(p.finished and 1 or 0)
-            data["Charging" .. i] = Variant((p.charging and 1) or 0)
-            data["ChargeProg" .. i] = Variant(p.chargeProgress or 0)
-        else
-            data["Energy" .. i] = Variant(0)
-            data["Alive" .. i] = Variant(0)
-            data["Finished" .. i] = Variant(0)
-            data["Charging" .. i] = Variant(0)
-            data["ChargeProg" .. i] = Variant(0)
+    -- 从 Player.list 移除
+    for i, pl in ipairs(Player.list) do
+        if pl.index == slot then
+            table.remove(Player.list, i)
+            break
         end
     end
 
-    -- 回合结果
-    for i, playerIdx in ipairs(GameManager.roundResults) do
-        data["Result" .. i] = Variant(playerIdx)
-    end
-    data["ResultCount"] = Variant(#GameManager.roundResults)
+    FreeSlot(slot)
+    aiSlots_[slot] = nil
 
-    -- 胜者
-    local winner = GameManager.GetWinner()
-    if winner then
-        data["Winner"] = Variant(winner)
-    end
+    print("[Server] AI despawned slot=" .. slot)
+end
 
-    -- 广播给所有玩家
-    for _, gp in ipairs(activeGame_.players) do
-        if gp.conn and not gp.disconnected then
-            gp.conn:SendRemoteEvent(EVENTS.GAME_STATE, true, data)
+-- ============================================================================
+-- Broadcasting
+-- ============================================================================
+
+--- 广播给所有已准备的客户端
+---@param eventName string
+---@param data VariantMap
+function Server.BroadcastToAll(eventName, data)
+    for _, cd in pairs(connections_) do
+        if cd.conn and cd.ready then
+            cd.conn:SendRemoteEvent(eventName, true, data)
         end
     end
 end
 
+--- 广播击杀事件
 function Server.BroadcastKillEvent(killerIdx, victimIdx, multiKill, killStreak)
-    if not activeGame_ then return end
-
     local data = VariantMap()
     data["Killer"] = Variant(killerIdx)
     data["Victim"] = Variant(victimIdx)
     data["MultiKill"] = Variant(multiKill)
     data["KillStreak"] = Variant(killStreak)
-
-    for _, gp in ipairs(activeGame_.players) do
-        if gp.conn and not gp.disconnected then
-            gp.conn:SendRemoteEvent(EVENTS.KILL_EVENT, true, data)
-        end
-    end
+    Server.BroadcastToAll(EVENTS.KILL_EVENT, data)
 end
 
+--- 广播爆炸同步
 function Server.BroadcastExplodeSync(playerIndex, centerGX, centerGY, actualRadius)
-    if not activeGame_ then return end
-    print("[Server.FX-DIAG] BroadcastExplodeSync: player=" .. playerIndex
-        .. " gx=" .. centerGX .. " gy=" .. centerGY .. " r=" .. actualRadius)
-
     local data = VariantMap()
     data["PlayerIndex"] = Variant(playerIndex)
     data["CenterGX"] = Variant(centerGX)
     data["CenterGY"] = Variant(centerGY)
     data["Radius"] = Variant(actualRadius)
-
-    local sentCount = 0
-    for _, gp in ipairs(activeGame_.players) do
-        if gp.conn and not gp.disconnected then
-            gp.conn:SendRemoteEvent(EVENTS.EXPLODE_SYNC, true, data)
-            sentCount = sentCount + 1
-        end
-    end
-    print("[Server.FX-DIAG] EXPLODE_SYNC sent to " .. sentCount .. " clients")
+    Server.BroadcastToAll(EVENTS.EXPLODE_SYNC, data)
 end
 
+--- 广播玩家死亡
 function Server.BroadcastPlayerDeath(playerIndex, reason, killerIndex)
-    if not activeGame_ then return end
-
     local data = VariantMap()
     data["PlayerIndex"] = Variant(playerIndex)
     data["Reason"] = Variant(reason or "")
     data["KillerIndex"] = Variant(killerIndex or 0)
+    Server.BroadcastToAll(EVENTS.PLAYER_DEATH, data)
+end
 
-    for _, gp in ipairs(activeGame_.players) do
-        if gp.conn and not gp.disconnected then
-            gp.conn:SendRemoteEvent(EVENTS.PLAYER_DEATH, true, data)
+--- 向指定玩家发送分数更新
+---@param playerIndex number
+function Server.SendScoreUpdate(playerIndex)
+    local p = Server.FindPlayerBySlot(playerIndex)
+    if not p then return end
+
+    for _, cd in pairs(connections_) do
+        if cd.slot == playerIndex and cd.conn and cd.ready then
+            local data = VariantMap()
+            data["Slot"] = Variant(playerIndex)
+            data["HeightScore"] = Variant(p.session.heightScore)
+            data["KillScore"] = Variant(p.session.killScore)
+            data["PickupScore"] = Variant(p.session.pickupScore)
+            data["TotalScore"] = Variant(p.session.totalScore)
+            data["Timer"] = Variant(math.max(0, p.session.timer))
+            data["MaxGridY"] = Variant(p.session.maxGridY)
+            data["Alive"] = Variant(p.alive and 1 or 0)
+            data["Energy"] = Variant(p.energy or 0)
+            data["Charging"] = Variant((p.charging and 1) or 0)
+            data["ChargeProg"] = Variant(p.chargeProgress or 0)
+            cd.conn:SendRemoteEvent(EVENTS.SCORE_UPDATE, true, data)
+            break
         end
     end
 end
 
+--- 广播排行榜
+function Server.BroadcastLeaderboard()
+    local board = GameManager.CalcLeaderboard()
+    if #board == 0 then return end
+
+    local data = VariantMap()
+    local count = math.min(#board, Config.LeaderboardMaxEntries)
+    data["Count"] = Variant(count)
+    for i = 1, count do
+        data["Index" .. i] = Variant(board[i].index)
+        data["Score" .. i] = Variant(board[i].score)
+        data["IsHuman" .. i] = Variant(board[i].isHuman and 1 or 0)
+    end
+    Server.BroadcastToAll(EVENTS.LEADERBOARD_UPDATE, data)
+end
+
 -- ============================================================================
--- Input Processing (Server reads controls.buttons from each connection)
+-- Input Processing
 -- ============================================================================
 
 function Server.ProcessInputs()
-    if not activeGame_ then return end
-
-    for _, gp in ipairs(activeGame_.players) do
-        if gp.conn and not gp.disconnected and not gp.isAI then
-            local controls = gp.conn.controls
+    for _, cd in pairs(connections_) do
+        if cd.conn and cd.ready and cd.slot > 0 then
+            local controls = cd.conn.controls
             local buttons = controls.buttons
 
             -- 查找对应玩家
-            for _, p in ipairs(Player.list) do
-                if p.index == gp.slot and p.isHuman then
-                    p.inputMoveX = 0
-                    if buttons & CTRL.LEFT ~= 0 then p.inputMoveX = -1 end
-                    if buttons & CTRL.RIGHT ~= 0 then p.inputMoveX = 1 end
+            local p = Server.FindPlayerBySlot(cd.slot)
+            if p and p.isHuman then
+                p.inputMoveX = 0
+                if buttons & CTRL.LEFT ~= 0 then p.inputMoveX = -1 end
+                if buttons & CTRL.RIGHT ~= 0 then p.inputMoveX = 1 end
 
-                    -- 脉冲按钮（上升沿检测：仅 0→1 跳变时触发，防止 pulse hold 多帧重复触发）
-                    local jumpDown = (buttons & CTRL.JUMP ~= 0)
-                    if jumpDown and not p.wasJumpDown then p.inputJump = true end
-                    p.wasJumpDown = jumpDown
+                -- 脉冲按钮（上升沿检测）
+                local jumpDown = (buttons & CTRL.JUMP ~= 0)
+                if jumpDown and not p.wasJumpDown then p.inputJump = true end
+                p.wasJumpDown = jumpDown
 
-                    local dashDown = (buttons & CTRL.DASH ~= 0)
-                    if dashDown and not p.wasDashDown then p.inputDash = true end
-                    p.wasDashDown = dashDown
+                local dashDown = (buttons & CTRL.DASH ~= 0)
+                if dashDown and not p.wasDashDown then p.inputDash = true end
+                p.wasDashDown = dashDown
 
-                    local explodeReleaseDown = (buttons & CTRL.EXPLODE_RELEASE ~= 0)
-                    if explodeReleaseDown and not p.wasExplodeReleaseDown then
-                        p.inputExplodeRelease = true
-                    end
-                    p.wasExplodeReleaseDown = explodeReleaseDown
-
-                    -- 蓄力
-                    local chargeDown = (buttons & CTRL.CHARGE ~= 0)
-                    if chargeDown then p.inputCharging = true end
-                    p.wasChargingInput = chargeDown
-                    break
+                local explodeReleaseDown = (buttons & CTRL.EXPLODE_RELEASE ~= 0)
+                if explodeReleaseDown and not p.wasExplodeReleaseDown then
+                    p.inputExplodeRelease = true
                 end
+                p.wasExplodeReleaseDown = explodeReleaseDown
+
+                -- 蓄力
+                local chargeDown = (buttons & CTRL.CHARGE ~= 0)
+                if chargeDown then p.inputCharging = true end
+                p.wasChargingInput = chargeDown
             end
         end
     end
@@ -1099,49 +789,58 @@ function Server.HandleUpdate(dt)
     -- 延迟回调
     Shared.UpdateDelayed()
 
-    -- 快速匹配更新
-    Server.UpdateQuickMatch(dt)
+    -- 世界未就绪则跳过
+    if not worldReady_ then return end
 
-    -- 如果有活跃游戏 → 运行游戏逻辑
-    if activeGame_ then
-        -- 读取玩家输入
-        Server.ProcessInputs()
+    -- 读取玩家输入
+    Server.ProcessInputs()
 
-        -- 更新游戏管理器
-        GameManager.Update(dt)
+    -- 更新游戏管理器（管理所有会话计时器）
+    GameManager.Update(dt)
 
-        -- 更新地图（破坏恢复等）
-        Map.Update(dt)
+    -- 更新地图（破坏恢复等）
+    Map.Update(dt)
 
-        -- 移动能力开放时更新 AI
-        if GameManager.CanPlayersMove() then
-            AIController.Update(dt)
-        else
-            -- 冻结所有人类输入
-            for _, p in ipairs(Player.list) do
-                if p.isHuman then
-                    p.inputMoveX = 0
-                    p.inputJump = false
-                    p.inputDash = false
-                    p.inputCharging = false
-                    p.inputExplodeRelease = false
-                end
+    -- 更新 AI
+    AIController.Update(dt)
+
+    -- 冻结会话未激活的人类玩家输入
+    for _, p in ipairs(Player.list) do
+        if p.isHuman and not p.session.active then
+            p.inputMoveX = 0
+            p.inputJump = false
+            p.inputDash = false
+            p.inputCharging = false
+            p.inputExplodeRelease = false
+        end
+    end
+
+    -- 更新所有玩家
+    Player.UpdateAll(dt)
+
+    -- 更新道具
+    Pickup.Update(dt)
+    RandomPickup.Update(dt)
+
+    -- AI 密度管理
+    Server.UpdateAIDensity(dt)
+
+    -- 定期发送分数更新
+    scoreUpdateTimer_ = scoreUpdateTimer_ + dt
+    if scoreUpdateTimer_ >= SCORE_UPDATE_INTERVAL then
+        scoreUpdateTimer_ = scoreUpdateTimer_ - SCORE_UPDATE_INTERVAL
+        for _, cd in pairs(connections_) do
+            if cd.slot and cd.slot > 0 then
+                Server.SendScoreUpdate(cd.slot)
             end
         end
+    end
 
-        -- 更新所有玩家
-        Player.UpdateAll(dt)
-
-        -- 更新道具
-        Pickup.Update(dt)
-        RandomPickup.Update(dt)
-
-        -- 定期广播游戏状态（确保客户端计时器、分数等持续同步）
-        gameStateBroadcastTimer_ = gameStateBroadcastTimer_ + dt
-        if gameStateBroadcastTimer_ >= GAME_STATE_BROADCAST_INTERVAL then
-            gameStateBroadcastTimer_ = gameStateBroadcastTimer_ - GAME_STATE_BROADCAST_INTERVAL
-            Server.BroadcastGameState()
-        end
+    -- 定期广播排行榜
+    leaderboardTimer_ = leaderboardTimer_ + dt
+    if leaderboardTimer_ >= Config.LeaderboardUpdateInterval then
+        leaderboardTimer_ = leaderboardTimer_ - Config.LeaderboardUpdateInterval
+        Server.BroadcastLeaderboard()
     end
 end
 

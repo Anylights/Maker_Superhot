@@ -1,7 +1,7 @@
 -- ============================================================================
--- Background.lua - 3D 动态背景模块
--- 渐变底色 + 旋转菱形图案（3D 物体，正确在角色/平台后方）
--- 支持多配色方案，每局自动切换
+-- Background.lua - 3D 动态背景模块（持久世界版）
+-- 渐变底色 + 旋转菱形图案（3D 物体，在角色/平台后方）
+-- 配色随时间平滑渐变，背景跟随相机 Y 位置
 -- ============================================================================
 
 local Config = require("Config")
@@ -11,11 +11,11 @@ local Background = {}
 -- 配色方案列表（浅暖色系，与游戏风格一致）
 -- 每个方案包含：渐变顶色、渐变底色、菱形颜色
 local palettes_ = {
-    -- 1: 温暖桃色（原配色）
+    -- 1: 温暖桃色
     {
         top    = { 0.98, 0.85, 0.70 },
         bottom = { 0.88, 0.65, 0.60 },
-        diamond = { 0.92, 0.78, 0.62, 0.35 },  -- RGBA (alpha 0~1)
+        diamond = { 0.92, 0.78, 0.62, 0.35 },
     },
     -- 2: 薰衣草紫
     {
@@ -41,84 +41,138 @@ local palettes_ = {
         bottom = { 0.92, 0.82, 0.58 },
         diamond = { 0.95, 0.90, 0.68, 0.35 },
     },
+    -- 6: 落日橙（高空奖励）
+    {
+        top    = { 1.00, 0.75, 0.50 },
+        bottom = { 0.90, 0.50, 0.35 },
+        diamond = { 0.95, 0.65, 0.40, 0.35 },
+    },
 }
 
 -- 内部状态
-local scene_ = nil              -- 场景引用（由 Create 传入）
+local scene_ = nil              -- 场景引用
 local gradientNode_ = nil       -- 渐变条父节点
 local diamondNode_ = nil        -- 菱形父节点
 local diamonds_ = {}            -- 菱形子节点列表
-local currentPalette_ = 1       -- 当前配色索引
-local lastPaletteRound_ = 0     -- 上次切换配色的回合号
+local stripMats_ = {}           -- 渐变条材质引用（用于动态更新颜色）
 
 -- 菱形网格配置
-local DIAMOND_Z = 3.5           -- 菱形 Z 位置（背景板Z=5，游戏物体Z≈0）
-local TILE_WORLD = 3.0          -- 菱形间距（世界单位）
-local DIAMOND_SIZE = 0.5        -- 菱形大小（世界单位，对角线半长）
+local DIAMOND_Z = 3.5           -- 菱形 Z 位置
+local TILE_WORLD = 3.0          -- 菱形间距
+local DIAMOND_SIZE = 0.5        -- 菱形大小
 local GRID_EXTENT = 120         -- 网格覆盖范围（世界单位，覆盖 ±60）
-local SCROLL_SPEED = 1.5        -- 平移速度（世界单位/秒）
-local SPIN_SPEED = 0.2          -- 自转角速度（弧度/秒）
+local SCROLL_SPEED = 1.5        -- 平移速度
+local SPIN_SPEED = 0.2          -- 自转角速度
+
+-- 时间配色参数
+local PALETTE_CYCLE_TIME = 30.0 -- 每个配色持续时间（秒），然后渐变到下一个
+local BLEND_DURATION = 5.0      -- 配色过渡时间（秒）
+
+-- 跟随相机
+local lastCameraY_ = 0
 
 --- 获取配色方案数量
 function Background.GetPaletteCount()
     return #palettes_
 end
 
---- 根据回合号选择配色（自动轮换，避免连续相同）
----@param round number 当前回合号
-function Background.SetPaletteForRound(round)
-    if round == lastPaletteRound_ then return end
-    lastPaletteRound_ = round
-    currentPalette_ = ((round - 1) % #palettes_) + 1
-    Background.ApplyPalette()
+-- ============================================================================
+-- 时间渐变：基于游戏运行时间在配色间平滑插值
+-- ============================================================================
+
+--- 线性插值两个颜色数组
+---@param a table {r,g,b} 或 {r,g,b,a}
+---@param b table
+---@param t number 0~1
+---@return table
+local function LerpColor(a, b, t)
+    local result = {}
+    for i = 1, math.max(#a, #b) do
+        local va = a[i] or 0
+        local vb = b[i] or 0
+        result[i] = va + (vb - va) * t
+    end
+    return result
 end
 
---- 手动设置配色索引
+--- 根据时间获取混合后的配色
+---@param elapsed number 运行时间（秒）
+---@return table 混合配色 {top, bottom, diamond}
+local function GetBlendedPalette(elapsed)
+    local totalCycle = PALETTE_CYCLE_TIME + BLEND_DURATION
+    local cyclePos = math.fmod(elapsed, totalCycle * #palettes_)
+    local paletteFloat = cyclePos / totalCycle
+    local paletteIdx = math.floor(paletteFloat) + 1
+    local frac = paletteFloat - math.floor(paletteFloat)
+
+    local curIdx = ((paletteIdx - 1) % #palettes_) + 1
+    local nextIdx = (paletteIdx % #palettes_) + 1
+
+    local cur = palettes_[curIdx]
+    local nxt = palettes_[nextIdx]
+
+    -- 在持续阶段 t=0，在过渡阶段 t=0→1
+    local blendT = 0
+    local holdRatio = PALETTE_CYCLE_TIME / totalCycle
+    if frac > holdRatio then
+        blendT = (frac - holdRatio) / (1 - holdRatio)
+        blendT = math.min(1.0, math.max(0.0, blendT))
+        -- 平滑插值（smoothstep）
+        blendT = blendT * blendT * (3 - 2 * blendT)
+    end
+
+    return {
+        top = LerpColor(cur.top, nxt.top, blendT),
+        bottom = LerpColor(cur.bottom, nxt.bottom, blendT),
+        diamond = LerpColor(cur.diamond, nxt.diamond, blendT),
+    }
+end
+
+--- 手动设置配色索引（兼容旧接口，立即切换）
 ---@param index number 配色索引 (1-based)
 function Background.SetPalette(index)
-    currentPalette_ = math.max(1, math.min(#palettes_, index))
-    Background.ApplyPalette()
+    -- 兼容旧接口，直接应用指定配色
+    local p = palettes_[math.max(1, math.min(#palettes_, index))]
+    if p then
+        Background.ApplyColors(p)
+    end
 end
 
---- 应用当前配色到所有 3D 物体
-function Background.ApplyPalette()
-    local p = palettes_[currentPalette_]
+--- 兼容旧接口（不再按回合切换，改为时间驱动）
+---@param round number
+function Background.SetPaletteForRound(round)
+    -- 不做操作，配色由 Update 中基于时间驱动
+end
+
+--- 应用颜色到所有 3D 物体
+---@param p table {top, bottom, diamond}
+function Background.ApplyColors(p)
     if not p then return end
 
     -- 更新渐变条颜色
-    if gradientNode_ then
-        local strips = 8
-        for i = 0, strips - 1 do
-            local stripNode = gradientNode_:GetChild("Strip" .. i, false)
-            if stripNode then
-                local model = stripNode:GetComponent("StaticModel")
-                if model then
-                    local t = (i + 0.5) / strips
-                    local r = p.top[1] + (p.bottom[1] - p.top[1]) * t
-                    local g = p.top[2] + (p.bottom[2] - p.top[2]) * t
-                    local b = p.top[3] + (p.bottom[3] - p.top[3]) * t
-                    local mat = model:GetMaterial(0)
-                    if mat then
-                        mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
-                        mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.3, g * 0.3, b * 0.3)))
-                    end
-                end
-            end
+    local strips = #stripMats_
+    for i = 1, strips do
+        local t = (i - 0.5) / strips
+        local r = p.top[1] + (p.bottom[1] - p.top[1]) * t
+        local g = p.top[2] + (p.bottom[2] - p.top[2]) * t
+        local b = p.top[3] + (p.bottom[3] - p.top[3]) * t
+        local mat = stripMats_[i]
+        if mat then
+            mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
+            mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.3, g * 0.3, b * 0.3)))
         end
     end
 
     -- 更新菱形颜色
-    if diamondNode_ then
-        local dc = p.diamond
-        for _, info in ipairs(diamonds_) do
-            if info.mat then
-                info.mat:SetShaderParameter("MatDiffColor", Variant(Color(dc[1], dc[2], dc[3], dc[4])))
-                info.mat:SetShaderParameter("MatEmissiveColor", Variant(Color(dc[1] * 0.15, dc[2] * 0.15, dc[3] * 0.15)))
-            end
+    local dc = p.diamond
+    for _, info in ipairs(diamonds_) do
+        if info.mat then
+            info.mat:SetShaderParameter("MatDiffColor", Variant(Color(dc[1], dc[2], dc[3], dc[4])))
+            info.mat:SetShaderParameter("MatEmissiveColor", Variant(Color(dc[1] * 0.15, dc[2] * 0.15, dc[3] * 0.15)))
         end
     end
 
-    -- 更新雾颜色与渐变底色一致
+    -- 更新雾颜色
     if scene_ then
         local zone = scene_:GetComponent("Zone")
         if zone then
@@ -128,26 +182,25 @@ function Background.ApplyPalette()
             zone.fogColor = Color(fogR, fogG, fogB)
         end
     end
-
-    print("[Background] Applied palette #" .. currentPalette_)
 end
 
 --- 创建背景（渐变条 + 菱形网格）
---- 在 Standalone 或 Client 模式下调用一次
 ---@param sceneRef Scene 场景引用
----@param isLocal boolean 是否使用 LOCAL 模式创建节点（客户端需要）
+---@param isLocal boolean 是否使用 LOCAL 模式创建节点
 function Background.Create(sceneRef, isLocal)
     scene_ = sceneRef
     local createMode = isLocal and LOCAL or REPLICATED
 
-    -- ========== 渐变底色 ==========
-    local p = palettes_[currentPalette_]
+    local p = palettes_[1]  -- 初始配色
     local size = 200
     local strips = 8
+
+    -- ========== 渐变底色 ==========
     gradientNode_ = scene_:CreateChild("BackgroundGradient", createMode)
     gradientNode_.position = Vector3(0, 0, 5)
 
     local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
+    stripMats_ = {}
 
     for i = 0, strips - 1 do
         local t0 = i / strips
@@ -174,6 +227,8 @@ function Background.Create(sceneRef, isLocal)
         mat:SetShaderParameter("Metallic", Variant(0.0))
         mat:SetShaderParameter("Roughness", Variant(1.0))
         model:SetMaterial(mat)
+
+        table.insert(stripMats_, mat)
     end
 
     -- ========== 菱形网格 ==========
@@ -197,7 +252,6 @@ function Background.Create(sceneRef, isLocal)
 
             local dn = diamondNode_:CreateChild("D", createMode)
             dn.position = Vector3(wx, wy, 0)
-            -- 菱形 = 45° 旋转的扁平方块
             dn.rotation = Quaternion(45, Vector3.FORWARD)
             dn.scale = Vector3(DIAMOND_SIZE, DIAMOND_SIZE, 0.02)
 
@@ -217,24 +271,82 @@ function Background.Create(sceneRef, isLocal)
         end
     end
 
-    print("[Background] Created: " .. #diamonds_ .. " diamonds, palette #" .. currentPalette_)
+    -- ========== 恢复场景光照阴影 ==========
+    Background.EnsureShadows(sceneRef)
+
+    print("[Background] Created: " .. #diamonds_ .. " diamonds (time-varying palette)")
 end
 
---- 每帧更新菱形动画（平移 + 自转）
+--- 确保场景中的方向光启用阴影投射
+---@param sceneRef Scene
+function Background.EnsureShadows(sceneRef)
+    -- 遍历 LightGroup 子节点，找到方向光并启用阴影
+    local lightGroup = sceneRef:GetChild("LightGroup", true)
+    if lightGroup then
+        for i = 0, lightGroup.numChildren - 1 do
+            local child = lightGroup:GetChild(i)
+            local light = child:GetComponent("Light")
+            if light and light.lightType == LIGHT_DIRECTIONAL then
+                light.castShadows = true
+                light.shadowBias = BiasParameters(0.00025, 0.5)
+                light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
+                print("[Background] Enabled shadows on directional light")
+            end
+            -- 递归检查子节点
+            for j = 0, child.numChildren - 1 do
+                local grandchild = child:GetChild(j)
+                local light2 = grandchild:GetComponent("Light")
+                if light2 and light2.lightType == LIGHT_DIRECTIONAL then
+                    light2.castShadows = true
+                    light2.shadowBias = BiasParameters(0.00025, 0.5)
+                    light2.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
+                    print("[Background] Enabled shadows on directional light (nested)")
+                end
+            end
+        end
+    end
+
+    -- 也检查 fallback 方向光
+    local dlNode = sceneRef:GetChild("DirectionalLight", true)
+    if dlNode then
+        local light = dlNode:GetComponent("Light")
+        if light then
+            light.castShadows = true
+            light.shadowBias = BiasParameters(0.00025, 0.5)
+            light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
+        end
+    end
+end
+
+--- 每帧更新：菱形动画 + 跟随相机 + 时间配色
 ---@param dt number
-function Background.Update(dt)
+---@param cameraY number|nil 相机 Y 位置（用于跟随）
+function Background.Update(dt, cameraY)
     if diamondNode_ == nil then return end
 
     local t = (time and time.GetElapsedTime) and time:GetElapsedTime() or 0
 
-    -- 整体平移（向左下漂移，与菜单 NanoVG 效果一致）
+    -- 时间渐变配色
+    local blended = GetBlendedPalette(t)
+    Background.ApplyColors(blended)
+
+    -- 跟随相机 Y（渐变底色 + 菱形网格都跟随）
+    local targetY = cameraY or lastCameraY_
+    lastCameraY_ = targetY
+
+    if gradientNode_ then
+        gradientNode_.position = Vector3(0, targetY, 5)
+    end
+
+    -- 菱形整体平移（向左下漂移）+ 跟随相机 Y
     local offX = -math.fmod(t * SCROLL_SPEED, TILE_WORLD)
-    -- 垂直周期是 2*TILE（错位栅格）
     local offY = math.fmod(t * SCROLL_SPEED, TILE_WORLD * 2)
 
-    diamondNode_.position = Vector3(offX, offY, DIAMOND_Z)
+    if diamondNode_ then
+        diamondNode_.position = Vector3(offX, targetY + offY, DIAMOND_Z)
+    end
 
-    -- 自转（绕 Z 轴，在菱形 45° 基础上叠加）
+    -- 菱形自转
     local spinAngle = 45 + math.deg(t * SPIN_SPEED)
     local spinRot = Quaternion(spinAngle, Vector3.FORWARD)
 
@@ -254,6 +366,7 @@ function Background.Destroy()
         diamondNode_ = nil
     end
     diamonds_ = {}
+    stripMats_ = {}
     scene_ = nil
 end
 

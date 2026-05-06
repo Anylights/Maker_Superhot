@@ -1,6 +1,7 @@
 -- ============================================================================
--- Standalone.lua - 单机模式（保留原有全部逻辑）
+-- Standalone.lua - 单机模式（持久世界版）
 -- multiplayer.enabled = false 时走此路径
+-- 自动初始化世界 → 开始会话 → 结算 → 重新开始
 -- ============================================================================
 
 require "LuaScripts/Utilities/Sample"
@@ -17,13 +18,11 @@ local HUD = require("HUD")
 local SFX = require("SFX")
 local BGM = require("BGM")
 local RandomPickup = require("RandomPickup")
-local LevelEditor = require("LevelEditor")
 local Background = require("Background")
-local LevelManager = require("LevelManager")
 
 local Standalone = {}
 
--- 调参面板（仅客户端加载）
+-- 调参面板（仅开发模式加载）
 ---@type table|nil
 local TuningPanel = nil
 ---@type table|nil
@@ -33,15 +32,22 @@ local ExplosionTuningPanel = nil
 local scene_ = nil
 local debugDraw_ = false
 
+-- 会话状态
+local sessionStarted_ = false
+local restartRequested_ = false
+local lastCamY_ = 0  -- 缓存相机Y，结算时背景不跳
+
 -- ============================================================================
 -- 生命周期
 -- ============================================================================
 
 function Standalone.Start()
-    -- Sample 工具库初始化
     SampleStart()
     graphics.windowTitle = Config.Title
-    print("=== " .. Config.Title .. " (Standalone) ===")
+    print("=== " .. Config.Title .. " (Standalone - Persistent World) ===")
+
+    -- 暴露给 HUD 使用
+    _G.StandaloneModule = Standalone
 
     -- 调参面板
     local ok, mod = pcall(require, "TuningPanel")
@@ -59,7 +65,6 @@ function Standalone.Start()
     AIController.Init(Player, Map)
     SFX.Init(scene_)
     BGM.Init(scene_)
-    BGM.PlayMenu()  -- 启动后即在主菜单，播放菜单 BGM
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, Camera)
     Camera.Init(scene_)
 
@@ -69,25 +74,18 @@ function Standalone.Start()
     renderer.hdrRendering = true
     renderer.defaultZone.fogColor = Color(0.95, 0.82, 0.68)
 
-    -- 创建游戏内容
-    Standalone.CreateGameContent()
-
     -- 初始化 HUD
     HUD.Init(Player, GameManager, Map)
 
-    -- 初始化随机道具
-    RandomPickup.Init(Map, Pickup)
-
-    -- 初始化关卡管理器
-    LevelManager.Init()
-
-    -- 初始化关卡编辑器
-    LevelEditor.Init(HUD.GetNVGContext(), GameManager, Map)
-    HUD.SetLevelEditor(LevelEditor)
+    -- 初始化随机道具（传入 Player 引用）
+    RandomPickup.Init(Map, Pickup, Player)
 
     -- 调参面板初始化
     if TuningPanel then TuningPanel.Init(scene_) end
     if ExplosionTuningPanel then ExplosionTuningPanel.Init(scene_) end
+
+    -- 创建世界并自动开始
+    Standalone.CreateGameContent()
 
     print("[Standalone] All systems initialized")
 end
@@ -131,15 +129,7 @@ function Standalone.CreateScene()
     end
 
     -- 死亡区域
-    local deathZone = scene_:CreateChild("DeathZone")
-    deathZone.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
-    deathZone.scale = Vector3(MapData.Width + 20, 2, 10)
-    local dzBody = deathZone:CreateComponent("RigidBody")
-    dzBody.trigger = true
-    dzBody.collisionLayer = 4
-    dzBody.collisionMask = 2
-    local dzShape = deathZone:CreateComponent("CollisionShape")
-    dzShape:SetBox(Vector3(1, 1, 1))
+    Standalone.CreateDeathZone()
 
     print("[Standalone] Scene created")
 end
@@ -163,11 +153,17 @@ function Standalone.CreateFallbackLighting()
     light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
 end
 
--- ============================================================================
--- 游戏内容
--- ============================================================================
-
--- CreateBackgroundPlane 已迁移到 Background.lua 模块
+function Standalone.CreateDeathZone()
+    local deathZone = scene_:CreateChild("DeathZone")
+    deathZone.position = Vector3(MapData.Width * 0.5, Config.DeathY, 0)
+    deathZone.scale = Vector3(MapData.Width + 20, 2, 10)
+    local dzBody = deathZone:CreateComponent("RigidBody")
+    dzBody.trigger = true
+    dzBody.collisionLayer = 4
+    dzBody.collisionMask = 2
+    local dzShape = deathZone:CreateComponent("CollisionShape")
+    dzShape:SetBox(Vector3(1, 1, 1))
+end
 
 function Standalone.UpdateDeathZone()
     if scene_ == nil then return end
@@ -178,21 +174,68 @@ function Standalone.UpdateDeathZone()
     end
 end
 
+-- ============================================================================
+-- 游戏内容创建 + 自动开始会话
+-- ============================================================================
+
 function Standalone.CreateGameContent()
-    Background.Create(scene_, false)  -- 非 LOCAL 模式
-    Map.Build()
+    -- 创建 3D 背景
+    Background.Create(scene_, false)
+
+    -- 初始化世界地图（随机种子）
+    GameManager.InitWorld(nil)
+    Standalone.UpdateDeathZone()
+
+    -- 创建所有玩家：P1 人类 + P2~P4 AI
     Player.CreateAll()
 
+    -- 注册 AI 控制器
     for _, p in ipairs(Player.list) do
         if not p.isHuman then
             AIController.Register(p)
         end
     end
 
+    -- 初始化随机道具
     RandomPickup.Reset()
-    Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
-    GameManager.EnterMenu()
-    print("[Standalone] Game content created - waiting at menu")
+
+    -- 跟随相机（跟随人类玩家）
+    Camera.ReleaseFixed()
+
+    -- 设置状态为 playing，开始所有玩家的会话
+    Standalone.StartAllSessions()
+
+    print("[Standalone] Game content created - sessions active")
+end
+
+--- 开始所有玩家的会话
+function Standalone.StartAllSessions()
+    GameManager.SetState(GameManager.STATE_PLAYING)
+    for _, p in ipairs(Player.list) do
+        GameManager.StartPlayerSession(p.index)
+    end
+    sessionStarted_ = true
+    BGM.PlayGameplay()
+end
+
+-- ============================================================================
+-- 重新开始（HUD 结算页面调用）
+-- ============================================================================
+
+--- 请求重新开始（由 HUD 结算页面调用）
+function Standalone.RequestRestart()
+    restartRequested_ = true
+    print("[Standalone] Restart requested")
+end
+
+--- 执行重新开始
+local function DoRestart()
+    restartRequested_ = false
+
+    -- 重新开始所有玩家会话（GameManager.StartPlayerSession 内部会 Respawn）
+    Standalone.StartAllSessions()
+
+    print("[Standalone] Session restarted")
 end
 
 -- ============================================================================
@@ -201,107 +244,40 @@ end
 
 ---@param dt number
 function Standalone.HandleUpdate(dt)
-    -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
+    -- 缓存鼠标输入
     HUD.CacheInput()
 
-    -- 主菜单
-    if GameManager.state == GameManager.STATE_MENU then
-        local btn = HUD.GetMenuButtonClicked()
-        if btn == "startGame" then
-            GameManager.EnterMatching()
-        elseif btn == "editor" then
-            HUD.RefreshLevelList()
-            GameManager.EnterLevelList()
-        end
+    -- 处理重新开始请求
+    if restartRequested_ then
+        DoRestart()
         return
     end
 
-    -- 匹配状态
-    if GameManager.state == GameManager.STATE_MATCHING then
-        if input:GetKeyPress(KEY_ESCAPE) then
-            GameManager.CancelMatching()
-            return
-        end
-        if GameManager.IsMatchingComplete() then
-            local matchTime = GameManager.GetMatchingTime()
-            if matchTime >= Config.MatchingTimeout + 1.0 then
-                local grid, fn = LevelManager.GetRandom()
-                if grid then
-                    MapData.SetCustomGrid(grid)
-                else
-                    MapData.ClearCustomGrid()
-                end
-                GameManager.StartMatch()
-                Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
-                Standalone.UpdateDeathZone()
-            end
-        end
-        GameManager.Update(dt)
+    -- 结算状态下只更新背景
+    if GameManager.state == GameManager.STATE_RESULTS then
+        Background.Update(dt, lastCamY_)
         return
-    end
-
-    -- 关卡列表
-    if GameManager.state == GameManager.STATE_LEVEL_LIST then
-        if HUD.IsPersistClicked() then
-            LevelManager.ExportToLog()
-        end
-        local action = HUD.GetLevelListAction()
-        if action then
-            if action.action == "play" then
-                local grid = LevelManager.Load(action.filename)
-                if grid then
-                    MapData.SetCustomGrid(grid)
-                    GameManager.StartTestPlay(action.filename)
-                    Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
-                    Standalone.UpdateDeathZone()
-                end
-            elseif action.action == "edit" then
-                Camera.ReleaseFixed()
-                GameManager.EnterEditor()
-                LevelEditor.LoadFile(action.filename)
-                LevelEditor.Enter()
-            elseif action.action == "delete" then
-                LevelManager.Delete(action.filename)
-                HUD.RefreshLevelList()
-            elseif action.action == "new" then
-                Camera.ReleaseFixed()
-                GameManager.EnterEditor()
-                LevelEditor.NewLevel()
-                LevelEditor.Enter()
-            elseif action.action == "back" then
-                GameManager.ExitLevelList()
-            end
-        end
-        return
-    end
-
-    -- 关卡编辑器
-    if GameManager.state == GameManager.STATE_EDITOR then
-        LevelEditor.Update(dt)
-        return
-    end
-
-    -- 试玩退出
-    if GameManager.testPlayMode then
-        if input:GetKeyPress(KEY_ESCAPE) or HUD.IsTestPlayExitClicked() then
-            GameManager.ExitTestPlay()
-            HUD.RefreshLevelList()
-            return
-        end
     end
 
     -- 调参面板切换
     if TuningPanel and input:GetKeyPress(KEY_P) then TuningPanel.Toggle() end
     if ExplosionTuningPanel and input:GetKeyPress(KEY_O) then ExplosionTuningPanel.Toggle() end
 
-    local tuningOpen = (TuningPanel and TuningPanel.IsVisible()) or (ExplosionTuningPanel and ExplosionTuningPanel.IsVisible())
+    local tuningOpen = (TuningPanel and TuningPanel.IsVisible())
+        or (ExplosionTuningPanel and ExplosionTuningPanel.IsVisible())
+
     if not tuningOpen then
         GameManager.Update(dt)
     end
 
     Map.Update(dt)
-    Background.Update(dt)
 
+    -- 背景跟随相机
+    local _, camY = Camera.GetCenter()
+    lastCamY_ = camY
+    Background.Update(dt, camY)
+
+    -- 处理人类输入
     if GameManager.CanPlayersMove() then
         Standalone.HandlePlayerInput()
     else
@@ -316,6 +292,7 @@ function Standalone.HandleUpdate(dt)
         end
     end
 
+    -- AI 更新
     if GameManager.CanPlayersMove() then
         AIController.Update(dt)
     end
@@ -324,6 +301,18 @@ function Standalone.HandleUpdate(dt)
     Pickup.Update(dt)
     RandomPickup.Update(dt)
 
+    -- 更新排行榜
+    GameManager.CalcLeaderboard()
+
+    -- 检查人类玩家会话是否结束
+    local human = GameManager.GetHumanPlayer()
+    if human and sessionStarted_ and not human.session.active then
+        GameManager.SetState(GameManager.STATE_RESULTS)
+        sessionStarted_ = false
+        print("[Standalone] Human session ended, showing results")
+    end
+
+    -- Debug 切换
     if input:GetKeyPress(KEY_TAB) then
         debugDraw_ = not debugDraw_
     end
@@ -343,12 +332,13 @@ end
 
 --- 处理人类玩家输入
 function Standalone.HandlePlayerInput()
-    if (TuningPanel and TuningPanel.IsPointerOver()) or (ExplosionTuningPanel and ExplosionTuningPanel.IsPointerOver()) then
+    if (TuningPanel and TuningPanel.IsPointerOver())
+        or (ExplosionTuningPanel and ExplosionTuningPanel.IsPointerOver()) then
         return
     end
 
     for _, p in ipairs(Player.list) do
-        if p.isHuman and p.alive and not p.finished then
+        if p.isHuman and p.alive and p.session and p.session.active then
             local moveX = 0
             if input:GetKeyDown(KEY_A) or input:GetKeyDown(KEY_LEFT) then
                 moveX = -1

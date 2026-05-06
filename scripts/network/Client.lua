@@ -387,9 +387,21 @@ function HandleSessionStart(eventType, eventData)
     sessionScores_.totalScore = 0
     sessionScores_.timer = sessionDuration
 
-    -- 设置相机
-    Camera.SetFixedForMap(mapW, mapH, 2)
-    Camera.ReleaseFixed()  -- 跟随玩家
+    -- 激活本机玩家会话（客户端侧，让 CanPlayersMove() 返回 true）
+    for _, p in ipairs(Player.list) do
+        if p.index == mySlot_ then
+            p.session.active = true
+            p.session.timer = sessionDuration
+            print("[Client] Activated session for local player " .. mySlot_)
+            break
+        end
+    end
+
+    -- 设置相机：持久世界直接跟随玩家，不做全图预览
+    -- 找到出生点位置用于初始相机定位
+    local spawnX, spawnY = MapData.GetRandomSpawnPosition()
+    Camera.SetImmediate(Vector3(spawnX, spawnY, 0), Config.CameraMinOrtho)
+    Camera.ReleaseFixed()  -- 确保非固定模式，跟随玩家
 
     -- 设置背景
     Background.SetPaletteForRound(1)
@@ -566,12 +578,27 @@ function ScanReplicatedNodes()
         elseif name and name:sub(1, 7) == "Player_" then
             local idx = tonumber(name:sub(8))
             if idx then
+                -- 查找现有条目
+                local found = false
                 for _, p in ipairs(Player.list) do
-                    if p.index == idx and not p.visualNode then
-                        p.node = node
-                        Player.AttachVisuals(p)
+                    if p.index == idx then
+                        found = true
+                        if not p.node or not p.visualNode then
+                            p.node = node
+                            Player.AttachVisuals(p)
+                        end
                         break
                     end
+                end
+                -- 新发现的远程玩家（AI 或其他人类），自动创建客户端条目
+                if not found and mySlot_ > 0 then
+                    local p = Player.Create(idx, false, {
+                        existingNode = node,
+                        skipVisuals = true,
+                    })
+                    Player.AttachVisuals(p)
+                    p.session.active = true  -- 远程玩家视为活跃
+                    print("[Client] Discovered remote player " .. idx .. " via scan")
                 end
             end
         end

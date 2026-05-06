@@ -376,7 +376,7 @@ function HandleSessionStart(eventType, eventData)
 
     -- 如果本机 slot 没有对应节点（尚未复制），创建 nodeless 占位
     if mySlot_ > 0 and not latestPlayerNodes[mySlot_] then
-        local p = Player.Create(mySlot_, true, { nodeless = true })
+        local p = Player.Create(mySlot_, true, { nodeless = true, skipVisuals = true })
         print("[Client] My slot " .. mySlot_ .. " node not yet replicated, waiting...")
     end
 

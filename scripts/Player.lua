@@ -148,6 +148,7 @@ end
 ---@return table 玩家数据
 function Player.Create(index, isHuman, opts)
     opts = opts or {}
+    if opts.nodeless then opts.skipVisuals = true end
     local spawnX, spawnY = MapData.GetRandomSpawnPosition()
 
     local node

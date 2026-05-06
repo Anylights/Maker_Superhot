@@ -328,7 +328,7 @@ function Player.Create(index, isHuman, opts)
         .. " mode=" .. networkMode_
         .. " body=" .. tostring(p.body ~= nil)
         .. " visual=" .. tostring(p.visualNode ~= nil)
-        .. " pos=" .. tostring(node.position))
+        .. " pos=" .. (node and tostring(node.position) or "nodeless"))
 
     return p
 end

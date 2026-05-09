@@ -1,8 +1,7 @@
 -- ============================================================================
--- MapData.lua - 超级红温！关卡地图数据 v4
--- 方块类型：0=空 1=普通 2=安全 4=旧起点 5=终点 10-13=P1~P4出生点
+-- MapData.lua - 超级红温！程序化大地图生成
+-- 模式：大地图攀登（200+ 格高，3 分钟计时得分）
 -- 坐标系：X 右，Y 上，每格 1m
--- 地图尺寸：默认 30x24（固定相机可视全局）
 -- ============================================================================
 
 local Config = require("Config")
@@ -10,247 +9,332 @@ local Config = require("Config")
 local MapData = {}
 
 -- 方块类型常量（简写）
-local E = Config.BLOCK_EMPTY
-local N = Config.BLOCK_NORMAL
-local S = Config.BLOCK_SAFE
-local SP = Config.BLOCK_SPAWN
-local FI = Config.BLOCK_FINISH
+local E  = Config.BLOCK_EMPTY
+local N  = Config.BLOCK_NORMAL
+local S  = Config.BLOCK_SAFE
+local EP = Config.BLOCK_ENERGY_PAD
+local CP = Config.BLOCK_CHECKPOINT
 
--- 地图宽高（可被 SetDimensions 修改）
+-- 地图宽高
 MapData.Width  = Config.DefaultMapWidth
 MapData.Height = Config.DefaultMapHeight
 
 -- 出生点位置表：SpawnPositions[playerIndex] = { x=世界X, y=世界Y }
--- 由 Generate() 扫描网格填充
 MapData.SpawnPositions = {}
 
--- 兼容旧版：单一起点坐标（用于旧版 BLOCK_SPAWN 回退）
+-- 检查点 Y 坐标列表（世界坐标，从低到高排序）
+MapData.CheckpointYList = {}
+
+-- 兼容旧版
 MapData.SpawnX = 6
 MapData.SpawnY = 4
 
--- 终点方块世界坐标列表（Generate 时填充）
-MapData.FinishBlocks = {}
-
--- 自定义地图网格（编辑器使用）
-local customGrid_ = nil
-
--- 能量拾取点位置列表（现由 RandomPickup 随机生成，此表保留为空）
+-- 能量拾取点（由 RandomPickup 管理，此表保留为空）
 MapData.EnergyPickups = {}
 
---- 设置地图尺寸（加载关卡时调用）
----@param w number
----@param h number
+-- 终点方块列表（大地图模式不使用，保留兼容接口）
+MapData.FinishBlocks = {}
+
+-- 简单伪随机数生成器（可复现 seed）
+local rngState_ = 12345
+
+local function rngSeed(seed)
+    rngState_ = seed
+end
+
+local function rngNext()
+    -- xorshift32
+    rngState_ = rngState_ ~ (rngState_ << 13)
+    rngState_ = rngState_ & 0x7FFFFFFF
+    rngState_ = rngState_ ~ (rngState_ >> 17)
+    rngState_ = rngState_ & 0x7FFFFFFF
+    rngState_ = rngState_ ~ (rngState_ << 5)
+    rngState_ = rngState_ & 0x7FFFFFFF
+    return rngState_
+end
+
+--- 返回 [min, max] 范围内的整数
+local function rngRange(min, max)
+    if min > max then return min end
+    return min + (rngNext() % (max - min + 1))
+end
+
+--- 设置地图尺寸
 function MapData.SetDimensions(w, h)
     MapData.Width = w or Config.DefaultMapWidth
     MapData.Height = h or Config.DefaultMapHeight
 end
 
---- 生成地图网格数据
---- grid[y][x] = 方块类型（Lua 索引从 1 开始）
----@return table
-function MapData.Generate()
-    -- 重置出生点
+-- ============================================================================
+-- 程序化地图生成
+-- ============================================================================
+
+--- 生成程序化大地图
+--- 设计原则：
+---   - 单跳高度约 3.5 格，二段跳约 6 格
+---   - 平台层间距 3-5 格（保证可达）
+---   - 每层 2-4 个平台段，长度 3-10 格
+---   - 每 CheckpointInterval 格放检查点
+---   - 底部全宽安全平台 + 6 个出生点
+---@param seed? number 随机种子（可选，默认用 os.time）
+---@return table grid  grid[y][x] = blockType
+function MapData.Generate(seed)
+    seed = seed or os.time()
+    rngSeed(seed)
+    print("[MapData] Generating procedural map " .. MapData.Width .. "x" .. MapData.Height .. " seed=" .. seed)
+
+    -- 重置
     MapData.SpawnPositions = {}
+    MapData.CheckpointYList = {}
     MapData.FinishBlocks = {}
 
-    -- 如果有自定义地图，使用自定义地图
-    if customGrid_ then
-        local grid = {}
-        local oldSpawnX, oldSpawnY = nil, nil
+    local W = MapData.Width
+    local H = MapData.Height
 
-        for y = 1, MapData.Height do
-            grid[y] = {}
-            for x = 1, MapData.Width do
-                local cell = customGrid_[y] and customGrid_[y][x] or E
-                grid[y][x] = cell
-
-                -- 收集终点方块
-                if cell == FI then
-                    local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                    local wy = (y - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                    table.insert(MapData.FinishBlocks, { x = wx, y = wy })
-                end
-
-                -- 收集 P1-P4 出生点
-                for pi = 1, 4 do
-                    if cell == Config.SpawnBlockTypes[pi] then
-                        local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                        local wy = y * Config.BlockSize  -- 站在方块上方
-                        MapData.SpawnPositions[pi] = { x = wx, y = wy }
-                    end
-                end
-
-                -- 兼容旧版 BLOCK_SPAWN（取第一个作为通用起点）
-                if cell == SP and oldSpawnX == nil then
-                    oldSpawnX = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                    oldSpawnY = y * Config.BlockSize
-                end
-            end
-        end
-
-        -- 旧版兼容：如果没有 P1-P4 出生点，使用旧版 SPAWN
-        if oldSpawnX then
-            MapData.SpawnX = oldSpawnX
-            MapData.SpawnY = oldSpawnY
-        end
-
-        -- 如果没有任何 P1-P4 出生点，用旧版 SPAWN 位置为所有玩家分配
-        if #MapData.SpawnPositions == 0 and oldSpawnX then
-            for pi = 1, 4 do
-                MapData.SpawnPositions[pi] = {
-                    x = oldSpawnX + (pi - 1) * 1.2,
-                    y = oldSpawnY,
-                }
-            end
-        end
-
-        return grid
-    end
-
-    -- ========================================================================
-    -- 默认地图（30x24 简单测试用）
-    -- ========================================================================
+    -- 初始化空网格
     local grid = {}
-    for y = 1, MapData.Height do
+    for y = 1, H do
         grid[y] = {}
-        for x = 1, MapData.Width do
+        for x = 1, W do
             grid[y][x] = E
         end
     end
 
-    local function placePlatform(startX, y, length, blockType)
-        for x = startX, startX + length - 1 do
-            if x >= 1 and x <= MapData.Width and y >= 1 and y <= MapData.Height then
-                grid[y][x] = blockType
-            end
-        end
+    -- ====================================================================
+    -- 底部出生区（Y=3: 全宽安全平台）
+    -- ====================================================================
+    local spawnY = 3
+    for x = 1, W do
+        grid[spawnY][x] = S
     end
 
-    -- Y=3: 起点层（底部安全平台）
-    placePlatform(1, 3, MapData.Width, S)
-
-    -- P1 出生点：左下 x=5
-    grid[3][5] = Config.BLOCK_SPAWN_P1
-    -- P2 出生点：右下 x=26
-    grid[3][26] = Config.BLOCK_SPAWN_P2
-    -- P3 出生点：左偏中 x=10
-    grid[3][10] = Config.BLOCK_SPAWN_P3
-    -- P4 出生点：右偏中 x=21
-    grid[3][21] = Config.BLOCK_SPAWN_P4
-
-    -- Y=5: 第一层跳台
-    placePlatform(4, 5, 6, N)
-    placePlatform(20, 5, 6, N)
-
-    -- Y=7: 中间层
-    placePlatform(10, 7, 10, N)
-    placePlatform(12, 7, 3, S)
-
-    -- Y=9: 高层
-    placePlatform(3, 9, 5, N)
-    placePlatform(22, 9, 5, N)
-
-    -- Y=11: 汇合层
-    placePlatform(9, 11, 12, N)
-    placePlatform(14, 11, 3, S)
-
-    -- Y=13: 终点层
-    placePlatform(12, 13, 6, S)
-    for x = 13, 16 do
-        grid[13][x] = FI
-    end
-
-    -- 扫描出生点
-    for y = 1, MapData.Height do
-        for x = 1, MapData.Width do
-            local cell = grid[y][x]
-            for pi = 1, 4 do
-                if cell == Config.SpawnBlockTypes[pi] then
-                    local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                    local wy = y * Config.BlockSize
-                    MapData.SpawnPositions[pi] = { x = wx, y = wy }
-                end
-            end
-            if cell == FI then
-                local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                local wy = (y - 1) * Config.BlockSize + Config.BlockSize * 0.5
-                table.insert(MapData.FinishBlocks, { x = wx, y = wy })
-            end
+    -- 放置 6 个出生点，均匀分布
+    local spawnXList = { 4, 9, 14, 17, 22, 27 }
+    for pi = 1, Config.NumPlayers do
+        local sx = spawnXList[pi] or (3 + pi * 4)
+        if sx >= 1 and sx <= W then
+            grid[spawnY][sx] = Config.SpawnBlockTypes[pi]
         end
+        local wx = (sx - 1) * Config.BlockSize + Config.BlockSize * 0.5
+        local wy = spawnY * Config.BlockSize  -- 站在方块上方
+        MapData.SpawnPositions[pi] = { x = wx, y = wy }
     end
 
     -- 兼容旧版字段
-    if MapData.SpawnPositions[1] then
-        MapData.SpawnX = MapData.SpawnPositions[1].x
-        MapData.SpawnY = MapData.SpawnPositions[1].y
+    MapData.SpawnX = MapData.SpawnPositions[1].x
+    MapData.SpawnY = MapData.SpawnPositions[1].y
+
+    -- ====================================================================
+    -- 生成平台层
+    -- ====================================================================
+    local currentY = spawnY  -- 上一个平台层的 Y
+    local layerIndex = 0
+
+    while true do
+        -- 决定下一层间距（3~5 格）
+        local gap = rngRange(3, 5)
+        local nextY = currentY + gap
+
+        if nextY > H - 2 then break end  -- 留顶部余量
+
+        layerIndex = layerIndex + 1
+
+        -- 判断是否为检查点层
+        local isCheckpointLayer = (nextY - spawnY) >= Config.CheckpointInterval
+            and ((nextY - spawnY) % Config.CheckpointInterval) < gap
+
+        -- 更精确：找最接近 CheckpointInterval 倍数的层
+        local heightAboveSpawn = nextY - spawnY
+        local nearestCheckpoint = math.floor(heightAboveSpawn / Config.CheckpointInterval + 0.5) * Config.CheckpointInterval
+        if math.abs(heightAboveSpawn - nearestCheckpoint) < gap and nearestCheckpoint > 0 then
+            -- 检查这个检查点是否还没生成过
+            local alreadyExists = false
+            for _, cy in ipairs(MapData.CheckpointYList) do
+                if math.abs(cy - (spawnY + nearestCheckpoint)) < Config.CheckpointInterval * 0.5 then
+                    alreadyExists = true
+                    break
+                end
+            end
+            if not alreadyExists then
+                isCheckpointLayer = true
+            end
+        end
+
+        -- 决定这一层的平台数量和布局
+        local numPlatforms = rngRange(2, 4)
+        local minLen = 3
+        local maxLen = 10
+
+        if isCheckpointLayer then
+            -- 检查点层：一个宽平台横跨大部分地图
+            local cpLen = rngRange(W - 8, W - 4)  -- 22~26 格宽
+            local cpStart = rngRange(2, W - cpLen)
+            for x = cpStart, math.min(cpStart + cpLen - 1, W) do
+                grid[nextY][x] = CP
+            end
+            -- 两端用安全方块封边
+            if cpStart > 1 then
+                grid[nextY][cpStart] = S
+            end
+            if cpStart + cpLen - 1 < W then
+                grid[nextY][math.min(cpStart + cpLen - 1, W)] = S
+            end
+
+            -- 记录检查点世界 Y
+            local cpWorldY = (nextY - 1) * Config.BlockSize + Config.BlockSize * 0.5
+            table.insert(MapData.CheckpointYList, cpWorldY)
+        else
+            -- 普通层：生成多个平台段
+            -- 将地图宽度分成若干区域，每个区域放一个平台
+            local segments = {}
+            local segWidth = math.floor(W / numPlatforms)
+
+            for i = 1, numPlatforms do
+                local segStart = (i - 1) * segWidth + 1
+                local segEnd = i * segWidth
+                if i == numPlatforms then segEnd = W end
+
+                -- 平台长度和起始位置（在区域内随机）
+                local platLen = rngRange(minLen, math.min(maxLen, segEnd - segStart + 1))
+                local platStart = rngRange(segStart, math.max(segStart, segEnd - platLen + 1))
+
+                table.insert(segments, { start = platStart, len = platLen })
+            end
+
+            -- 放置平台
+            for _, seg in ipairs(segments) do
+                local blockType = N  -- 默认普通方块
+
+                -- 20% 概率出现安全方块平台
+                if rngRange(1, 100) <= 20 then
+                    blockType = S
+                end
+
+                -- 10% 概率出现能量托台
+                local hasEnergyPad = rngRange(1, 100) <= 10
+
+                for x = seg.start, math.min(seg.start + seg.len - 1, W) do
+                    grid[nextY][x] = blockType
+                end
+
+                -- 在平台中间放一个能量托台
+                if hasEnergyPad and seg.len >= 3 then
+                    local midX = seg.start + math.floor(seg.len / 2)
+                    grid[nextY][midX] = EP
+                end
+            end
+        end
+
+        currentY = nextY
     end
+
+    -- ====================================================================
+    -- 确保可达性：检查相邻层的水平距离
+    -- ====================================================================
+    -- (程序化生成已通过区域划分保证水平覆盖，
+    --  层间距 3-5 格在二段跳范围内，因此基本可达)
+
+    -- 对 CheckpointYList 排序
+    table.sort(MapData.CheckpointYList)
+
+    print("[MapData] Generated " .. layerIndex .. " layers, "
+        .. #MapData.CheckpointYList .. " checkpoints")
 
     return grid
 end
 
 --- 获取指定玩家的出生位置（世界坐标）
----@param playerIndex number 1~4
+---@param playerIndex number 1~6
 ---@return number, number  -- x, y
 function MapData.GetSpawnPosition(playerIndex)
     local sp = MapData.SpawnPositions[playerIndex]
     if sp then
         return sp.x, sp.y
     end
-
-    -- 回退：用旧版单一起点 + 水平偏移
+    -- 回退
     local x = MapData.SpawnX + (playerIndex - 1) * 1.2
     local y = MapData.SpawnY
     return x, y
 end
 
---- 检查某个世界坐标是否在终点区域
+--- 获取指定世界 Y 坐标以下最近的检查点 Y（用于重生）
+--- 如果没有激活过的检查点，返回出生点 Y
+---@param activatedCheckpoints table<number, boolean>  已激活的检查点索引集合
+---@return number worldY  重生高度
+---@return number worldX  重生 X 坐标（检查点中心）
+function MapData.GetCheckpointRespawnPos(activatedCheckpoints, grid)
+    -- 从高到低遍历检查点，找最高的已激活检查点
+    local bestY = nil
+    local bestGridY = nil
+    for i = #MapData.CheckpointYList, 1, -1 do
+        if activatedCheckpoints[i] then
+            bestY = MapData.CheckpointYList[i]
+            -- 从世界坐标反算 grid Y
+            bestGridY = math.floor(bestY / Config.BlockSize) + 1
+            break
+        end
+    end
+
+    if bestY and bestGridY and grid then
+        -- 找检查点层的中心 X
+        local sumX, countX = 0, 0
+        for x = 1, MapData.Width do
+            if grid[bestGridY] and grid[bestGridY][x] ~= E then
+                sumX = sumX + x
+                countX = countX + 1
+            end
+        end
+        local centerX = MapData.Width / 2
+        if countX > 0 then
+            centerX = sumX / countX
+        end
+        local wx = (centerX - 1) * Config.BlockSize + Config.BlockSize * 0.5
+        return { x = wx, y = bestY + Config.BlockSize }  -- 站在检查点上方
+    end
+
+    -- 没有激活的检查点
+    return nil
+end
+
+--- 检查某个世界 Y 是否在某个检查点附近
+--- 返回检查点索引（1-based）或 nil
+---@param wy number 世界 Y 坐标
+---@return number|nil checkpointIndex
+function MapData.GetCheckpointAt(wy)
+    for i, cpY in ipairs(MapData.CheckpointYList) do
+        if math.abs(wy - cpY) < 1.2 then
+            return i
+        end
+    end
+    return nil
+end
+
+--- 检查某个世界坐标是否在终点区域（大地图模式不使用，保留兼容）
 ---@param wx number
 ---@param wy number
 ---@return boolean
 function MapData.IsAtFinish(wx, wy)
-    for _, fb in ipairs(MapData.FinishBlocks) do
-        local dx = math.abs(wx - fb.x)
-        local dy = wy - fb.y
-        if dx < 0.8 and dy > -0.2 and dy < 1.5 then
-            return true
-        end
-    end
-    return false
+    return false  -- 大地图模式没有终点
 end
 
 -- ============================================================================
--- 自定义地图支持（编辑器用）
+-- 自定义地图支持（编辑器用，大地图模式保留接口兼容）
 -- ============================================================================
-
---- 设置自定义地图网格（深拷贝输入）
----@param grid table grid[y][x] 格式
-function MapData.SetCustomGrid(grid)
-    customGrid_ = {}
-    for y = 1, MapData.Height do
-        customGrid_[y] = {}
-        for x = 1, MapData.Width do
-            customGrid_[y][x] = (grid[y] and grid[y][x]) or E
-        end
-    end
-    print("[MapData] Custom grid set (" .. MapData.Width .. "x" .. MapData.Height .. ")")
-end
 
 --- 是否有自定义地图
 ---@return boolean
 function MapData.HasCustomGrid()
-    return customGrid_ ~= nil
+    return false  -- 大地图模式不支持自定义地图
 end
 
---- 清除自定义地图（恢复使用默认生成）
+--- 设置自定义地图网格（保留接口兼容）
+function MapData.SetCustomGrid(grid)
+    print("[MapData] SetCustomGrid ignored in big-map mode")
+end
+
+--- 清除自定义地图
 function MapData.ClearCustomGrid()
-    customGrid_ = nil
-    -- 恢复默认尺寸和起点
-    MapData.Width = Config.DefaultMapWidth
-    MapData.Height = Config.DefaultMapHeight
-    MapData.SpawnX = 6
-    MapData.SpawnY = 4
-    MapData.SpawnPositions = {}
-    print("[MapData] Custom grid cleared, using default map")
+    print("[MapData] ClearCustomGrid ignored in big-map mode")
 end
 
 return MapData

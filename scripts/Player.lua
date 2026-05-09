@@ -22,7 +22,70 @@ local mapModule_ = nil  -- Map 模块引用
 local pbrTechnique_ = nil
 local pbrAlphaTechnique_ = nil
 
+-- 圆形粒子纹理 & Unlit 透明技术缓存
+local circleTexture_ = nil
+local unlitAlphaTechnique_ = nil
 
+
+
+-- ============================================================================
+-- 粒子辅助
+-- ============================================================================
+
+--- 程序化生成圆形粒子纹理（白色实心圆，硬边缘）
+---@param size number 纹理尺寸（像素，正方形）
+---@return Texture2D
+local function createCircleTexture(size)
+    local img = Image()
+    img:SetSize(size, size, 4)  -- RGBA
+    local center = size * 0.5
+    local radius = center - 1.0
+    for y = 0, size - 1 do
+        for x = 0, size - 1 do
+            local dx = (x + 0.5) - center
+            local dy = (y + 0.5) - center
+            local dist = math.sqrt(dx * dx + dy * dy)
+            if dist <= radius then
+                img:SetPixel(x, y, Color(1, 1, 1, 1))  -- 实心白
+            else
+                img:SetPixel(x, y, Color(1, 1, 1, 0))  -- 完全透明
+            end
+        end
+    end
+    local tex = Texture2D:new()
+    tex:SetData(img, false)
+    return tex
+end
+
+--- 提升颜色饱和度（找到主导通道，压低其他通道）
+---@param r number
+---@param g number
+---@param b number
+---@return number, number, number
+local function boostSaturation(r, g, b)
+    local maxC = math.max(r, g, b, 0.01)
+    local sr = math.min(1.0, (r / maxC) ^ 0.3)
+    local sg = math.min(1.0, (g / maxC) ^ 0.3)
+    local sb = math.min(1.0, (b / maxC) ^ 0.3)
+    local minS = math.min(sr, sg, sb)
+    sr = math.min(1.0, sr - minS * 0.6 + 0.05)
+    sg = math.min(1.0, sg - minS * 0.6 + 0.05)
+    sb = math.min(1.0, sb - minS * 0.6 + 0.05)
+    return sr, sg, sb
+end
+
+--- 创建圆形粒子材质（Unlit + 透明通道 + 圆形纹理）
+---@param r number 红
+---@param g number 绿
+---@param b number 蓝
+---@return Material
+local function makeCircleMat(r, g, b)
+    local mat = Material:new()
+    mat:SetTechnique(0, unlitAlphaTechnique_)
+    mat:SetTexture(0, circleTexture_)  -- TU_DIFFUSE
+    mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
+    return mat
+end
 
 -- ============================================================================
 -- 初始化
@@ -36,6 +99,8 @@ function Player.Init(scene, mapRef)
     mapModule_ = mapRef
     pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
     pbrAlphaTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml")
+    unlitAlphaTechnique_ = cache:GetResource("Technique", "Techniques/DiffUnlitAlpha.xml")
+    circleTexture_ = createCircleTexture(32)
     Player.list = {}
     print("[Player] Initialized")
 end
@@ -102,6 +167,21 @@ function Player.CreateVisuals(node, index)
     eyeRModel.model = sphereModel
     eyeRModel.castShadows = false
     eyeRModel:SetMaterial(eyeMat)
+
+    -- 眩晕闪烁黑色覆盖层（半透明黑色，略大于本体，默认隐藏）
+    local stunOverlay = visualNode:CreateChild("StunOverlay")
+    stunOverlay.position = Vector3(0, 0, -0.15)  -- 在本体前面
+    stunOverlay.scale = Vector3(1.06, 1.06, 1.0)
+    stunOverlay.enabled = false
+    local stunGeom = stunOverlay:CreateComponent("CustomGeometry")
+    mapModule_.BuildRoundedBox(stunGeom, Config.BlockSize, 0.1)
+    stunGeom.castShadows = false
+    local stunMat = Material:new()
+    stunMat:SetTechnique(0, cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml"))
+    stunMat:SetShaderParameter("MatDiffColor", Variant(Color(0, 0, 0, 0.45)))
+    stunMat:SetShaderParameter("Metallic", Variant(0.0))
+    stunMat:SetShaderParameter("Roughness", Variant(1.0))
+    stunGeom:SetMaterial(stunMat)
 
     return visualNode, mat, outlineMat
 end
@@ -184,9 +264,17 @@ function Player.Create(index, isHuman)
         respawnTimer = 0,
         invincibleTimer = 0,
 
-        -- 比赛
-        finished = false,      -- 是否已到达终点
-        finishOrder = 0,       -- 到达终点的名次
+        -- 计分系统
+        score = 0,             -- 总分
+        heightScore = 0,       -- 高度得分（实时计算）
+        killScore = 0,         -- 击杀得分
+        pickupScore = 0,       -- 拾取得分
+        maxHeight = 0,         -- 历史最高高度（用于统计）
+        deaths = 0,            -- 死亡次数
+
+        -- 检查点
+        activatedCheckpoints = {},  -- 已激活的检查点 { [cpIndex]=true }
+        lastCheckpointIndex = 0,    -- 最后激活的检查点索引
 
         -- 击杀统计（每回合重置）
         kills = 0,             -- 本回合击杀数
@@ -350,53 +438,7 @@ function Player.UpdateOne(p, dt)
         return
     end
 
-    if p.finished then
-        -- =====================
-        -- 终点庆祝：原地循环跳跃 + 空中旋转
-        -- =====================
-        if p.body then
-            local vel = p.body.linearVelocity
-            -- 锁定水平位置（清水平速度 + 拉回锚点）
-            local newVx = 0
-            if p.celebrateAnchorX and p.node then
-                local dx = p.celebrateAnchorX - p.node.position.x
-                newVx = dx * 8.0  -- 弹簧式拉回
-            end
-            -- 着地瞬间起跳（无限循环跳）
-            if p.onGround then
-                p.body.linearVelocity = Vector3(newVx, Config.JumpSpeed, 0)
-                SFX.Play("jump", 0.4)
-                -- 起跳时给一个新的旋转速度（每跳一次方向不同）
-                p.celebrateRotateSpeed = 540  -- 度/秒，1.5 圈/秒
-                p.celebrateRotation = 0
-            else
-                p.body.linearVelocity = Vector3(newVx, vel.y, 0)
-            end
-        end
-
-        -- 空中累积旋转角度（绕 Z 轴翻滚）
-        if not p.onGround then
-            p.celebrateRotation = (p.celebrateRotation or 0) + (p.celebrateRotateSpeed or 540) * dt
-        else
-            p.celebrateRotation = 0  -- 着地时复位
-        end
-
-        -- 应用旋转到视觉节点
-        if p.visualNode then
-            p.visualNode.rotation = Quaternion(p.celebrateRotation, Vector3.FORWARD)
-            p.visualNode.scale = Vector3(0.9, 0.9, 0.9)
-        end
-
-        -- 帧末状态更新（与正常分支一致）
-        if p.body then
-            p.prevVelY = p.body.linearVelocity.y
-        end
-        p.wasOnGround = p.onGround
-        p.onGround = false
-        p.hitCeiling = false
-        p.hitWallX = 0
-        return
-    end
+    -- (终点庆祝已移除 - 大地图模式无终点)
 
     -- =====================
     -- 土狼时间计时器
@@ -587,33 +629,33 @@ function Player.UpdateOne(p, dt)
         Player.Kill(p, "fall")
     end
 
-    -- 终点检测
-    if p.node and not p.finished and MapData.IsAtFinish(p.node.position.x, p.node.position.y) then
-        p.finished = true
-        print("[Player] Player " .. p.index .. " reached the finish!")
-
-        -- 立即停下：清水平速度、关闭蓄力/输入
-        if p.body then
-            local vel = p.body.linearVelocity
-            p.body.linearVelocity = Vector3(0, vel.y, 0)
+    -- 检查点激活检测
+    if p.node then
+        local cpIndex = MapData.GetCheckpointAt(p.node.position.y)
+        if cpIndex and not p.activatedCheckpoints[cpIndex] then
+            p.activatedCheckpoints[cpIndex] = true
+            p.lastCheckpointIndex = cpIndex
+            SFX.Play("pickup_large", 0.7)
+            Camera.Shake(0.1, 0.15)
+            print("[Player] Player " .. p.index .. " activated checkpoint #" .. cpIndex ..
+                  " at Y=" .. MapData.CheckpointYList[cpIndex])
         end
-        p.charging = false
-        p.chargeTimer = 0
-        p.chargeProgress = 0
-        p.inputMoveX = 0
-        p.inputJump = false
-        p.inputDash = false
-        p.inputCharging = false
-        p.inputExplodeRelease = false
+    end
 
-        -- 庆祝状态初始化
-        p.celebrateRotation = 0
-        p.celebrateRotateSpeed = 0
-        p.celebrateAnchorX = p.node.position.x
-
-        -- 烟花特效
-        Player.SpawnFireworkFX(p.node.position, p.index)
-        SFX.Play("pickup_large", 0.8)
+    -- 高度得分实时计算（基于当前 Y 位置）
+    if p.node then
+        local currentY = p.node.position.y
+        -- 记录历史最高
+        if currentY > p.maxHeight then
+            p.maxHeight = currentY
+        end
+        -- 实时高度得分 = (当前Y - 出生Y) / BlockSize * HeightScoreUnit
+        -- 下降时分数也减少
+        local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
+        local heightBlocks = (currentY - spawnY) / Config.BlockSize
+        p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit
+        -- 总分 = 高度 + 击杀 + 拾取
+        p.score = p.heightScore + p.killScore + p.pickupScore
     end
 
     -- =====================
@@ -642,7 +684,7 @@ function Player.DoDashKnockback(p)
     if not p.node then return end
     local pos = p.node.position
     for _, other in ipairs(Player.list) do
-        if other.index ~= p.index and other.alive and not other.finished and other.node and other.body then
+        if other.index ~= p.index and other.alive and other.node and other.body then
             if other.invincibleTimer > 0 then goto continueKB end
             local diff = other.node.position - pos
             local dist = math.sqrt(diff.x * diff.x + diff.y * diff.y)
@@ -684,7 +726,7 @@ function Player.DoSlamLanding(p)
 
     -- 击退周围玩家
     for _, other in ipairs(Player.list) do
-        if other.index ~= p.index and other.alive and not other.finished and other.node and other.body then
+        if other.index ~= p.index and other.alive and other.node and other.body then
             if other.invincibleTimer > 0 then goto continueSL end
             local diff = other.node.position - pos
             local dx = math.abs(diff.x)
@@ -949,8 +991,9 @@ function Player.UpdateVisualEffects(p, dt)
     end
 
     -- =====================
-    -- 眩晕形变：在挤扁和压扁之间来回振荡
+    -- 眩晕形变：在挤扁和压扁之间来回振荡 + 黑色闪烁
     -- =====================
+    local stunOverlay = p.visualNode and p.visualNode:GetChild("StunOverlay")
     if p.stunTimer > 0 then
         local wobbleSpeed = 10.0  -- 振荡频率（越大越快）
         local wobbleAmount = 0.25 -- 形变幅度（0.25 = ±25%）
@@ -958,6 +1001,14 @@ function Player.UpdateVisualEffects(p, dt)
         local wave = math.sin(p.stunTimer * wobbleSpeed * math.pi)
         p.squashScaleX = 1.0 + wave * wobbleAmount
         p.squashScaleY = 1.0 - wave * wobbleAmount
+
+        -- 黑色覆盖层快速闪烁（8Hz，每秒闪8次）
+        if stunOverlay then
+            local blink = math.sin(p.stunTimer * 16.0 * math.pi) > 0
+            stunOverlay.enabled = blink
+        end
+    else
+        if stunOverlay then stunOverlay.enabled = false end
     end
 
     -- =====================
@@ -1288,24 +1339,10 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     -- 程序化创建粒子效果
     local effect = ParticleEffect:new()
 
-    -- 创建粒子材质（透明）- 极高饱和度颜色
-    local mat = Material:new()
-    mat:SetTechnique(0, pbrAlphaTechnique_)
+    -- 圆形粒子材质 - 极高饱和度、低不透明度
     local color = Config.PlayerColors[playerIndex]
-    -- 将颜色推向极高饱和度：找到最大通道，压低其他通道
-    local maxC = math.max(color.r, color.g, color.b, 0.01)
-    local satR = math.min(1.0, (color.r / maxC) ^ 0.3) * 1.0  -- 增强对比
-    local satG = math.min(1.0, (color.g / maxC) ^ 0.3) * 1.0
-    local satB = math.min(1.0, (color.b / maxC) ^ 0.3) * 1.0
-    -- 再压低非主导通道，拉到极致饱和
-    local minSat = math.min(satR, satG, satB)
-    satR = math.min(1.0, satR - minSat * 0.6 + 0.05)
-    satG = math.min(1.0, satG - minSat * 0.6 + 0.05)
-    satB = math.min(1.0, satB - minSat * 0.6 + 0.05)
-    mat:SetShaderParameter("MatDiffColor", Variant(Color(satR, satG, satB, 0.95)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(satR * 0.8, satG * 0.8, satB * 0.8)))
-    mat:SetShaderParameter("Metallic", Variant(0.0))
-    mat:SetShaderParameter("Roughness", Variant(0.3))
+    local satR, satG, satB = boostSaturation(color.r, color.g, color.b)
+    local mat = makeCircleMat(satR, satG, satB)
     effect:SetMaterial(mat)
 
     -- 粒子参数
@@ -1340,11 +1377,13 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     effect:SetActiveTime(0.15)
     effect:SetInactiveTime(999)
 
-    -- 颜色渐变：极亮高饱和 → 玩家饱和色 → 消失
-    effect:SetNumColorFrames(3)
-    effect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.3, 1.0), 0.0))  -- 初始闪光
-    effect:SetColorFrame(1, ColorFrame(Color(satR, satG, satB, 0.9), 0.25))  -- 高饱和玩家色
-    effect:SetColorFrame(2, ColorFrame(Color(satR * 0.5, satG * 0.3, satB * 0.2, 0.0), 1.0))  -- 渐暗消失
+    -- 颜色渐变：极亮→饱和→微暗→回亮→消失（生命周期差异产生明暗变化）
+    effect:SetNumColorFrames(5)
+    effect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.6, 1.0), 0.0))                           -- 初始极亮闪光
+    effect:SetColorFrame(1, ColorFrame(Color(satR, satG, satB, 1.0), 0.15))                        -- 高饱和玩家色
+    effect:SetColorFrame(2, ColorFrame(Color(satR * 0.55, satG * 0.55, satB * 0.55, 1.0), 0.4))   -- 微暗
+    effect:SetColorFrame(3, ColorFrame(Color(satR * 0.9, satG * 0.85, satB * 0.8, 1.0), 0.7))     -- 回亮
+    effect:SetColorFrame(4, ColorFrame(Color(satR * 0.3, satG * 0.2, satB * 0.1, 0.0), 1.0))      -- 消失
 
     -- 创建发射器
     local emitter = fxNode:CreateComponent("ParticleEmitter")
@@ -1357,13 +1396,7 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     ringNode.position = Vector3(pos.x, pos.y, -0.5)
 
     local ringEffect = ParticleEffect:new()
-
-    local ringMat = Material:new()
-    ringMat:SetTechnique(0, pbrAlphaTechnique_)
-    ringMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.6, 0.0, 0.85)))
-    ringMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1.0, 0.4, 0.0)))
-    ringMat:SetShaderParameter("Metallic", Variant(0.0))
-    ringMat:SetShaderParameter("Roughness", Variant(0.3))
+    local ringMat = makeCircleMat(1.0, 0.6, 0.0)
     ringEffect:SetMaterial(ringMat)
 
     ringEffect:SetNumParticles(20)
@@ -1387,9 +1420,10 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     ringEffect:SetActiveTime(0.05)
     ringEffect:SetInactiveTime(999)
 
-    ringEffect:SetNumColorFrames(2)
-    ringEffect:SetColorFrame(0, ColorFrame(Color(1.0, 0.95, 0.1, 1.0), 0.0))  -- 极亮黄白闪光
-    ringEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.3, 0.0, 0.0), 1.0))   -- 高饱和橙红消散
+    ringEffect:SetNumColorFrames(3)
+    ringEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.4, 1.0), 0.0))    -- 极亮黄白
+    ringEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.5, 0.0, 1.0), 0.4))    -- 高饱和橙
+    ringEffect:SetColorFrame(2, ColorFrame(Color(1.0, 0.2, 0.0, 0.0), 1.0))    -- 消散
 
     local ringEmitter = ringNode:CreateComponent("ParticleEmitter")
     ringEmitter.effect = ringEffect
@@ -1415,8 +1449,13 @@ function Player.Kill(p, reason, killerIndex)
 
     p.alive = false
     p.respawnTimer = Config.RespawnDelay
+    p.deaths = (p.deaths or 0) + 1
 
-    -- 击杀者统计
+    -- 死亡惩罚
+    p.pickupScore = math.max(0, p.pickupScore - Config.DeathPenalty)
+    p.score = p.heightScore + p.killScore + p.pickupScore
+
+    -- 击杀者统计与得分
     if killerIndex and killerIndex ~= p.index then
         for _, killer in ipairs(Player.list) do
             if killer.index == killerIndex then
@@ -1430,6 +1469,18 @@ function Player.Kill(p, reason, killerIndex)
                     killer.multiKillCount = 1
                 end
                 killer.multiKillTimer = Config.MultiKillWindow
+
+                -- 击杀得分：基础分 + 连杀加成
+                local killBonus = Config.KillScoreBase
+                if killer.multiKillCount == 2 then
+                    killBonus = killBonus + 10  -- 双杀 +10 额外
+                elseif killer.multiKillCount == 3 then
+                    killBonus = killBonus + 20  -- 三杀 +20 额外
+                elseif killer.multiKillCount >= 4 then
+                    killBonus = killBonus + 40 * math.pow(2, killer.multiKillCount - 4)  -- 四杀起 ×2 递增
+                end
+                killer.killScore = killer.killScore + killBonus
+                killer.score = killer.heightScore + killer.killScore + killer.pickupScore
 
                 -- 通知 GameManager
                 if Player.onKill then
@@ -1479,19 +1530,14 @@ function Player.SpawnSplatFX(pos, playerIndex)
     if scene_ == nil then return end
 
     local color = Config.PlayerColors[playerIndex]
-    local r, g, b = color.r, color.g, color.b
+    local r, g, b = boostSaturation(color.r, color.g, color.b)
 
     -- === 第 1 层：大量碎片向四周飞散（主体喷溅） ===
     local fxNode = scene_:CreateChild("SplatFX", LOCAL)
     fxNode.position = Vector3(pos.x, pos.y, -0.3)
 
     local effect = ParticleEffect:new()
-    local mat = Material:new()
-    mat:SetTechnique(0, pbrAlphaTechnique_)
-    mat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Color(r * 0.5, g * 0.5, b * 0.5)))
-    mat:SetShaderParameter("Metallic", Variant(0.05))
-    mat:SetShaderParameter("Roughness", Variant(0.5))
+    local mat = makeCircleMat(r, g, b)
     effect:SetMaterial(mat)
 
     effect:SetNumParticles(120)
@@ -1519,10 +1565,12 @@ function Player.SpawnSplatFX(pos, playerIndex)
     effect:SetActiveTime(0.1)
     effect:SetInactiveTime(999)
 
-    effect:SetNumColorFrames(3)
-    effect:SetColorFrame(0, ColorFrame(Color(r, g, b, 1.0), 0.0))
-    effect:SetColorFrame(1, ColorFrame(Color(r * 0.7, g * 0.7, b * 0.7, 0.9), 0.35))
-    effect:SetColorFrame(2, ColorFrame(Color(r * 0.2, g * 0.2, b * 0.2, 0.0), 1.0))
+    effect:SetNumColorFrames(5)
+    effect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))                       -- 初始白色闪光
+    effect:SetColorFrame(1, ColorFrame(Color(r, g, b, 1.0), 0.12))                              -- 高饱和玩家色
+    effect:SetColorFrame(2, ColorFrame(Color(r * 0.5, g * 0.5, b * 0.5, 1.0), 0.35))           -- 暗沉
+    effect:SetColorFrame(3, ColorFrame(Color(r * 0.85, g * 0.85, b * 0.85, 1.0), 0.65))        -- 回亮
+    effect:SetColorFrame(4, ColorFrame(Color(r * 0.2, g * 0.2, b * 0.2, 0.0), 1.0))            -- 消失
 
     local emitter = fxNode:CreateComponent("ParticleEmitter")
     emitter.effect = effect
@@ -1534,12 +1582,7 @@ function Player.SpawnSplatFX(pos, playerIndex)
     flashNode.position = Vector3(pos.x, pos.y, -0.35)
 
     local flashEffect = ParticleEffect:new()
-    local flashMat = Material:new()
-    flashMat:SetTechnique(0, pbrAlphaTechnique_)
-    flashMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1.0)))
-    flashMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.8)))
-    flashMat:SetShaderParameter("Metallic", Variant(0.0))
-    flashMat:SetShaderParameter("Roughness", Variant(0.2))
+    local flashMat = makeCircleMat(1, 1, 1)
     flashEffect:SetMaterial(flashMat)
 
     flashEffect:SetNumParticles(8)
@@ -1565,9 +1608,9 @@ function Player.SpawnSplatFX(pos, playerIndex)
     flashEffect:SetInactiveTime(999)
 
     flashEffect:SetNumColorFrames(3)
-    flashEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))
-    flashEffect:SetColorFrame(1, ColorFrame(Color(r, g, b, 0.7), 0.3))
-    flashEffect:SetColorFrame(2, ColorFrame(Color(r, g, b, 0.0), 1.0))
+    flashEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.9, 1.0), 0.0))
+    flashEffect:SetColorFrame(1, ColorFrame(Color(r, g, b, 1.0), 0.35))
+    flashEffect:SetColorFrame(2, ColorFrame(Color(r * 0.5, g * 0.5, b * 0.5, 0.0), 1.0))
 
     local flashEmitter = flashNode:CreateComponent("ParticleEmitter")
     flashEmitter.effect = flashEffect
@@ -1579,12 +1622,7 @@ function Player.SpawnSplatFX(pos, playerIndex)
     starNode.position = Vector3(pos.x, pos.y, -0.32)
 
     local starEffect = ParticleEffect:new()
-    local starMat = Material:new()
-    starMat:SetTechnique(0, pbrAlphaTechnique_)
-    starMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 0.9, 1.0)))
-    starMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.7)))
-    starMat:SetShaderParameter("Metallic", Variant(0.0))
-    starMat:SetShaderParameter("Roughness", Variant(0.3))
+    local starMat = makeCircleMat(1, 1, 0.9)
     starEffect:SetMaterial(starMat)
 
     starEffect:SetNumParticles(30)
@@ -1612,10 +1650,11 @@ function Player.SpawnSplatFX(pos, playerIndex)
     starEffect:SetActiveTime(0.06)
     starEffect:SetInactiveTime(999)
 
-    starEffect:SetNumColorFrames(3)
-    starEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.8, 1.0), 0.0))
-    starEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.9, 0.3, 0.8), 0.3))
-    starEffect:SetColorFrame(2, ColorFrame(Color(r * 0.5, g * 0.5, b * 0.5, 0.0), 1.0))
+    starEffect:SetNumColorFrames(4)
+    starEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.9, 1.0), 0.0))       -- 极亮
+    starEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.9, 0.3, 1.0), 0.25))      -- 金黄
+    starEffect:SetColorFrame(2, ColorFrame(Color(r, g, b, 1.0), 0.55))             -- 玩家色
+    starEffect:SetColorFrame(3, ColorFrame(Color(r * 0.3, g * 0.3, b * 0.3, 0.0), 1.0))  -- 消失
 
     local starEmitter = starNode:CreateComponent("ParticleEmitter")
     starEmitter.effect = starEffect
@@ -1711,8 +1750,14 @@ function Player.Respawn(p)
         p.visualNode.enabled = true
     end
 
-    -- 回到起点
-    local sx, sy = MapData.GetSpawnPosition(p.index)
+    -- 回到最后检查点或起点
+    local sx, sy
+    local cpPos = MapData.GetCheckpointRespawnPos(p.activatedCheckpoints, mapModule_.GetGrid())
+    if cpPos then
+        sx, sy = cpPos.x, cpPos.y
+    else
+        sx, sy = MapData.GetSpawnPosition(p.index)
+    end
     if p.node then
         p.node.enabled = true
         p.node.position = Vector3(sx, sy, 0)
@@ -1721,7 +1766,7 @@ function Player.Respawn(p)
         p.body.linearVelocity = Vector3(0, 0, 0)
     end
 
-    print("[Player] Player " .. p.index .. " respawned")
+    print("[Player] Player " .. p.index .. " respawned at (" .. string.format("%.1f, %.1f", sx, sy) .. ")")
 end
 
 --- 重置所有玩家（新回合）
@@ -1729,11 +1774,17 @@ function Player.ResetAll()
     for _, p in ipairs(Player.list) do
         Player.RemoveDeathFace(p)
         p.alive = true
-        p.finished = false
-        p.finishOrder = 0
-        p.celebrateRotation = 0
-        p.celebrateRotateSpeed = 0
-        p.celebrateAnchorX = nil
+
+        -- 重置计分系统
+        p.score = 0
+        p.heightScore = 0
+        p.killScore = 0
+        p.pickupScore = 0
+        p.maxHeight = 0
+        p.deaths = 0
+        p.activatedCheckpoints = {}
+        p.lastCheckpointIndex = 0
+
         p.kills = 0
         p.killStreak = 0
         p.multiKillCount = 0
@@ -1792,6 +1843,14 @@ function Player.AddEnergy(p, amount)
     p.energy = math.min(1.0, p.energy + amount)
 end
 
+--- 添加拾取得分
+---@param p table
+---@param points number
+function Player.AddPickupScore(p, points)
+    p.pickupScore = (p.pickupScore or 0) + points
+    p.score = p.heightScore + p.killScore + p.pickupScore
+end
+
 --- 获取活跃玩家位置列表
 ---@return table
 function Player.GetAlivePositions()
@@ -1812,7 +1871,11 @@ function Player.GetHumanPosition()
             if p.alive and p.node then
                 return p.node.position
             else
-                -- 死亡时返回重生点位置
+                -- 死亡时返回检查点或出生点位置
+                local cpPos = MapData.GetCheckpointRespawnPos(p.activatedCheckpoints, mapModule_ and mapModule_.GetGrid() or nil)
+                if cpPos then
+                    return Vector3(cpPos.x, cpPos.y, 0)
+                end
                 local sx, sy = MapData.GetSpawnPosition(p.index)
                 return Vector3(sx, sy, 0)
             end
@@ -1828,7 +1891,7 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     if scene_ == nil then return end
 
     local color = Config.PlayerColors[playerIndex] or { r = 1, g = 0.6, b = 0.2 }
-    local r, g, b = color.r, color.g, color.b
+    local r, g, b = boostSaturation(color.r, color.g, color.b)
     local centerY = pos.y + 1.5
 
     -- === 第 1 层：从地面快速上升的金色拖尾 ===
@@ -1836,10 +1899,7 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     trailNode.position = Vector3(pos.x, pos.y + 0.3, -0.3)
 
     local trailEffect = ParticleEffect:new()
-    local trailMat = Material:new()
-    trailMat:SetTechnique(0, pbrAlphaTechnique_)
-    trailMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.9, 0.4, 1.0)))
-    trailMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1.0, 0.8, 0.2)))
+    local trailMat = makeCircleMat(1.0, 0.9, 0.4)
     trailEffect:SetMaterial(trailMat)
 
     trailEffect:SetNumParticles(40)
@@ -1858,9 +1918,10 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     trailEffect:SetMaxEmissionRate(300)
     trailEffect:SetActiveTime(0.12)
     trailEffect:SetInactiveTime(999)
-    trailEffect:SetNumColorFrames(2)
-    trailEffect:SetColorFrame(0, ColorFrame(Color(1.0, 0.9, 0.4, 1.0), 0.0))
-    trailEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.5, 0.0, 0.0), 1.0))
+    trailEffect:SetNumColorFrames(3)
+    trailEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.5, 1.0), 0.0))     -- 极亮金
+    trailEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.6, 0.1, 1.0), 0.45))    -- 深橙
+    trailEffect:SetColorFrame(2, ColorFrame(Color(1.0, 0.3, 0.0, 0.0), 1.0))     -- 消散
 
     local trailEmitter = trailNode:CreateComponent("ParticleEmitter")
     trailEmitter.effect = trailEffect
@@ -1872,12 +1933,7 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     burstNode.position = Vector3(pos.x, centerY, -0.35)
 
     local burstEffect = ParticleEffect:new()
-    local burstMat = Material:new()
-    burstMat:SetTechnique(0, pbrAlphaTechnique_)
-    burstMat:SetShaderParameter("MatDiffColor", Variant(Color(r, g, b, 1.0)))
-    burstMat:SetShaderParameter("MatEmissiveColor", Variant(Color(r, g, b)))
-    burstMat:SetShaderParameter("Metallic", Variant(0.0))
-    burstMat:SetShaderParameter("Roughness", Variant(0.3))
+    local burstMat = makeCircleMat(r, g, b)
     burstEffect:SetMaterial(burstMat)
 
     burstEffect:SetNumParticles(150)
@@ -1899,11 +1955,12 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     burstEffect:SetMaxEmissionRate(1000)
     burstEffect:SetActiveTime(0.1)
     burstEffect:SetInactiveTime(999)
-    burstEffect:SetNumColorFrames(4)
-    burstEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))
-    burstEffect:SetColorFrame(1, ColorFrame(Color(r, g, b, 1.0), 0.2))
-    burstEffect:SetColorFrame(2, ColorFrame(Color(r * 1.2, g * 0.8, b * 0.4, 0.8), 0.6))
-    burstEffect:SetColorFrame(3, ColorFrame(Color(0, 0, 0, 0), 1.0))
+    burstEffect:SetNumColorFrames(5)
+    burstEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))                      -- 白色闪光
+    burstEffect:SetColorFrame(1, ColorFrame(Color(r, g, b, 1.0), 0.15))                            -- 高饱和玩家色
+    burstEffect:SetColorFrame(2, ColorFrame(Color(r * 0.5, g * 0.5, b * 0.5, 1.0), 0.4))          -- 暗沉
+    burstEffect:SetColorFrame(3, ColorFrame(Color(r * 0.85, g * 0.7, b * 0.4, 1.0), 0.65))       -- 回暖偏移色
+    burstEffect:SetColorFrame(4, ColorFrame(Color(0, 0, 0, 0), 1.0))                               -- 消失
 
     local burstEmitter = burstNode:CreateComponent("ParticleEmitter")
     burstEmitter.effect = burstEffect
@@ -1915,10 +1972,7 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     flashNode.position = Vector3(pos.x, centerY, -0.4)
 
     local flashEffect = ParticleEffect:new()
-    local flashMat = Material:new()
-    flashMat:SetTechnique(0, pbrAlphaTechnique_)
-    flashMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1.0)))
-    flashMat:SetShaderParameter("MatEmissiveColor", Variant(Color(1, 1, 0.9)))
+    local flashMat = makeCircleMat(1, 1, 1)
     flashEffect:SetMaterial(flashMat)
 
     flashEffect:SetNumParticles(6)
@@ -1939,9 +1993,9 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     flashEffect:SetActiveTime(0.04)
     flashEffect:SetInactiveTime(999)
     flashEffect:SetNumColorFrames(3)
-    flashEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))
-    flashEffect:SetColorFrame(1, ColorFrame(Color(1.0, 0.9, 0.6, 0.6), 0.4))
-    flashEffect:SetColorFrame(2, ColorFrame(Color(r, g, b, 0.0), 1.0))
+    flashEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 0.9, 1.0), 0.0))    -- 极亮
+    flashEffect:SetColorFrame(1, ColorFrame(Color(r, g, b, 1.0), 0.4))           -- 玩家色
+    flashEffect:SetColorFrame(2, ColorFrame(Color(r * 0.4, g * 0.4, b * 0.4, 0.0), 1.0))  -- 消失
 
     local flashEmitter = flashNode:CreateComponent("ParticleEmitter")
     flashEmitter.effect = flashEffect

@@ -196,11 +196,15 @@ function Pickup.Update(dt)
                         local dy = pPos.y - pkY
                         local dist = math.sqrt(dx * dx + dy * dy)
                         if dist < PICKUP_DISTANCE then
-                            -- 拾取：标记为待移除
+                            -- 拾取：添加能量 + 计分
                             playerModule_.AddEnergy(p, pk.amount)
+                            local scorePoints = (pk.size == "large") and Config.PickupLargeScore or Config.PickupSmallScore
+                            if playerModule_.AddPickupScore then
+                                playerModule_.AddPickupScore(p, scorePoints)
+                            end
                             pk.collected = true
                             SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6)
-                            print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " energy")
+                            print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " (+" .. scorePoints .. " score)")
                             break
                         end
                     end
@@ -266,6 +270,22 @@ function Pickup.HasPickupNear(x, y, radius)
         end
     end
     return false
+end
+
+--- 清理距离玩家太远的拾取物（大地图模式用）
+---@param playerY number 玩家当前 Y 高度
+---@param maxDistance number 最大允许距离
+function Pickup.CleanupFarPickups(playerY, maxDistance)
+    for i = #pickups_, 1, -1 do
+        local pk = pickups_[i]
+        if pk.active and not pk.collected then
+            local dy = math.abs(pk.spawnY - playerY)
+            if dy > maxDistance then
+                if pk.node then pk.node:Remove() end
+                table.remove(pickups_, i)
+            end
+        end
+    end
 end
 
 --- 清除所有拾取物

@@ -58,10 +58,11 @@ function Camera.Init(scene)
     print("[Camera] Initialized orthographic side-view camera")
 end
 
---- 每帧更新：根据玩家位置调整相机
+--- 每帧更新：跟随人类玩家（P1）
+--- 大地图攀登模式：固定 orthoSize，只跟踪人类玩家位置
 ---@param dt number
----@param playerPositions table
----@param humanPos Vector3|nil
+---@param playerPositions table  （兼容旧接口，不再使用）
+---@param humanPos Vector3|nil   人类玩家位置
 function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
     if Camera.manualMode then return end
@@ -69,7 +70,6 @@ function Camera.Update(dt, playerPositions, humanPos)
     -- 固定模式：仍需处理屏幕震动（但动画中不覆盖位置）
     if Camera.fixedMode then
         if animating_ then
-            -- 动画过渡中，位置由 UpdateAnimation 控制，这里不干预
             return
         end
         if shakeTimer_ > 0 then
@@ -85,59 +85,21 @@ function Camera.Update(dt, playerPositions, humanPos)
         return
     end
 
+    -- 只跟随人类玩家
+    if humanPos == nil then return end
+
     local mapMinX = 0
     local mapMaxX = MapData.Width * Config.BlockSize
     local mapMinY = 0
-    local mapMaxY = MapData.Height * Config.BlockSize
 
-    -- 过滤掉低于 DeathY 的掉落玩家（不再跟踪）
-    local dropY = Config.DeathY or -10.0
-
-    local positions = {}
-    for _, pos in ipairs(playerPositions) do
-        if pos.y >= dropY then
-            local clampedY = math.max(mapMinY, pos.y)
-            local clampedX = math.max(mapMinX, math.min(mapMaxX, pos.x))
-            table.insert(positions, Vector3(clampedX, clampedY, 0))
-        end
-    end
-
-    if humanPos and humanPos.y >= dropY then
-        local clampedY = math.max(mapMinY, humanPos.y)
-        local clampedX = math.max(mapMinX, math.min(mapMaxX, humanPos.x))
-        table.insert(positions, Vector3(clampedX, clampedY, 0))
-    end
-
-    -- 所有玩家都掉落了，保持当前位置不变
-    if #positions == 0 then return end
-
-    local minX, maxX = math.huge, -math.huge
-    local minY, maxY = math.huge, -math.huge
-
-    for _, pos in ipairs(positions) do
-        if pos.x < minX then minX = pos.x end
-        if pos.x > maxX then maxX = pos.x end
-        if pos.y < minY then minY = pos.y end
-        if pos.y > maxY then maxY = pos.y end
-    end
-
-    local cx = (minX + maxX) * 0.5
-    local cy = (minY + maxY) * 0.5
-    cx = math.max(mapMinX, math.min(mapMaxX, cx))
-    cy = math.max(mapMinY, math.min(mapMaxY, cy))
+    -- 目标中心 = 人类玩家位置（X 限制在地图范围内）
+    local cx = math.max(mapMinX, math.min(mapMaxX, humanPos.x))
+    local cy = math.max(mapMinY, humanPos.y)
 
     targetCenter_ = Vector3(cx, cy, 0)
 
-    local spanX = maxX - minX + Config.CameraPadding * 2
-    local spanY = maxY - minY + Config.CameraPadding * 2
-
-    local aspect = Camera.camera.aspectRatio
-    if aspect <= 0 then aspect = 16.0 / 9.0 end
-
-    local orthoFromX = spanX / aspect
-    local orthoFromY = spanY
-    targetOrtho_ = math.max(orthoFromX, orthoFromY)
-    targetOrtho_ = math.max(Config.CameraMinOrtho, math.min(Config.CameraMaxOrtho, targetOrtho_))
+    -- 固定 orthoSize（不随玩家分散而缩放）
+    targetOrtho_ = Config.CameraMinOrtho
 
     local smooth = Config.CameraSmoothSpeed * dt
     smooth = math.min(smooth, 1.0)
@@ -149,7 +111,7 @@ function Camera.Update(dt, playerPositions, humanPos)
     local shakeOffX, shakeOffY = 0, 0
     if shakeTimer_ > 0 then
         shakeTimer_ = shakeTimer_ - dt
-        local progress = shakeTimer_ / shakeDuration_  -- 1→0 衰减
+        local progress = shakeTimer_ / shakeDuration_
         local amp = shakeIntensity_ * progress
         shakeOffX = (math.random() * 2 - 1) * amp
         shakeOffY = (math.random() * 2 - 1) * amp

@@ -23,7 +23,13 @@ RandomPickup.MinDistance    = 3.0   -- 新拾取物与已有拾取物的最小�
 local spawnTimer_ = 0
 local mapModule_ = nil
 local pickupModule_ = nil
+local playerModule_ = nil  -- Player 模块引用（用于获取人类玩家高度）
 local validPositions_ = {}  -- 缓存的有效生成位置
+
+-- 高度相关配置
+RandomPickup.SpawnBelowPlayer  = 10   -- 在玩家下方多少格内生成
+RandomPickup.SpawnAbovePlayer  = 30   -- 在玩家上方多少格内生成
+RandomPickup.CleanupDistance   = 50   -- 距离玩家超过此距离的拾取物会被清理
 
 -- ============================================================================
 -- 初始化
@@ -32,9 +38,11 @@ local validPositions_ = {}  -- 缓存的有效生成位置
 --- 初始化随机道具系统
 ---@param mapRef table Map 模块引用
 ---@param pickupRef table Pickup 模块引用
-function RandomPickup.Init(mapRef, pickupRef)
+---@param playerRef table|nil Player 模块引用（可选，用于高度相关生成）
+function RandomPickup.Init(mapRef, pickupRef, playerRef)
     mapModule_ = mapRef
     pickupModule_ = pickupRef
+    playerModule_ = playerRef
     spawnTimer_ = 0
     validPositions_ = {}
     print("[RandomPickup] Initialized (max=" .. RandomPickup.MaxPickups ..
@@ -45,8 +53,9 @@ end
 -- 有效位置扫描
 -- ============================================================================
 
---- 扫描地图网格，找到所有可以生成拾取物的位置
+--- 扫描地图网格，找到玩家附近的有效拾取物生成位置
 --- 有效位置 = 空格子且下方有实心方块（玩家可到达的平台上方）
+--- 大地图模式下只扫描人类玩家附近区域（-SpawnBelowPlayer 到 +SpawnAbovePlayer）
 function RandomPickup.RefreshValidPositions()
     validPositions_ = {}
     if mapModule_ == nil then return end
@@ -56,15 +65,28 @@ function RandomPickup.RefreshValidPositions()
 
     local w, h = mapModule_.GetDimensions()
 
-    for y = 2, h do  -- 从 y=2 开始，需要检查 y-1
+    -- 确定扫描范围（基于人类玩家高度）
+    local minGridY = 2
+    local maxGridY = h
+    if playerModule_ then
+        local humanPos = playerModule_.GetHumanPosition()
+        if humanPos then
+            local playerGridY = math.floor(humanPos.y / Config.BlockSize) + 1
+            minGridY = math.max(2, playerGridY - RandomPickup.SpawnBelowPlayer)
+            maxGridY = math.min(h, playerGridY + RandomPickup.SpawnAbovePlayer)
+        end
+    end
+
+    for y = minGridY, maxGridY do
         for x = 1, w do
             local cell = grid[y] and grid[y][x] or 0
             local below = grid[y - 1] and grid[y - 1][x] or 0
 
-            -- 空格子且下方是实心方块（普通/安全/出生点/终点）
+            -- 空格子且下方是实心方块（普通/安全/出生点/检查点等）
             if cell == Config.BLOCK_EMPTY and
                (below == Config.BLOCK_NORMAL or below == Config.BLOCK_SAFE or
                 below == Config.BLOCK_SPAWN or below == Config.BLOCK_FINISH or
+                below == Config.BLOCK_CHECKPOINT or
                 Config.IsSpawnBlock(below)) then
                 local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
                 local wy = (y - 1) * Config.BlockSize + Config.BlockSize * 0.5
@@ -73,7 +95,7 @@ function RandomPickup.RefreshValidPositions()
         end
     end
 
-    print("[RandomPickup] Found " .. #validPositions_ .. " valid spawn positions")
+    print("[RandomPickup] Found " .. #validPositions_ .. " valid spawn positions (Y range: " .. minGridY .. "-" .. maxGridY .. ")")
 end
 
 -- ============================================================================
@@ -180,7 +202,7 @@ end
 -- 更新（每帧调用）
 -- ============================================================================
 
---- 每帧更新：周期性尝试生成新拾取物
+--- 每帧更新：周期性尝试生成新拾取物 + 清理远距离拾取物
 ---@param dt number
 function RandomPickup.Update(dt)
     if pickupModule_ == nil then return end
@@ -189,23 +211,36 @@ function RandomPickup.Update(dt)
     if spawnTimer_ > 0 then return end
     spawnTimer_ = RandomPickup.SpawnInterval
 
+    -- 每次刷新有效位置（大地图下基于玩家高度动态调整）
+    RandomPickup.RefreshValidPositions()
+
+    -- 清理距离玩家太远的拾取物
+    if playerModule_ then
+        local humanPos = playerModule_.GetHumanPosition()
+        if humanPos then
+            pickupModule_.CleanupFarPickups(humanPos.y, RandomPickup.CleanupDistance)
+        end
+    end
+
     local activeCount = pickupModule_.GetActiveCount()
     if activeCount >= RandomPickup.MaxPickups then return end
 
-    -- 每次尝试生成 1 个
-    local positions = RandomPickup.GetRandomPositions(1)
+    -- 每次尝试生成 1-2 个
+    local toSpawn = math.min(2, RandomPickup.MaxPickups - activeCount)
+    local positions = RandomPickup.GetRandomPositions(toSpawn)
     if #positions == 0 then return end
 
-    local pos = positions[1]
-
-    -- 检查附近是否已有拾取物
-    if pickupModule_.HasPickupNear(pos.x, pos.y, RandomPickup.MinDistance) then
-        return
+    local spawned = 0
+    for _, pos in ipairs(positions) do
+        -- 检查附近是否已有拾取物
+        if not pickupModule_.HasPickupNear(pos.x, pos.y, RandomPickup.MinDistance) then
+            pickupModule_.Spawn(pos.x, pos.y, pos.size)
+            spawned = spawned + 1
+        end
     end
-
-    pickupModule_.Spawn(pos.x, pos.y, pos.size)
-    print("[RandomPickup] Spawned " .. pos.size .. " pickup at (" ..
-          string.format("%.1f, %.1f", pos.x, pos.y) .. ") active=" .. (activeCount + 1))
+    if spawned > 0 then
+        print("[RandomPickup] Spawned " .. spawned .. " pickups, active=" .. (activeCount + spawned))
+    end
 end
 
 -- ============================================================================

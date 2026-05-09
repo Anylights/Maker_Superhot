@@ -286,9 +286,11 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         outlineGeom:SetMaterial(outlineMat_)
     end
 
-    -- 终点方块：添加旗帜视觉效果（旗杆+三角旗）
+    -- 终点方块 / 检查点方块：添加旗帜视觉效果
     if blockType == Config.BLOCK_FINISH then
-        Map.CreateFlag(node, bs)
+        Map.CreateFlag(node, bs, Color(1.0, 0.85, 0.1))  -- 金色旗帜
+    elseif blockType == Config.BLOCK_CHECKPOINT then
+        Map.CreateFlag(node, bs, Color(0.2, 0.85, 0.95))  -- 青色旗帜
     end
 
     -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
@@ -301,10 +303,11 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     return node
 end
 
---- 在终点方块上方创建旗帜（旗杆+三角旗）
----@param parentNode Node 终点方块节点
+--- 在终点/检查点方块上方创建旗帜（旗杆+三角旗）
+---@param parentNode Node 方块节点
 ---@param bs number 方块边长
-function Map.CreateFlag(parentNode, bs)
+---@param flagColor Color 旗帜颜色
+function Map.CreateFlag(parentNode, bs, flagColor)
     local halfBS = bs * 0.5
 
     -- 旗杆（细长圆柱）
@@ -358,13 +361,13 @@ function Map.CreateFlag(parentNode, bs)
 
     flagGeom:Commit()
 
-    -- 旗帜材质：金色/黄色，高发光
+    -- 旗帜材质：使用传入的颜色
     local flagMat = Material:new()
     flagMat:SetTechnique(0, pbrTechnique_)
-    flagMat:SetShaderParameter("MatDiffColor", Variant(Color(1.0, 0.85, 0.1)))
+    flagMat:SetShaderParameter("MatDiffColor", Variant(flagColor))
     flagMat:SetShaderParameter("Metallic", Variant(0.1))
     flagMat:SetShaderParameter("Roughness", Variant(0.6))
-    flagMat:SetShaderParameter("MatEmissiveColor", Variant(Color(0.5, 0.4, 0.02)))
+    flagMat:SetShaderParameter("MatEmissiveColor", Variant(Color(flagColor.r * 0.5, flagColor.g * 0.5, flagColor.b * 0.05)))
     flagGeom:SetMaterial(flagMat)
 end
 
@@ -500,7 +503,7 @@ function Map.DestroyBlock(gx, gy, explodeCX, explodeCY)
 
     local blockType = grid_[gy][gx]
 
-    -- 只能破坏普通方块和能量托台（出生点、安全、终点不可破坏）
+    -- 只能破坏普通方块和能量托台（出生点、安全、终点、检查点不可破坏）
     if blockType ~= Config.BLOCK_NORMAL and blockType ~= Config.BLOCK_ENERGY_PAD then
         return false
     end

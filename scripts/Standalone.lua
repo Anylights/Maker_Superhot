@@ -1,5 +1,5 @@
 -- ============================================================================
--- Standalone.lua - 单机模式
+-- Standalone.lua - 单机模式（大地图攀登模式）
 -- ============================================================================
 
 require "LuaScripts/Utilities/Sample"
@@ -15,8 +15,6 @@ local GameManager = require("GameManager")
 local HUD = require("HUD")
 local SFX = require("SFX")
 local RandomPickup = require("RandomPickup")
-local LevelEditor = require("LevelEditor")
-local LevelManager = require("LevelManager")
 
 local Standalone = {}
 
@@ -30,11 +28,6 @@ local ExplosionTuningPanel = nil
 local scene_ = nil
 local debugDraw_ = false
 
--- 当前关卡文件名（用于每局换图时排除上一张）
-local currentLevelFilename_ = nil
--- 是否处于测试游玩模式（测试游玩固定使用同一张图）
-local isTestPlayMode_ = false
-
 -- ============================================================================
 -- 生命周期
 -- ============================================================================
@@ -43,7 +36,7 @@ function Standalone.Start()
     -- Sample 工具库初始化
     SampleStart()
     graphics.windowTitle = Config.Title
-    print("=== " .. Config.Title .. " (Standalone) ===")
+    print("=== " .. Config.Title .. " (Standalone - Climb) ===")
 
     -- 调参面板
     local ok, mod = pcall(require, "TuningPanel")
@@ -76,31 +69,11 @@ function Standalone.Start()
     HUD.Init(Player, GameManager, Map)
 
     -- 初始化随机道具
-    RandomPickup.Init(Map, Pickup)
-
-    -- 初始化关卡管理器
-    LevelManager.Init()
-
-    -- 初始化关卡编辑器
-    LevelEditor.Init(HUD.GetNVGContext(), GameManager, Map)
-    HUD.SetLevelEditor(LevelEditor)
+    RandomPickup.Init(Map, Pickup, Player)
 
     -- 调参面板初始化
     if TuningPanel then TuningPanel.Init(scene_) end
     if ExplosionTuningPanel then ExplosionTuningPanel.Init(scene_) end
-
-    -- 每局开始前换一张地图（测试游玩除外）
-    GameManager.OnBeforeRound(function(roundIdx)
-        if isTestPlayMode_ then return end
-        local grid, fname = LevelManager.GetRandom(currentLevelFilename_)
-        if grid then
-            MapData.SetCustomGrid(grid)
-            currentLevelFilename_ = fname
-            print(string.format("[Standalone] Round %d → switched to level: %s", roundIdx, tostring(fname)))
-            -- 关卡换了，重新设置死亡区
-            Standalone.UpdateDeathZone()
-        end
-    end)
 
     print("[Standalone] All systems initialized")
 end
@@ -244,7 +217,6 @@ function Standalone.CreateGameContent()
     end
 
     RandomPickup.Reset()
-    Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
     GameManager.EnterMenu()
     print("[Standalone] Game content created - waiting at menu")
 end
@@ -258,92 +230,26 @@ function Standalone.HandleUpdate(dt)
     -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
     HUD.CacheInput()
 
-    -- 主菜单：点击开始 → 立即进入游戏（其他角色由 AI 控制）
+    -- 主菜单：点击开始 → 立即进入游戏
     if GameManager.state == GameManager.STATE_MENU then
         local btn = HUD.GetMenuButtonClicked()
         if btn == "startGame" then
-            isTestPlayMode_ = false
-            local grid, fname = LevelManager.GetRandom()
-            if grid then
-                MapData.SetCustomGrid(grid)
-                currentLevelFilename_ = fname
-            else
-                MapData.ClearCustomGrid()
-                currentLevelFilename_ = nil
-            end
-            GameManager.StartMatch()
-            Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
+            GameManager.StartGame()
             Standalone.UpdateDeathZone()
-        elseif btn == "editor" then
-            HUD.RefreshLevelList()
-            GameManager.EnterLevelList()
         end
         return
     end
 
-    -- 关卡列表
-    if GameManager.state == GameManager.STATE_LEVEL_LIST then
-        -- 从编辑器返回时刷新列表（ESC 退出和点击退出按钮都走这里）
-        if LevelEditor.exitedToList then
-            LevelEditor.exitedToList = false
-            HUD.RefreshLevelList()
-        end
-        if HUD.IsPersistClicked() then
-            local count, err = LevelManager.SaveToSourceFile()
-            if count > 0 then
-                HUD.ShowLevelListToast("已保存 " .. count .. " 个关卡到工程！\n请对塔啦啦说「重新构建」", 5)
-            elseif err then
-                HUD.ShowLevelListToast("保存失败: " .. err, 3)
-            else
-                HUD.ShowLevelListToast("没有关卡需要保存。\n请先创建并保存关卡。", 3)
-            end
-        end
-        local action = HUD.GetLevelListAction()
-        if action then
-            if action.action == "play" then
-                local grid = LevelManager.Load(action.filename)
-                if grid then
-                    isTestPlayMode_ = true
-                    currentLevelFilename_ = action.filename
-                    MapData.SetCustomGrid(grid)
-                    GameManager.StartTestPlay(action.filename)
-                    Camera.SetFixedForMap(MapData.Width, MapData.Height, 2)
-                    Standalone.UpdateDeathZone()
-                end
-            elseif action.action == "edit" then
-                Camera.ReleaseFixed()
-                GameManager.EnterEditor()
-                LevelEditor.LoadFile(action.filename)
-                LevelEditor.Enter()
-            elseif action.action == "delete" then
-                LevelManager.Delete(action.filename)
-                HUD.RefreshLevelList()
-            elseif action.action == "new" then
-                Camera.ReleaseFixed()
-                GameManager.EnterEditor()
-                LevelEditor.NewLevel()
-                LevelEditor.Enter()
-            elseif action.action == "back" then
-                GameManager.ExitLevelList()
-            end
+    -- 结算画面
+    if GameManager.state == GameManager.STATE_RESULT then
+        local btn = HUD.GetResultButtonClicked()
+        if btn == "restart" then
+            GameManager.Restart()
+            Standalone.UpdateDeathZone()
+        elseif btn == "menu" then
+            GameManager.EnterMenu()
         end
         return
-    end
-
-    -- 关卡编辑器
-    if GameManager.state == GameManager.STATE_EDITOR then
-        LevelEditor.Update(dt)
-        return
-    end
-
-    -- 试玩退出
-    if GameManager.testPlayMode then
-        if input:GetKeyPress(KEY_ESCAPE) or HUD.IsTestPlayExitClicked() then
-            isTestPlayMode_ = false
-            GameManager.ExitTestPlay()
-            HUD.RefreshLevelList()
-            return
-        end
     end
 
     -- 调参面板切换
@@ -403,7 +309,7 @@ function Standalone.HandlePlayerInput()
     end
 
     for _, p in ipairs(Player.list) do
-        if p.isHuman and p.alive and not p.finished then
+        if p.isHuman and p.alive then
             local moveX = 0
             if input:GetKeyDown(KEY_A) or input:GetKeyDown(KEY_LEFT) then
                 moveX = -1

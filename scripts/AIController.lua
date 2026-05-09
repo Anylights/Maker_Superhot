@@ -110,13 +110,11 @@ local function scanPlatforms(mapModule)
             end
 
             local isValidSurface = isSolid and aboveEmpty
-            local isFinish = (block == Config.BLOCK_FINISH)
 
             if isValidSurface then
                 if segStart == nil then
-                    segStart = { x = gx, isFinish = isFinish }
+                    segStart = { x = gx }
                 end
-                if isFinish then segStart.isFinish = true end
             else
                 if segStart then
                     local wx1 = (segStart.x - 1) * bs
@@ -126,7 +124,6 @@ local function scanPlatforms(mapModule)
                         x2 = wx2,
                         y  = gy * bs,                 -- 平台表面 Y
                         charY = gy * bs + CHAR_HALF_H, -- 角色中心 Y
-                        isFinish = segStart.isFinish,
                         width = wx2 - wx1,
                         cx = (wx1 + wx2) * 0.5,       -- 平台中心 X
                         gridY = gy,
@@ -299,25 +296,32 @@ local function findCurrentPlatform(px, py, platforms)
 end
 
 -- ============================================================================
--- A* 寻路 - 优化版
+-- A* 寻路 - 向上攀登版（无终点，目标=尽量爬高）
 -- ============================================================================
+
+-- 搜索范围：只考虑当前位置上方 SEARCH_HEIGHT 米内的平台
+local SEARCH_HEIGHT_UP   = 60   -- 向上搜索范围
+local SEARCH_HEIGHT_DOWN = 10   -- 向下搜索范围（允许小幅绕行）
+local MAX_PATH_STEPS     = 12   -- 路径最大步数（避免搜索过深）
 
 ---@param startPlat table
 ---@param platforms table
 ---@return table|nil path, table|nil jumpInfos
-local function findPathToFinish(startPlat, platforms)
-    -- 找终点
-    local finishPlats = {}
+local function findPathUpward(startPlat, platforms)
+    -- 筛选搜索范围内的平台
+    local startY = startPlat.charY
+    local nearPlatforms = {}
     for _, p in ipairs(platforms) do
-        if p.isFinish then
-            table.insert(finishPlats, p)
+        local dy = p.charY - startY
+        if dy >= -SEARCH_HEIGHT_DOWN and dy <= SEARCH_HEIGHT_UP then
+            table.insert(nearPlatforms, p)
         end
     end
-    if #finishPlats == 0 then return nil, nil end
+    if #nearPlatforms == 0 then return nil, nil end
 
     -- 平台索引映射
     local platIndex = {}
-    for i, p in ipairs(platforms) do
+    for i, p in ipairs(nearPlatforms) do
         platIndex[p] = i
     end
     local startIdx = platIndex[startPlat]
@@ -325,9 +329,9 @@ local function findPathToFinish(startPlat, platforms)
 
     -- 构建邻接表（带 jumpInfo）
     local adjacency = {}
-    local jumpInfoMap = {}  -- [fromIdx][toIdx] = jumpInfo
+    local jumpInfoMap = {}
 
-    for i = 1, #platforms do
+    for i = 1, #nearPlatforms do
         adjacency[i] = {}
         jumpInfoMap[i] = {}
     end
@@ -336,30 +340,25 @@ local function findPathToFinish(startPlat, platforms)
     local MAX_DY_DOWN = 25.0
     local MAX_DX      = 20.0
 
-    for i = 1, #platforms do
-        local pi = platforms[i]
-        for j = 1, #platforms do
+    for i = 1, #nearPlatforms do
+        local pi = nearPlatforms[i]
+        for j = 1, #nearPlatforms do
             if i ~= j then
-                local pj = platforms[j]
+                local pj = nearPlatforms[j]
                 local dy = pj.charY - pi.charY
                 if dy <= MAX_DY_UP and dy >= -MAX_DY_DOWN then
                     local dxCenter = math.abs(pj.cx - pi.cx)
                     if dxCenter <= MAX_DX then
                         local reachable, jinfo = analyzeReachability(pi, pj)
                         if reachable and jinfo then
-                            -- 代价函数：首要目标=向上爬升（保持非负，靠相对差异引导）
                             local cost = 1.0
-                            -- 向上跳：极低代价
                             if dy > 0.5 then
                                 cost = 0.1
-                            -- 下降：巨大惩罚（除非别无选择）
                             elseif dy < -0.5 then
                                 cost = 50.0 + math.abs(dy) * 10.0
                             else
-                                -- 同层移动：中等代价
                                 cost = 10.0 + dxCenter * 0.2
                             end
-                            -- 接近跳跃极限高度时增加风险代价
                             if jinfo.type == "jump_up" then
                                 local diffRatio = dy / MAX_JUMP_HEIGHT
                                 if diffRatio > 0.85 then
@@ -376,75 +375,75 @@ local function findPathToFinish(startPlat, platforms)
         end
     end
 
-    -- 启发式
-    local function heuristic(idx)
-        local p = platforms[idx]
-        local minH = math.huge
-        for _, fp in ipairs(finishPlats) do
-            local h = math.max(0, fp.charY - p.charY) * 0.2
-                    + math.abs(fp.cx - p.cx) * 0.15
-            if h < minH then minH = h end
-        end
-        return minH
-    end
-
-    -- A*
+    -- Dijkstra 找从起点到所有可达平台的最短路径，然后选最高的
     local gScore = { [startIdx] = 0 }
     local cameFrom = {}
-    local cameEdge = {}  -- 记录使用的边（含 jumpInfo）
     local closedSet = {}
-    local openSet = { { idx = startIdx, f = heuristic(startIdx) } }
+    local openSet = { { idx = startIdx, g = 0 } }
 
     while #openSet > 0 do
-        -- 找 f 最小
+        -- 找 g 最小
         local bestI = 1
         for i = 2, #openSet do
-            if openSet[i].f < openSet[bestI].f then bestI = i end
+            if openSet[i].g < openSet[bestI].g then bestI = i end
         end
         local current = openSet[bestI]
         table.remove(openSet, bestI)
 
-        if platforms[current.idx].isFinish then
-            -- 回溯路径
-            local path = {}
-            local jumpInfos = {}
-            local c = current.idx
-            while c do
-                table.insert(path, 1, platforms[c])
-                if cameFrom[c] then
-                    table.insert(jumpInfos, 1, jumpInfoMap[cameFrom[c]][c])
-                end
-                c = cameFrom[c]
-            end
-            return path, jumpInfos
-        end
-
+        if closedSet[current.idx] then goto continue_dijkstra end
         closedSet[current.idx] = true
 
         for _, edge in ipairs(adjacency[current.idx]) do
             if not closedSet[edge.idx] then
-                local tentG = (gScore[current.idx] or math.huge) + edge.cost
+                local tentG = current.g + edge.cost
                 if tentG < (gScore[edge.idx] or math.huge) then
                     gScore[edge.idx] = tentG
                     cameFrom[edge.idx] = current.idx
+                    table.insert(openSet, { idx = edge.idx, g = tentG })
+                end
+            end
+        end
 
-                    local found = false
-                    for _, o in ipairs(openSet) do
-                        if o.idx == edge.idx then
-                            o.f = tentG + heuristic(edge.idx)
-                            found = true
-                            break
-                        end
-                    end
-                    if not found then
-                        table.insert(openSet, { idx = edge.idx, f = tentG + heuristic(edge.idx) })
-                    end
+        ::continue_dijkstra::
+    end
+
+    -- 找可达平台中最高的（且在起点上方）
+    local bestIdx = nil
+    local bestHeight = startY
+    for idx, _ in pairs(gScore) do
+        if idx ~= startIdx then
+            local plat = nearPlatforms[idx]
+            if plat.charY > bestHeight then
+                -- 检查路径步数不超过限制
+                local steps = 0
+                local c = idx
+                while cameFrom[c] do
+                    steps = steps + 1
+                    c = cameFrom[c]
+                end
+                if steps <= MAX_PATH_STEPS then
+                    bestHeight = plat.charY
+                    bestIdx = idx
                 end
             end
         end
     end
 
-    return nil, nil
+    if not bestIdx then return nil, nil end
+
+    -- 回溯路径
+    local path = {}
+    local jumpInfos = {}
+    local c = bestIdx
+    while c do
+        table.insert(path, 1, nearPlatforms[c])
+        if cameFrom[c] then
+            table.insert(jumpInfos, 1, jumpInfoMap[cameFrom[c]][c])
+        end
+        c = cameFrom[c]
+    end
+
+    return path, jumpInfos
 end
 
 -- ============================================================================
@@ -532,7 +531,7 @@ function AIController.Update(dt)
     end
 
     for _, p in ipairs(playerModule_.list) do
-        if not p.isHuman and p.alive and not p.finished and p.stunTimer <= 0 then
+        if not p.isHuman and p.alive and p.stunTimer <= 0 then
             AIController.UpdateOne(p, dt)
         end
     end
@@ -883,7 +882,7 @@ local function findBombTarget(p)
     local px, py = p.node.position.x, p.node.position.y
     local best, bestD2 = nil, math.huge
     for _, q in ipairs(playerModule_.list) do
-        if q.index ~= p.index and q.alive and not q.finished and q.node then
+        if q.index ~= p.index and q.alive and q.node then
             local qpos = q.node.position
             local dx = qpos.x - px
             local dy = qpos.y - py
@@ -904,7 +903,7 @@ function AIController.UpdateBomb(p, state, dt)
     -- 重置持续输入（默认不蓄力）
     state.wantCharging = false
 
-    if not p.alive or p.finished then
+    if not p.alive then
         state.chargeTimer = 0
         state.bombTargetIdx = nil
         return
@@ -1123,7 +1122,7 @@ function AIController.ThinkInAir(p, state, px, py, vx, vy)
     if not p.slamming and vy < 0 and playerModule_ then
         local slamRadius = Config.SlamRadius or 3.0
         for _, other in ipairs(playerModule_.list) do
-            if other.index ~= p.index and other.alive and not other.finished and other.node then
+            if other.index ~= p.index and other.alive and other.node then
                 local opos = other.node.position
                 local dx = math.abs(opos.x - px)
                 local dy = py - opos.y  -- 正值表示 AI 在上方
@@ -1279,7 +1278,7 @@ function AIController.Repath(p, state, px, py)
         return
     end
 
-    local path, jumpInfos = findPathToFinish(curPlat, cachedPlatforms_)
+    local path, jumpInfos = findPathUpward(curPlat, cachedPlatforms_)
     state.path = path
     state.jumpInfos = jumpInfos
     state.pathIdx = 2  -- 跳过当前平台
@@ -1322,7 +1321,7 @@ function AIController.GetDebugInfo()
 
     for _, p in ipairs(playerModule_.list) do
         local state = aiStates_[p.index]
-        if state and not p.isHuman and p.alive and not p.finished then
+        if state and not p.isHuman and p.alive then
             local entry = { playerIdx = p.index }
 
             -- 路径平台中心点列表

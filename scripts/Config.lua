@@ -10,12 +10,14 @@ Config.Title = "超级红温！"
 -- 方块/网格尺寸（米）
 Config.BlockSize = 1.0
 
--- 玩家颜色（4 名玩家）— 高饱和鲜艳
+-- 玩家颜色（6 名玩家）— 高饱和鲜艳
 Config.PlayerColors = {
     Color(0.95, 0.22, 0.18, 1.0),  -- 番茄红
     Color(0.20, 0.48, 0.95, 1.0),  -- 宝蓝
     Color(0.18, 0.85, 0.35, 1.0),  -- 翠绿
     Color(0.98, 0.78, 0.12, 1.0),  -- 鲜黄
+    Color(0.85, 0.30, 0.90, 1.0),  -- 紫罗兰
+    Color(1.00, 0.55, 0.15, 1.0),  -- 橙色
 }
 
 Config.PlayerEmissive = {
@@ -23,6 +25,8 @@ Config.PlayerEmissive = {
     Color(0.01, 0.05, 0.12),
     Color(0.02, 0.10, 0.03),
     Color(0.12, 0.10, 0.01),
+    Color(0.10, 0.03, 0.12),
+    Color(0.12, 0.06, 0.01),
 }
 
 -- 玩家描边颜色（深色，每色独立）
@@ -31,6 +35,8 @@ Config.PlayerOutlineColors = {
     Color(0.06, 0.15, 0.50, 1.0),  -- 深蓝
     Color(0.06, 0.35, 0.10, 1.0),  -- 深绿
     Color(0.50, 0.35, 0.03, 1.0),  -- 深黄
+    Color(0.38, 0.10, 0.42, 1.0),  -- 深紫
+    Color(0.50, 0.22, 0.03, 1.0),  -- 深橙
 }
 
 -- 方块类型
@@ -56,7 +62,14 @@ Config.BlockColors = {
     [11] = Color(0.20, 0.48, 0.95, 1.0),  -- P2 出生点：宝蓝
     [12] = Color(0.18, 0.85, 0.35, 1.0),  -- P3 出生点：翠绿
     [13] = Color(0.98, 0.78, 0.12, 1.0),  -- P4 出生点：鲜黄
+    [14] = Color(0.85, 0.30, 0.90, 1.0),  -- P5 出生点：紫罗兰
+    [15] = Color(1.00, 0.55, 0.15, 1.0),  -- P6 出生点：橙色
+    [6]  = Color(0.90, 0.65, 0.20, 1.0),  -- 检查点：暖金
 }
+
+-- P5/P6 出生点方块
+Config.BLOCK_SPAWN_P5   = 14 -- P5 出生点（紫罗兰）
+Config.BLOCK_SPAWN_P6   = 15 -- P6 出生点（橙色）
 
 -- 出生点方块自发光颜色（复用 PlayerEmissive）
 Config.SpawnBlockEmissive = {
@@ -64,7 +77,12 @@ Config.SpawnBlockEmissive = {
     [11] = Config.PlayerEmissive[2],
     [12] = Config.PlayerEmissive[3],
     [13] = Config.PlayerEmissive[4],
+    [14] = Config.PlayerEmissive[5],
+    [15] = Config.PlayerEmissive[6],
 }
+
+-- 检查点方块类型
+Config.BLOCK_CHECKPOINT = 6
 
 -- 方块描边颜色（统一深棕）
 Config.BlockOutlineColor = Color(0.20, 0.16, 0.13, 1.0)
@@ -130,14 +148,17 @@ Config.RespawnDelay       = 1.5    -- 复活等待（秒）
 Config.InvincibleDuration = 1.0    -- 出生保护（秒）
 Config.DeathY             = -10.0  -- 死亡区域 Y 坐标
 
--- 比赛系统
-Config.RoundDuration     = 75.0    -- 单局时长（秒）
-Config.WinScore          = 15      -- 胜利积分目标
-Config.PlaceScores       = { 5, 3, 2, 1 }  -- 名次对应积分
+-- 游戏时间
+Config.GameDuration      = 180.0   -- 单局总时长（秒）= 3 分钟
 Config.CountdownTime     = 3.0     -- 开局倒计时（秒）
 
+-- 高度积分
+Config.HeightScoreUnit   = 10      -- 每上升 1 格得分
+Config.HeightPenaltyUnit = 10      -- 每下降 1 格扣分（同步实时）
+
 -- 击杀积分
-Config.KillScore         = 1       -- 每次击杀得分
+Config.KillScoreBase     = 10      -- 单杀基础分
+Config.DeathPenalty      = 10      -- 死亡扣分
 Config.MultiKillWindow   = 2.0     -- 连续击杀判定窗口（秒）
 Config.MultiKillTexts    = {       -- 连杀文字（按连续击杀数索引）
     [1] = "击杀!",
@@ -151,6 +172,13 @@ Config.KillStreakTexts    = {       -- 连杀文字（按连续不死击杀数�
     [5] = "杀疯了!",
     [7] = "无人能挡!",
 }
+
+-- 拾取物积分
+Config.PickupSmallScore  = 1       -- 小能量块得分
+Config.PickupLargeScore  = 3       -- 大能量块得分
+
+-- 检查点
+Config.CheckpointInterval = 20     -- 每隔多少格放一个检查点
 
 -- 开场镜头动画
 Config.IntroFocusFinishTime  = 1.5   -- 聚焦终点持续时间（秒）
@@ -168,12 +196,12 @@ Config.CameraPadding     = 4.0     -- 相机包围盒边距
 Config.CameraSmoothSpeed = 3.0     -- 相机平滑速度
 Config.CameraEndTransDur = 1.5     -- 回合结束时镜头过渡到全景的时长（秒）
 
--- 玩家数量
-Config.NumPlayers = 4
+-- 玩家数量（1 人类 + 5 AI）
+Config.NumPlayers = 6
 
--- 默认地图尺寸（30x24 固定相机可视全局）
+-- 默认地图尺寸（30 宽 × 200 高，大地图攀登模式）
 Config.DefaultMapWidth  = 30
-Config.DefaultMapHeight = 24
+Config.DefaultMapHeight = 200
 
 -- 出生点方块类型列表（按玩家编号索引）
 Config.SpawnBlockTypes = {
@@ -181,9 +209,11 @@ Config.SpawnBlockTypes = {
     Config.BLOCK_SPAWN_P2,
     Config.BLOCK_SPAWN_P3,
     Config.BLOCK_SPAWN_P4,
+    Config.BLOCK_SPAWN_P5,
+    Config.BLOCK_SPAWN_P6,
 }
 
---- 判断方块类型是否为出生点（含旧版和 P1-P4）
+--- 判断方块类型是否为出生点（含旧版和 P1-P6）
 ---@param blockType number
 ---@return boolean
 function Config.IsSpawnBlock(blockType)
@@ -192,6 +222,15 @@ function Config.IsSpawnBlock(blockType)
         or blockType == Config.BLOCK_SPAWN_P2
         or blockType == Config.BLOCK_SPAWN_P3
         or blockType == Config.BLOCK_SPAWN_P4
+        or blockType == Config.BLOCK_SPAWN_P5
+        or blockType == Config.BLOCK_SPAWN_P6
+end
+
+--- 判断方块类型是否为检查点
+---@param blockType number
+---@return boolean
+function Config.IsCheckpoint(blockType)
+    return blockType == Config.BLOCK_CHECKPOINT
 end
 
 return Config

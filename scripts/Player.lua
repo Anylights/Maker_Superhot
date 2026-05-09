@@ -41,7 +41,6 @@ function Player.Init(scene, mapRef)
 end
 
 --- 在节点上创建视觉组件（模型、描边、眼睛）
---- 用于单机模式的 Create 以及客户端的延迟挂载
 ---@param node Node 父节点
 ---@param index number 玩家编号 1~4
 ---@return Node visualNode, Material mat, Material outlineMat
@@ -107,48 +106,25 @@ function Player.CreateVisuals(node, index)
     return visualNode, mat, outlineMat
 end
 
---- 为已有玩家数据补挂视觉组件（客户端收到 REPLICATED 节点后调用）
----@param p table 玩家数据
-function Player.AttachVisuals(p)
-    if p.visualNode then return end  -- 已有视觉
-    local visualNode, mat, outlineMat = Player.CreateVisuals(p.node, p.index)
-    p.visualNode = visualNode
-    p.material = mat
-    p.outlineMat = outlineMat
-    print("[Player] Visuals attached to player " .. p.index)
-end
-
 --- 创建一个玩家
 ---@param index number 玩家编号 1~4
 ---@param isHuman boolean 是否人类控制
----@param opts table|nil 可选参数 { existingNode=Node, skipVisuals=bool }
 ---@return table 玩家数据
-function Player.Create(index, isHuman, opts)
-    opts = opts or {}
+function Player.Create(index, isHuman)
     local spawnX, spawnY = MapData.GetSpawnPosition(index)
 
-    local node
-    if opts.existingNode then
-        node = opts.existingNode
-    else
-        node = scene_:CreateChild("Player_" .. index, REPLICATED)
-        node.position = Vector3(spawnX, spawnY, 0)
-    end
+    local node = scene_:CreateChild("Player_" .. index, LOCAL)
+    node.position = Vector3(spawnX, spawnY, 0)
 
     -- 视觉组件
-    local visualNode = nil
-    local mat = nil
-    local outlineMat = nil
     local eyeBaseX = 0.16
     local eyeBaseY = 0.06
     local eyeBaseZ = -0.48
     local eyeRadius = 0.22
 
-    if not opts.skipVisuals then
-        visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
-    end
+    local visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
 
-    -- 动态刚体（服务端也需要物理）
+    -- 动态刚体
     local body = node:GetComponent("RigidBody") or node:CreateComponent("RigidBody")
     body.mass = 1.0
     body.friction = 0.3  -- 降低摩擦：移动由代码直接设置速度，低摩擦避免被地面约束卡住

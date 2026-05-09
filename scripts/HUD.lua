@@ -49,7 +49,7 @@ local levelListScroll_ = 0       -- 滚动偏移
 local testPlayExitClicked_ = false  -- 试玩退出按钮是否被点击
 local persistClicked_ = false  -- "保存到工程"按钮是否被点击
 
--- 关卡列表 toast 系统（独立于联机 toast）
+-- 关卡列表 toast 系统
 local levelListToast_ = nil     -- toast 消息文本
 local levelListToastTimer_ = 0  -- 剩余显示时间
 
@@ -59,7 +59,7 @@ local cachedMouseLogX_ = 0
 local cachedMouseLogY_ = 0
 
 --- 在 Update 阶段缓存鼠标输入状态（GetMouseButtonPress 在渲染阶段不可靠）
---- 必须由 Client.HandleUpdate / Standalone.HandleUpdate 在每帧开头调用
+--- 必须由 Standalone.HandleUpdate 在每帧开头调用
 function HUD.CacheInput()
     cachedMousePress_ = input:GetMouseButtonPress(MOUSEB_LEFT)
     if cachedMousePress_ then

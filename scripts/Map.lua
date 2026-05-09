@@ -32,8 +32,7 @@ local debris_ = {}
 -- 重生缩放动画列表：{ node, timer, duration }
 local respawnAnims_ = {}
 
--- 编辑器预览模式：所有节点强制 LOCAL，避免编辑器创建 REPLICATED 节点导致崩溃
-local editorPreviewMode_ = false
+-- 所有节点使用 LOCAL 模式创建
 
 -- 描边材质缓存
 local outlineMat_ = nil
@@ -224,8 +223,8 @@ function Map.Build()
     -- 生成网格数据
     grid_ = MapData.Generate()
 
-    -- 创建地图父节点（服务端用 LOCAL 防止复制冲突）
-    local mapRoot = scene_:CreateChild("MapRoot", editorPreviewMode_ and LOCAL or REPLICATED)
+    -- 创建地图父节点
+    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
 
     -- 遍历网格，创建方块节点
     blockNodes_ = {}
@@ -262,8 +261,7 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local wx = (gx - 1) * bs + bs * 0.5
     local wy = (gy - 1) * bs + bs * 0.5
 
-    local createMode = editorPreviewMode_ and LOCAL or REPLICATED
-    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, createMode)
+    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, LOCAL)
     node.position = Vector3(wx, wy, 0)
 
     -- 视觉组件
@@ -716,12 +714,10 @@ function Map.SetBlock(gx, gy, blockType)
         return
     end
 
-    -- 创建新方块节点（编辑器调用：强制 LOCAL 防止客户端创建 REPLICATED 节点导致网络崩溃）
+    -- 创建新方块节点
     local mapRoot = scene_:GetChild("MapRoot")
     if mapRoot then
-        editorPreviewMode_ = true
         local node = Map.CreateBlockNode(mapRoot, gx, gy, blockType)
-        editorPreviewMode_ = false
         if not blockNodes_[gy] then blockNodes_[gy] = {} end
         blockNodes_[gy][gx] = node
     end
@@ -761,8 +757,7 @@ function Map.BuildFromGrid(externalGrid)
         end
     end
 
-    -- 编辑器预览强制 LOCAL：客户端不能创建 REPLICATED 节点（会触发 socket 网络回调越界崩溃）
-    editorPreviewMode_ = true
+    -- 创建地图父节点
     local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
     blockNodes_ = {}
     local blockCount = 0
@@ -778,12 +773,10 @@ function Map.BuildFromGrid(externalGrid)
             end
         end
     end
-    editorPreviewMode_ = false
-
     destroyed_ = {}
     debris_ = {}
 
-    print("[Map] Built from external grid: " .. blockCount .. " blocks (LOCAL preview)")
+    print("[Map] Built from external grid: " .. blockCount .. " blocks")
 end
 
 return Map

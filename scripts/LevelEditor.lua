@@ -18,7 +18,7 @@ local LevelEditor = {}
 -- 状态
 -- ============================================================================
 LevelEditor.active = false
-LevelEditor.exitedToList = false  -- 标志：编辑器刚退出到列表（供 Standalone/Client 检测并刷新列表）
+LevelEditor.exitedToList = false  -- 标志：编辑器刚退出到列表（供 Standalone 检测并刷新列表）
 
 -- 编辑器网格 (grid[y][x] = blockType)
 local grid_ = {}
@@ -719,7 +719,7 @@ end
 
 function LevelEditor.OnExitClick()
     LevelEditor.Exit()
-    LevelEditor.exitedToList = true  -- 通知 Standalone/Client 需要刷新列表
+    LevelEditor.exitedToList = true  -- 通知 Standalone 需要刷新列表
     if gameManagerRef_ then
         -- 如果有关卡列表功能，返回关卡列表
         gameManagerRef_.EnterLevelList()

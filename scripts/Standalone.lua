@@ -1,6 +1,5 @@
 -- ============================================================================
--- Standalone.lua - 单机模式（保留原有全部逻辑）
--- multiplayer.enabled = false 时走此路径
+-- Standalone.lua - 单机模式
 -- ============================================================================
 
 require "LuaScripts/Utilities/Sample"
@@ -21,7 +20,7 @@ local LevelManager = require("LevelManager")
 
 local Standalone = {}
 
--- 调参面板（仅客户端加载）
+-- 调参面板
 ---@type table|nil
 local TuningPanel = nil
 ---@type table|nil

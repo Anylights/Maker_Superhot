@@ -206,6 +206,9 @@ function Player.Create(index, isHuman)
         -- 下砸
         slamming = false,            -- 是否正在下砸中
 
+        -- 眩晕（被下砸击中后）
+        stunTimer = 0,               -- 眩晕剩余时间（> 0 表示正在眩晕中）
+
         -- 视觉动效（squash & stretch）
         squashScaleX = 1.0,    -- 当前形变 X 比例
         squashScaleY = 1.0,    -- 当前形变 Y 比例
@@ -492,6 +495,38 @@ function Player.UpdateOne(p, dt)
         goto updateVisuals
     end
 
+    -- 眩晕状态（被下砸击中后，禁止所有输入，水平速度快速衰减）
+    if p.stunTimer > 0 then
+        p.stunTimer = p.stunTimer - dt
+        -- 清除所有输入
+        p.inputMoveX = 0
+        p.inputJump = false
+        p.inputDash = false
+        p.inputSlam = false
+        p.inputCharging = false
+        p.inputExplodeRelease = false
+        -- 打断蓄力
+        if p.charging then
+            p.charging = false
+            p.chargeTimer = 0
+            p.chargeProgress = 0
+            Player.RestoreMaterial(p)
+        end
+        -- 应用重力，水平速度快速衰减
+        if p.body then
+            local vel = p.body.linearVelocity
+            local vy = vel.y
+            if not p.onGround and vy < 0 then
+                local extraGravity = -9.81 * (Config.FallGravityMul - 1.0)
+                vy = vy + extraGravity * dt
+                if vy < -Config.MaxFallSpeed then vy = -Config.MaxFallSpeed end
+            end
+            local vx = vel.x * 0.88
+            p.body.linearVelocity = Vector3(vx, vy, 0)
+        end
+        goto updateVisuals
+    end
+
     -- 蓄力中（允许水平移动，禁止跳跃/冲刺）
     if p.charging then
         -- 持续蓄力：计时递增
@@ -668,6 +703,8 @@ function Player.DoSlamLanding(p)
                 other.squashScaleY = 1.3
                 other.squashVelX = 0
                 other.squashVelY = 0
+                -- 施加眩晕
+                other.stunTimer = Config.SlamStunDuration
             end
             ::continueSL::
         end
@@ -912,6 +949,18 @@ function Player.UpdateVisualEffects(p, dt)
     end
 
     -- =====================
+    -- 眩晕形变：在挤扁和压扁之间来回振荡
+    -- =====================
+    if p.stunTimer > 0 then
+        local wobbleSpeed = 10.0  -- 振荡频率（越大越快）
+        local wobbleAmount = 0.25 -- 形变幅度（0.25 = ±25%）
+        -- 用 sin 产生平滑来回：正值→横向拉伸纵向压扁，负值→横向压扁纵向拉伸
+        local wave = math.sin(p.stunTimer * wobbleSpeed * math.pi)
+        p.squashScaleX = 1.0 + wave * wobbleAmount
+        p.squashScaleY = 1.0 - wave * wobbleAmount
+    end
+
+    -- =====================
     -- 应用到 visualNode
     -- =====================
     local baseScale = 0.9  -- 原始缩放
@@ -976,7 +1025,7 @@ function Player.UpdateEyes(p, dt)
     -- =====================
     local isSquished = (p.squashScaleY < 0.93) or (p.squashScaleX < 0.93)
 
-    if isSquished then
+    if isSquished and p.stunTimer <= 0 then
         -- >_< 表情：眼睛变成扁线 + 向内倾斜
         local minSquash = math.min(p.squashScaleX, p.squashScaleY)
         local squishFactor = math.max(0.15, (minSquash - 0.5) / (0.93 - 0.5))
@@ -996,7 +1045,30 @@ function Player.UpdateEyes(p, dt)
     end
 
     -- =====================
-    -- 4) 眨眼动画（仅在静止时触发）
+    -- 4) 眩晕表情：眼睛绕圆圈转动 @_@
+    -- =====================
+    if p.stunTimer > 0 then
+        local spinSpeed = 12.0  -- 转圈速度（弧度/秒）
+        local spinRadius = 0.06 -- 转圈半径
+        local t = p.stunTimer * spinSpeed
+        local ox = math.cos(t) * spinRadius
+        local oy = math.sin(t) * spinRadius
+
+        -- 两只眼睛反向旋转，形成 @_@ 效果
+        eyeL.position = Vector3(-bx + ox, by + oy, bz)
+        eyeR.position = Vector3(bx - ox, by - oy, bz)
+
+        -- 眼睛略微缩小表示虚弱
+        local smallR = r * 0.75
+        eyeL.scale = Vector3(smallR, smallR, r * 0.35)
+        eyeR.scale = Vector3(smallR, smallR, r * 0.35)
+        eyeL.rotation = Quaternion.IDENTITY
+        eyeR.rotation = Quaternion.IDENTITY
+        return
+    end
+
+    -- =====================
+    -- 5) 眨眼动画（仅在静止时触发）
     -- =====================
     local isIdle = (p.inputMoveX == 0 and p.onGround)
     if isIdle then
@@ -1623,6 +1695,7 @@ function Player.Respawn(p)
     p.dashCooldown = 0
     p.inputSlam = false
     p.slamming = false
+    p.stunTimer = 0
 
     -- 重置视觉动效
     p.squashScaleX = 1.0
@@ -1685,6 +1758,7 @@ function Player.ResetAll()
         p.inputSlam = false
         p.wasChargingInput = false
         p.slamming = false
+        p.stunTimer = 0
 
         -- 重置视觉动效
         p.squashScaleX = 1.0

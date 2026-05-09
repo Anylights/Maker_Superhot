@@ -101,6 +101,7 @@ Config.SlamSpeed         = 40.0   -- 下砸下落速度（m/s，非常快）
 Config.SlamRadius        = 1.2    -- 下砸着陆水平击飞范围（米，左右各约 1 格）
 Config.SlamKnockbackForce = 20.0  -- 下砸击飞水平力（m/s）— 小于冲刺
 Config.SlamKnockbackUp   = 12.0   -- 下砸击飞垂直力（m/s）
+Config.SlamStunDuration  = 1.0    -- 下砸击中后眩晕时间（秒）
 
 -- 物理跳跃系统（速度 + 重力，类似超级鸡马）
 -- 按一下跳固定高度，不需要长按。上升靠初速度，下落靠重力。

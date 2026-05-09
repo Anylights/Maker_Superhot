@@ -532,7 +532,7 @@ function AIController.Update(dt)
     end
 
     for _, p in ipairs(playerModule_.list) do
-        if not p.isHuman and p.alive and not p.finished then
+        if not p.isHuman and p.alive and not p.finished and p.stunTimer <= 0 then
             AIController.UpdateOne(p, dt)
         end
     end

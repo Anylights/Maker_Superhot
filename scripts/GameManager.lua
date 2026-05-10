@@ -9,6 +9,9 @@ local SFX = require("SFX")
 
 local GameManager = {}
 
+-- 网络模式标志
+local isServerMode_ = false
+
 -- 游戏状态
 GameManager.STATE_MENU      = "menu"
 GameManager.STATE_COUNTDOWN = "countdown"
@@ -39,6 +42,11 @@ local onStateChange_ = nil
 -- 倒计时音效跟踪
 local lastCountdownNum_ = 0
 
+-- SFX 包装：服务端静默
+local function playSFX(...)
+    if not isServerMode_ then SFX.Play(...) end
+end
+
 -- ============================================================================
 -- 初始化
 -- ============================================================================
@@ -49,13 +57,15 @@ local lastCountdownNum_ = 0
 ---@param aiRef table
 ---@param randomPickupRef table
 ---@param cameraRef table|nil
-function GameManager.Init(playerRef, mapRef, pickupRef, aiRef, randomPickupRef, cameraRef)
+---@param isServer boolean|nil
+function GameManager.Init(playerRef, mapRef, pickupRef, aiRef, randomPickupRef, cameraRef, isServer)
     playerModule_ = playerRef
     mapModule_ = mapRef
     pickupModule_ = pickupRef
     aiModule_ = aiRef
     randomPickupModule_ = randomPickupRef
     cameraModule_ = cameraRef
+    isServerMode_ = isServer or false
 
     -- 注册击杀事件回调
     if playerModule_ then
@@ -169,11 +179,11 @@ function GameManager.UpdateCountdown(dt)
     local num = math.ceil(GameManager.stateTimer)
     if num ~= lastCountdownNum_ and num >= 1 and num <= 3 then
         lastCountdownNum_ = num
-        SFX.Play("countdown", 0.7)
+        playSFX("countdown", 0.7)
     end
 
     if GameManager.stateTimer <= 0 then
-        SFX.Play("go", 0.8)
+        playSFX("go", 0.8)
         GameManager.SetState(GameManager.STATE_PLAYING)
     end
 end
@@ -201,7 +211,7 @@ function GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, kill
         victimIndex = victimIndex,
         multiKillCount = multiKillCount,
         killStreak = killStreak,
-        time = os.clock(),
+        time = time.elapsedTime,
     }
     table.insert(GameManager.killEvents, event)
 
@@ -211,7 +221,7 @@ end
 
 --- 结束游戏，进入结算
 function GameManager.EndGame()
-    SFX.Play("round_end", 0.7)
+    playSFX("round_end", 0.7)
     GameManager.SetState(GameManager.STATE_RESULT)
     print("[GameManager] Game ended → result screen")
 end

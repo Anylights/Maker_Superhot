@@ -10,6 +10,9 @@ local Map = {}
 ---@type Scene
 local scene_ = nil
 
+-- 网络模式标志：true = 服务端（跳过视觉/音频，节点 REPLICATED）
+local isServerMode_ = false
+
 -- 地图网格数据：grid[y][x] = 方块类型
 local grid_ = {}
 
@@ -19,22 +22,20 @@ local blockNodes_ = {}
 -- 被破坏的方块重生计时器：destroyed[key] = { timer, blockType, x, y }
 local destroyed_ = {}
 
--- 材质缓存（避免每个方块创建新材质）
+-- 材质缓存（避免每个方块创建新材质）—— 仅客户端/单机
 local materialCache_ = {}
 
--- 方块模型缓存
+-- 方块模型缓存 —— 仅客户端/单机
 local boxModel_ = nil
 local pbrTechnique_ = nil
 
--- 飞散碎片列表：{ node, velX, velY, rotSpeed, life }
+-- 飞散碎片列表：{ node, velX, velY, rotSpeed, life } —— 仅客户端/单机
 local debris_ = {}
 
--- 重生缩放动画列表：{ node, timer, duration }
+-- 重生缩放动画列表：{ node, timer, duration } —— 仅客户端/单机
 local respawnAnims_ = {}
 
--- 所有节点使用 LOCAL 模式创建
-
--- 描边材质缓存
+-- 描边材质缓存 —— 仅客户端/单机
 local outlineMat_ = nil
 
 -- ============================================================================
@@ -168,26 +169,36 @@ end
 
 --- 初始化地图系统
 ---@param scene Scene
-function Map.Init(scene)
+---@param isServer boolean|nil  true = 服务端模式（跳过视觉资源）
+function Map.Init(scene, isServer)
     scene_ = scene
+    isServerMode_ = isServer or false
 
-    -- 缓存模型和技术
-    boxModel_ = cache:GetResource("Model", "Models/Box.mdl")
-    pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
+    if not isServerMode_ then
+        -- 缓存模型和技术（仅客户端/单机需要视觉资源）
+        boxModel_ = cache:GetResource("Model", "Models/Box.mdl")
+        pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
 
-    -- 预创建材质
-    for blockType, color in pairs(Config.BlockColors) do
-        materialCache_[blockType] = Map.CreateBlockMaterial(color, blockType)
+        -- 预创建材质
+        for blockType, color in pairs(Config.BlockColors) do
+            materialCache_[blockType] = Map.CreateBlockMaterial(color, blockType)
+        end
+
+        -- 创建描边材质（深棕色，哑光）
+        outlineMat_ = Material:new()
+        outlineMat_:SetTechnique(0, pbrTechnique_)
+        outlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.BlockOutlineColor))
+        outlineMat_:SetShaderParameter("Metallic", Variant(0.0))
+        outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
     end
 
-    -- 创建描边材质（深棕色，哑光）
-    outlineMat_ = Material:new()
-    outlineMat_:SetTechnique(0, pbrTechnique_)
-    outlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.BlockOutlineColor))
-    outlineMat_:SetShaderParameter("Metallic", Variant(0.0))
-    outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
+    print("[Map] Initialized (server=" .. tostring(isServerMode_) .. ")")
+end
 
-    print("[Map] Initialized")
+--- 查询当前是否为服务端模式
+---@return boolean
+function Map.IsServerMode()
+    return isServerMode_
 end
 
 --- 创建方块材质
@@ -223,8 +234,9 @@ function Map.Build()
     -- 生成网格数据
     grid_ = MapData.Generate()
 
-    -- 创建地图父节点
-    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
+    -- 创建地图父节点（服务端 REPLICATED，客户端/单机 LOCAL）
+    local createMode = isServerMode_ and REPLICATED or LOCAL
+    local mapRoot = scene_:CreateChild("MapRoot", createMode)
 
     -- 遍历网格，创建方块节点
     blockNodes_ = {}
@@ -261,39 +273,42 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local wx = (gx - 1) * bs + bs * 0.5
     local wy = (gy - 1) * bs + bs * 0.5
 
-    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, LOCAL)
+    local createMode = isServerMode_ and REPLICATED or LOCAL
+    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, createMode)
     node.position = Vector3(wx, wy, 0)
 
-    -- 视觉组件
-    -- 使用 CustomGeometry 创建圆角方块
-    local geom = node:CreateComponent("CustomGeometry")
-    buildRoundedBox(geom, bs, 0.1)  -- 0.1 米圆角半径（微妙圆角）
-    geom.castShadows = true
+    -- 视觉组件（仅客户端/单机）
+    if not isServerMode_ then
+        -- 使用 CustomGeometry 创建圆角方块
+        local geom = node:CreateComponent("CustomGeometry")
+        buildRoundedBox(geom, bs, 0.1)  -- 0.1 米圆角半径（微妙圆角）
+        geom.castShadows = true
 
-    local mat = materialCache_[blockType]
-    if mat then
-        geom:SetMaterial(mat)
+        local mat = materialCache_[blockType]
+        if mat then
+            geom:SetMaterial(mat)
+        end
+
+        -- 描边子节点（在方块后面 Z+0.1，略大）
+        local outlineNode = node:CreateChild("Outline")
+        outlineNode.position = Vector3(0, 0, 0.1)
+        outlineNode.scale = Vector3(1.12, 1.12, 1.0)
+        local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+        buildRoundedBox(outlineGeom, bs, 0.1)
+        outlineGeom.castShadows = false
+        if outlineMat_ then
+            outlineGeom:SetMaterial(outlineMat_)
+        end
+
+        -- 终点方块 / 检查点方块：添加旗帜视觉效果
+        if blockType == Config.BLOCK_FINISH then
+            Map.CreateFlag(node, bs, Color(1.0, 0.85, 0.1))  -- 金色旗帜
+        elseif blockType == Config.BLOCK_CHECKPOINT then
+            Map.CreateFlag(node, bs, Color(0.2, 0.85, 0.95))  -- 青色旗帜
+        end
     end
 
-    -- 描边子节点（在方块后面 Z+0.1，略大）
-    local outlineNode = node:CreateChild("Outline")
-    outlineNode.position = Vector3(0, 0, 0.1)
-    outlineNode.scale = Vector3(1.12, 1.12, 1.0)
-    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
-    buildRoundedBox(outlineGeom, bs, 0.1)
-    outlineGeom.castShadows = false
-    if outlineMat_ then
-        outlineGeom:SetMaterial(outlineMat_)
-    end
-
-    -- 终点方块 / 检查点方块：添加旗帜视觉效果
-    if blockType == Config.BLOCK_FINISH then
-        Map.CreateFlag(node, bs, Color(1.0, 0.85, 0.1))  -- 金色旗帜
-    elseif blockType == Config.BLOCK_CHECKPOINT then
-        Map.CreateFlag(node, bs, Color(0.2, 0.85, 0.95))  -- 青色旗帜
-    end
-
-    -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
+    -- 物理碰撞（静态刚体，mass=0）- 服务端和客户端都需要
     local body = node:CreateComponent("RigidBody")
     body.collisionLayer = 1
 
@@ -394,11 +409,11 @@ function Map.Update(dt)
         end
     end
 
-    -- 更新飞散碎片
-    Map.UpdateDebris(dt)
-
-    -- 更新重生缩放动画
-    Map.UpdateRespawnAnims(dt)
+    -- 更新飞散碎片（仅客户端/单机有视觉碎片）
+    if not isServerMode_ then
+        Map.UpdateDebris(dt)
+        Map.UpdateRespawnAnims(dt)
+    end
 end
 
 --- 更新飞散方块动画（整块坠落，不缩小）
@@ -512,47 +527,52 @@ function Map.DestroyBlock(gx, gy, explodeCX, explodeCY)
     if blockNodes_[gy] and blockNodes_[gy][gx] then
         local origNode = blockNodes_[gy][gx]
 
-        -- 把原节点变成飞散碎片
-        -- 移除物理组件，让方块不再参与碰撞
-        local body = origNode:GetComponent("RigidBody")
-        if body then origNode:RemoveComponent(body) end
-        local shape = origNode:GetComponent("CollisionShape")
-        if shape then origNode:RemoveComponent(shape) end
+        if not isServerMode_ then
+            -- 客户端/单机：把原节点变成飞散碎片
+            -- 移除物理组件，让方块不再参与碰撞
+            local body = origNode:GetComponent("RigidBody")
+            if body then origNode:RemoveComponent(body) end
+            local shape = origNode:GetComponent("CollisionShape")
+            if shape then origNode:RemoveComponent(shape) end
 
-        -- 计算飞散方向：从爆炸中心指向方块
-        local pos = origNode.position
-        local dirX, dirY = 0, 1
-        if explodeCX and explodeCY then
-            dirX = pos.x - explodeCX
-            dirY = pos.y - explodeCY
-            local len = math.sqrt(dirX * dirX + dirY * dirY)
-            if len > 0.01 then
-                dirX = dirX / len
-                dirY = dirY / len
-            else
-                dirX = 0
-                dirY = 1
+            -- 计算飞散方向：从爆炸中心指向方块
+            local pos = origNode.position
+            local dirX, dirY = 0, 1
+            if explodeCX and explodeCY then
+                dirX = pos.x - explodeCX
+                dirY = pos.y - explodeCY
+                local len = math.sqrt(dirX * dirX + dirY * dirY)
+                if len > 0.01 then
+                    dirX = dirX / len
+                    dirY = dirY / len
+                else
+                    dirX = 0
+                    dirY = 1
+                end
             end
+
+            -- 飞散速度 + 随机扩散
+            local baseSpeed = 5.0 + math.random() * 4.0
+            local spreadAngle = (math.random() - 0.5) * 0.8
+            local cosA = math.cos(spreadAngle)
+            local sinA = math.sin(spreadAngle)
+            local vx = (dirX * cosA - dirY * sinA) * baseSpeed
+            local vy = (dirX * sinA + dirY * cosA) * baseSpeed + 2.0  -- 稍微向上抛
+
+            table.insert(debris_, {
+                node = origNode,
+                velX = vx,
+                velY = vy,
+                -- 只绕 Z 轴旋转，保持 2D 平面感
+                rotSpeed = 120 + math.random() * 240,
+                rotAxisX = 0,
+                rotAxisY = 0,
+                rotAxisZ = 1,
+            })
+        else
+            -- 服务端：直接移除节点（REPLICATED 节点删除会同步到客户端）
+            origNode:Remove()
         end
-
-        -- 飞散速度 + 随机扩散
-        local baseSpeed = 5.0 + math.random() * 4.0
-        local spreadAngle = (math.random() - 0.5) * 0.8
-        local cosA = math.cos(spreadAngle)
-        local sinA = math.sin(spreadAngle)
-        local vx = (dirX * cosA - dirY * sinA) * baseSpeed
-        local vy = (dirX * sinA + dirY * cosA) * baseSpeed + 2.0  -- 稍微向上抛
-
-        table.insert(debris_, {
-            node = origNode,
-            velX = vx,
-            velY = vy,
-            -- 只绕 Z 轴旋转，保持 2D 平面感
-            rotSpeed = 120 + math.random() * 240,
-            rotAxisX = 0,
-            rotAxisY = 0,
-            rotAxisZ = 1,
-        })
 
         blockNodes_[gy][gx] = nil
     end
@@ -593,13 +613,15 @@ function Map.RespawnBlock(gx, gy, blockType)
         end
         blockNodes_[gy][gx] = node
 
-        -- 缩放动画：初始缩放为 0，启动缩放动画
-        node.scale = Vector3(0.01, 0.01, 0.01)
-        table.insert(respawnAnims_, {
-            node = node,
-            timer = 0,
-            duration = 0.3,
-        })
+        -- 缩放动画（仅客户端/单机有视觉效果）
+        if not isServerMode_ then
+            node.scale = Vector3(0.01, 0.01, 0.01)
+            table.insert(respawnAnims_, {
+                node = node,
+                timer = 0,
+                duration = 0.3,
+            })
+        end
     end
 end
 
@@ -760,8 +782,9 @@ function Map.BuildFromGrid(externalGrid)
         end
     end
 
-    -- 创建地图父节点
-    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
+    -- 创建地图父节点（服务端 REPLICATED，客户端/单机 LOCAL）
+    local createMode = isServerMode_ and REPLICATED or LOCAL
+    local mapRoot = scene_:CreateChild("MapRoot", createMode)
     blockNodes_ = {}
     local blockCount = 0
 

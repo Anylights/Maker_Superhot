@@ -22,7 +22,11 @@
   },
   "@runtime": {
     "multiplayer": {
-      "enabled": false
+      "enabled": true,
+      "max_players": 8,
+      "persistent_world": {
+        "enabled": true
+      }
     }
   }
 }

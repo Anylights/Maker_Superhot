@@ -18,6 +18,9 @@ Player.list = {}
 local scene_ = nil
 local mapModule_ = nil  -- Map 模块引用
 
+-- 网络模式标志
+local isServerMode_ = false  -- true: 服务端（跳过视觉/音频）
+
 -- PBR 技术缓存
 local pbrTechnique_ = nil
 local pbrAlphaTechnique_ = nil
@@ -26,7 +29,13 @@ local pbrAlphaTechnique_ = nil
 local circleTexture_ = nil
 local unlitAlphaTechnique_ = nil
 
-
+-- 服务端安全的 SFX/Camera 包装（服务端静默跳过）
+local function playSFX(...)
+    if not isServerMode_ then SFX.Play(...) end
+end
+local function shakeCamera(...)
+    if not isServerMode_ then Camera.Shake(...) end
+end
 
 -- ============================================================================
 -- 粒子辅助
@@ -94,15 +103,28 @@ end
 --- 初始化玩家系统
 ---@param scene Scene
 ---@param mapRef table  Map 模块引用
-function Player.Init(scene, mapRef)
+---@param isServer boolean|nil  服务端模式（跳过视觉/音频资源缓存）
+function Player.Init(scene, mapRef, isServer)
     scene_ = scene
     mapModule_ = mapRef
-    pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
-    pbrAlphaTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml")
-    unlitAlphaTechnique_ = cache:GetResource("Technique", "Techniques/DiffUnlitAlpha.xml")
-    circleTexture_ = createCircleTexture(32)
+    isServerMode_ = isServer or false
+
+    -- 视觉资源仅客户端/Standalone 需要
+    if not isServerMode_ then
+        pbrTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
+        pbrAlphaTechnique_ = cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml")
+        unlitAlphaTechnique_ = cache:GetResource("Technique", "Techniques/DiffUnlitAlpha.xml")
+        circleTexture_ = createCircleTexture(32)
+    end
+
     Player.list = {}
-    print("[Player] Initialized")
+    print("[Player] Initialized" .. (isServerMode_ and " (server mode)" or ""))
+end
+
+--- 是否运行在服务端模式
+---@return boolean
+function Player.IsServerMode()
+    return isServerMode_
 end
 
 --- 在节点上创建视觉组件（模型、描边、眼睛）
@@ -193,16 +215,22 @@ end
 function Player.Create(index, isHuman)
     local spawnX, spawnY = MapData.GetSpawnPosition(index)
 
-    local node = scene_:CreateChild("Player_" .. index, LOCAL)
+    -- 服务端: REPLICATED 节点（自动同步位置/旋转给客户端）
+    -- 客户端/Standalone: LOCAL 节点
+    local createMode = isServerMode_ and REPLICATED or LOCAL
+    local node = scene_:CreateChild("Player_" .. index, createMode)
     node.position = Vector3(spawnX, spawnY, 0)
 
-    -- 视觉组件
+    -- 视觉组件（服务端跳过）
     local eyeBaseX = 0.16
     local eyeBaseY = 0.06
     local eyeBaseZ = -0.48
     local eyeRadius = 0.22
 
-    local visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
+    local visualNode, mat, outlineMat = nil, nil, nil
+    if not isServerMode_ then
+        visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
+    end
 
     -- 动态刚体
     local body = node:GetComponent("RigidBody") or node:CreateComponent("RigidBody")
@@ -636,8 +664,8 @@ function Player.UpdateOne(p, dt)
             p.activatedCheckpoints[cpIndex] = true
             p.lastCheckpointIndex = cpIndex
             local pp = p.node.position
-            SFX.Play("pickup_large", 0.7, pp.x, pp.y)
-            Camera.Shake(0.1, 0.15)
+            playSFX("pickup_large", 0.7, pp.x, pp.y)
+            shakeCamera(0.1, 0.15)
             print("[Player] Player " .. p.index .. " activated checkpoint #" .. cpIndex ..
                   " at Y=" .. MapData.CheckpointYList[cpIndex])
         end
@@ -703,7 +731,7 @@ function Player.DoDashKnockback(p)
                 other.squashVelX = 0
                 other.squashVelY = 0
                 local op = other.node.position
-                SFX.Play("explosion", 0.4, op.x, op.y)
+                playSFX("explosion", 0.4, op.x, op.y)
             end
             ::continueKB::
         end
@@ -723,8 +751,8 @@ function Player.DoSlamLanding(p)
     p.squashVelX = 0
 
     -- 屏幕震动（仅在视野内）
-    Camera.Shake(0.25, 0.2, pos)
-    SFX.Play("explosion", 0.6, pos.x, pos.y)
+    shakeCamera(0.25, 0.2, pos)
+    playSFX("explosion", 0.6, pos.x, pos.y)
 
     -- 击退周围玩家
     for _, other in ipairs(Player.list) do
@@ -769,7 +797,7 @@ function Player.DoJump(p)
 
     if p.node then
         local pp = p.node.position
-        SFX.Play("jump", 0.5, pp.x, pp.y)
+        playSFX("jump", 0.5, pp.x, pp.y)
     end
 end
 
@@ -796,7 +824,7 @@ function Player.UpdateMovement(p, dt)
         -- 立即给一个超快的向下速度
         p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
         local pp = p.node.position
-        SFX.Play("dash", 0.5, pp.x, pp.y)
+        playSFX("dash", 0.5, pp.x, pp.y)
         return
     end
     p.inputSlam = false
@@ -889,7 +917,7 @@ function Player.UpdateMovement(p, dt)
             p.dashDir = p.lastFaceDir
             p.dashCooldown = Config.DashCooldown
             local pp = p.node.position
-            SFX.Play("dash", 0.6, pp.x, pp.y)
+            playSFX("dash", 0.6, pp.x, pp.y)
         end
         p.inputDash = false
     end
@@ -1326,10 +1354,10 @@ function Player.DoExplode(p, progress)
 
     -- 屏幕震动（强度随爆炸半径缩放，仅在视野内）
     local shakeIntensity = 0.15 + actualRadius * 0.05  -- 1格≈0.20, 7格≈0.50
-    Camera.Shake(shakeIntensity, 0.25, pos)
+    shakeCamera(shakeIntensity, 0.25, pos)
 
     -- 爆炸音效
-    SFX.Play("explosion", 0.8, pos.x, pos.y)
+    playSFX("explosion", 0.8, pos.x, pos.y)
 
     print("[Player] Player " .. p.index .. " exploded! Radius=" .. actualRadius .. " Destroyed=" .. destroyed .. " blocks")
 end
@@ -1338,7 +1366,7 @@ end
 ---@param pos Vector3 爆炸中心
 ---@param playerIndex number 玩家编号（用于颜色）
 function Player.SpawnExplosionFX(pos, playerIndex)
-    if scene_ == nil then return end
+    if scene_ == nil or isServerMode_ then return end
 
     local fxNode = scene_:CreateChild("ExplosionFX", LOCAL)
     fxNode.position = Vector3(pos.x, pos.y, -0.5)
@@ -1526,9 +1554,9 @@ function Player.Kill(p, reason, killerIndex)
     p.killStreak = 0
 
     if deathPos then
-        SFX.Play("death", 0.7, deathPos.x, deathPos.y)
+        playSFX("death", 0.7, deathPos.x, deathPos.y)
     else
-        SFX.Play("death", 0.7)
+        playSFX("death", 0.7)
     end
 
     print("[Player] Player " .. p.index .. " died (" .. reason .. ")")
@@ -1538,7 +1566,7 @@ end
 ---@param pos Vector3 死亡位置
 ---@param playerIndex number 玩家编号（用于颜色）
 function Player.SpawnSplatFX(pos, playerIndex)
-    if scene_ == nil then return end
+    if scene_ == nil or isServerMode_ then return end
 
     local color = Config.GetPlayerColor(playerIndex)
     local r, g, b = boostSaturation(color.r, color.g, color.b)
@@ -1673,7 +1701,7 @@ function Player.SpawnSplatFX(pos, playerIndex)
     starEmitter.autoRemoveMode = REMOVE_NODE
 
     -- === 屏幕震动（仅在视野内） ===
-    Camera.Shake(0.3, 0.3, pos)
+    shakeCamera(0.3, 0.3, pos)
 end
 
 --- 在死亡位置生成哭脸贴图（替代角色形象，直到重生时移除）
@@ -1681,7 +1709,7 @@ end
 ---@param p table 玩家数据
 ---@param pos Vector3 死亡位置
 function Player.SpawnDeathFace(p, pos)
-    if scene_ == nil then return end
+    if scene_ == nil or isServerMode_ then return end
 
     -- 移除之前可能残留的哭脸
     Player.RemoveDeathFace(p)
@@ -2027,7 +2055,7 @@ end
 ---@param pos Vector3 触发位置（玩家位置）
 ---@param playerIndex number 玩家编号（决定主色）
 function Player.SpawnFireworkFX(pos, playerIndex)
-    if scene_ == nil then return end
+    if scene_ == nil or isServerMode_ then return end
 
     local color = Config.GetPlayerColor(playerIndex) or { r = 1, g = 0.6, b = 0.2 }
     local r, g, b = boostSaturation(color.r, color.g, color.b)
@@ -2141,7 +2169,7 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     flashEmitter.emitting = true
     flashEmitter.autoRemoveMode = REMOVE_NODE
 
-    Camera.Shake(0.2, 0.4, pos)
+    shakeCamera(0.2, 0.4, pos)
 end
 
 return Player

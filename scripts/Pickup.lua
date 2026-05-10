@@ -12,16 +12,24 @@ local Pickup = {}
 local scene_ = nil
 local playerModule_ = nil  -- Player 模块引用
 
+-- 网络模式标志
+local isServerMode_ = false
+
 -- 活跃拾取物列表
 local pickups_ = {}
 
--- 材质缓存
+-- 材质缓存（仅客户端/单机）
 local smallMat_ = nil
 local largeMat_ = nil
 local smallOutlineMat_ = nil
 local largeOutlineMat_ = nil
 local unlitTechnique_ = nil
 local sphereModel_ = nil
+
+-- SFX/HUD 包装：服务端静默
+local function playSFX(...)
+    if not isServerMode_ then SFX.Play(...) end
+end
 
 -- ============================================================================
 -- 初始化
@@ -30,34 +38,39 @@ local sphereModel_ = nil
 --- 初始化拾取物系统
 ---@param scene Scene
 ---@param playerRef table Player 模块引用
-function Pickup.Init(scene, playerRef)
+---@param isServer boolean|nil  true = 服务端模式
+function Pickup.Init(scene, playerRef, isServer)
     scene_ = scene
     playerModule_ = playerRef
+    isServerMode_ = isServer or false
 
-    unlitTechnique_ = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
-    sphereModel_ = cache:GetResource("Model", "Models/Sphere.mdl")
+    if not isServerMode_ then
+        -- 视觉资源仅客户端/单机需要
+        unlitTechnique_ = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
+        sphereModel_ = cache:GetResource("Model", "Models/Sphere.mdl")
 
-    -- 小能量块材质（青色，无光照纯色）
-    smallMat_ = Material:new()
-    smallMat_:SetTechnique(0, unlitTechnique_)
-    smallMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupSmallColor))
+        -- 小能量块材质（青色，无光照纯色）
+        smallMat_ = Material:new()
+        smallMat_:SetTechnique(0, unlitTechnique_)
+        smallMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupSmallColor))
 
-    -- 小能量块描边材质（无光照纯色）
-    smallOutlineMat_ = Material:new()
-    smallOutlineMat_:SetTechnique(0, unlitTechnique_)
-    smallOutlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupSmallOutline))
+        -- 小能量块描边材质（无光照纯色）
+        smallOutlineMat_ = Material:new()
+        smallOutlineMat_:SetTechnique(0, unlitTechnique_)
+        smallOutlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupSmallOutline))
 
-    -- 大能量块材质（金色，无光照纯色）
-    largeMat_ = Material:new()
-    largeMat_:SetTechnique(0, unlitTechnique_)
-    largeMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupLargeColor))
+        -- 大能量块材质（金色，无光照纯色）
+        largeMat_ = Material:new()
+        largeMat_:SetTechnique(0, unlitTechnique_)
+        largeMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupLargeColor))
 
-    -- 大能量块描边材质（无光照纯色）
-    largeOutlineMat_ = Material:new()
-    largeOutlineMat_:SetTechnique(0, unlitTechnique_)
-    largeOutlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupLargeOutline))
+        -- 大能量块描边材质（无光照纯色）
+        largeOutlineMat_ = Material:new()
+        largeOutlineMat_:SetTechnique(0, unlitTechnique_)
+        largeOutlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupLargeOutline))
+    end
 
-    print("[Pickup] Initialized")
+    print("[Pickup] Initialized (server=" .. tostring(isServerMode_) .. ")")
 end
 
 --- 生成所有拾取物（现由 RandomPickup 模块控制，此处仅保留接口）
@@ -118,33 +131,37 @@ end
 ---@param y number 世界 Y
 ---@param size string "small"|"large"
 function Pickup.Spawn(x, y, size)
-    local node = scene_:CreateChild("Pickup_" .. size, LOCAL)
+    local createMode = isServerMode_ and REPLICATED or LOCAL
+    local node = scene_:CreateChild("Pickup_" .. size, createMode)
     node.position = Vector3(x, y, 0)
 
     local isLarge = (size == "large")
     local scale = isLarge and 0.6 or 0.4
 
-    -- 钻石造型尺寸（世界坐标）
-    local dw = scale * 0.5   -- X 半径
-    local dh = scale * 0.7   -- Y 半径（略高，更像钻石）
-    local dd = scale * 0.35  -- Z 半径
+    -- 视觉组件（仅客户端/单机）
+    if not isServerMode_ then
+        -- 钻石造型尺寸（世界坐标）
+        local dw = scale * 0.5   -- X 半径
+        local dh = scale * 0.7   -- Y 半径（略高，更像钻石）
+        local dd = scale * 0.35  -- Z 半径
 
-    -- 主体钻石
-    local geom = node:CreateComponent("CustomGeometry")
-    buildDiamond(geom, dw, dh, dd)
-    geom.castShadows = true
-    geom:SetMaterial(isLarge and largeMat_ or smallMat_)
+        -- 主体钻石
+        local geom = node:CreateComponent("CustomGeometry")
+        buildDiamond(geom, dw, dh, dd)
+        geom.castShadows = true
+        geom:SetMaterial(isLarge and largeMat_ or smallMat_)
 
-    -- 描边子节点（略大，Z 偏后）
-    local outlineNode = node:CreateChild("Outline")
-    outlineNode.position = Vector3(0, 0, 0.08)
-    outlineNode.scale = Vector3(1.18, 1.18, 1.0)
-    local outGeom = outlineNode:CreateComponent("CustomGeometry")
-    buildDiamond(outGeom, dw, dh, dd)
-    outGeom.castShadows = false
-    outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
+        -- 描边子节点（略大，Z 偏后）
+        local outlineNode = node:CreateChild("Outline")
+        outlineNode.position = Vector3(0, 0, 0.08)
+        outlineNode.scale = Vector3(1.18, 1.18, 1.0)
+        local outGeom = outlineNode:CreateComponent("CustomGeometry")
+        buildDiamond(outGeom, dw, dh, dd)
+        outGeom.castShadows = false
+        outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
+    end
 
-    -- 触发器刚体
+    -- 触发器刚体（服务端和客户端都需要碰撞检测）
     local body = node:CreateComponent("RigidBody")
     body.trigger = true
     body.collisionLayer = 4
@@ -179,8 +196,8 @@ local PICKUP_DISTANCE = 1.5
 function Pickup.Update(dt)
     for _, pk in ipairs(pickups_) do
         if pk.active then
-            -- 旋转 + 上下浮动动画
-            if pk.node then
+            -- 旋转 + 上下浮动动画（仅客户端/单机有视觉效果）
+            if pk.node and not isServerMode_ then
                 pk.node:Rotate(Quaternion(0, 120 * dt, 0))
                 pk.bobPhase = (pk.bobPhase or 0) + dt * 3.0
                 local bobOffset = math.sin(pk.bobPhase) * 0.12
@@ -204,15 +221,17 @@ function Pickup.Update(dt)
                                 playerModule_.AddPickupScore(p, scorePoints)
                             end
                             pk.collected = true
-                            -- 只给人类玩家(P1)显示浮动加分数字
-                            if p.index == 1 and HUD.AddScorePopup then
-                                local popColor = (pk.size == "large")
-                                    and {r = 255, g = 220, b = 50}
-                                    or  {r = 100, g = 255, b = 220}
-                                local popSize = (pk.size == "large") and 22 or 16
-                                HUD.AddScorePopup(pkX, pkY, "+" .. scorePoints, popColor.r, popColor.g, popColor.b, popSize)
+                            -- 只给人类玩家(P1)显示浮动加分数字（仅客户端/单机）
+                            if not isServerMode_ then
+                                if p.index == 1 and HUD.AddScorePopup then
+                                    local popColor = (pk.size == "large")
+                                        and {r = 255, g = 220, b = 50}
+                                        or  {r = 100, g = 255, b = 220}
+                                    local popSize = (pk.size == "large") and 22 or 16
+                                    HUD.AddScorePopup(pkX, pkY, "+" .. scorePoints, popColor.r, popColor.g, popColor.b, popSize)
+                                end
                             end
-                            SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6, pkX, pkY)
+                            playSFX(pk.size == "large" and "pickup_large" or "pickup_small", 0.6, pkX, pkY)
                             print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " (+" .. scorePoints .. " score)")
                             break
                         end

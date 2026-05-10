@@ -1,16 +1,26 @@
 -- ============================================================================
 -- main.lua - 超级红温！ 入口文件
+-- 根据运行模式分发到 Server / Client / Standalone
 -- ============================================================================
 
 ---@type table
 local Module = nil
 
 function Start()
-    print("[Main] Starting game")
-    Module = require("Standalone")
+    if IsServerMode() then
+        print("[Main] Starting in SERVER mode")
+        Module = require("Server")
+    elseif IsNetworkMode() then
+        print("[Main] Starting in CLIENT mode")
+        Module = require("Client")
+    else
+        print("[Main] Starting in STANDALONE mode")
+        Module = require("Standalone")
+    end
+
     Module.Start()
 
-    -- 订阅事件（全局函数 → 委托给 Module）
+    -- 统一订阅事件，委托给当前 Module
     SubscribeToEvent("Update", "HandleUpdate")
     SubscribeToEvent("PostUpdate", "HandlePostUpdate")
 end

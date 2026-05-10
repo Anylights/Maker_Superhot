@@ -120,8 +120,8 @@ function Player.CreateVisuals(node, index)
 
     local mat = Material:new()
     mat:SetTechnique(0, pbrTechnique_)
-    mat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerColors[index]))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Config.PlayerEmissive[index]))
+    mat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerColor(index)))
+    mat:SetShaderParameter("MatEmissiveColor", Variant(Config.GetPlayerEmissive(index)))
     mat:SetShaderParameter("Metallic", Variant(Config.RubberMetallic))
     mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
     geom:SetMaterial(mat)
@@ -135,7 +135,7 @@ function Player.CreateVisuals(node, index)
     outlineGeom.castShadows = false
     local outlineMat = Material:new()
     outlineMat:SetTechnique(0, pbrTechnique_)
-    outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[index]))
+    outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(index)))
     outlineMat:SetShaderParameter("Metallic", Variant(0.0))
     outlineMat:SetShaderParameter("Roughness", Variant(1.0))
     outlineGeom:SetMaterial(outlineMat)
@@ -145,7 +145,7 @@ function Player.CreateVisuals(node, index)
     local unlitTechnique = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
     local eyeMat = Material:new()
     eyeMat:SetTechnique(0, unlitTechnique)
-    eyeMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[index]))
+    eyeMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(index)))
 
     local eyeBaseX = 0.16
     local eyeBaseY = 0.06
@@ -635,7 +635,8 @@ function Player.UpdateOne(p, dt)
         if cpIndex and not p.activatedCheckpoints[cpIndex] then
             p.activatedCheckpoints[cpIndex] = true
             p.lastCheckpointIndex = cpIndex
-            SFX.Play("pickup_large", 0.7)
+            local pp = p.node.position
+            SFX.Play("pickup_large", 0.7, pp.x, pp.y)
             Camera.Shake(0.1, 0.15)
             print("[Player] Player " .. p.index .. " activated checkpoint #" .. cpIndex ..
                   " at Y=" .. MapData.CheckpointYList[cpIndex])
@@ -701,7 +702,8 @@ function Player.DoDashKnockback(p)
                 other.squashScaleY = 1.3
                 other.squashVelX = 0
                 other.squashVelY = 0
-                SFX.Play("explosion", 0.4)
+                local op = other.node.position
+                SFX.Play("explosion", 0.4, op.x, op.y)
             end
             ::continueKB::
         end
@@ -720,9 +722,9 @@ function Player.DoSlamLanding(p)
     p.squashVelY = 0
     p.squashVelX = 0
 
-    -- 屏幕震动
-    Camera.Shake(0.25, 0.2)
-    SFX.Play("explosion", 0.6)
+    -- 屏幕震动（仅在视野内）
+    Camera.Shake(0.25, 0.2, pos)
+    SFX.Play("explosion", 0.6, pos.x, pos.y)
 
     -- 击退周围玩家
     for _, other in ipairs(Player.list) do
@@ -765,7 +767,10 @@ function Player.DoJump(p)
         p.body.linearVelocity = Vector3(vel.x, Config.JumpSpeed, 0)
     end
 
-    SFX.Play("jump", 0.5)
+    if p.node then
+        local pp = p.node.position
+        SFX.Play("jump", 0.5, pp.x, pp.y)
+    end
 end
 
 --- 更新移动
@@ -790,7 +795,8 @@ function Player.UpdateMovement(p, dt)
         p.inputSlam = false
         -- 立即给一个超快的向下速度
         p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
-        SFX.Play("dash", 0.5)
+        local pp = p.node.position
+        SFX.Play("dash", 0.5, pp.x, pp.y)
         return
     end
     p.inputSlam = false
@@ -882,7 +888,8 @@ function Player.UpdateMovement(p, dt)
             p.dashTimer = Config.DashDuration
             p.dashDir = p.lastFaceDir
             p.dashCooldown = Config.DashCooldown
-            SFX.Play("dash", 0.6)
+            local pp = p.node.position
+            SFX.Play("dash", 0.6, pp.x, pp.y)
         end
         p.inputDash = false
     end
@@ -1219,12 +1226,12 @@ function Player.UpdateExplodeVisual(p)
         end
     else
         -- 短暂恢复原色（形成闪烁对比）
-        local c = Config.PlayerColors[p.index]
-        local e = Config.PlayerEmissive[p.index]
+        local c = Config.GetPlayerColor(p.index)
+        local e = Config.GetPlayerEmissive(p.index)
         p.material:SetShaderParameter("MatDiffColor", Variant(c))
         p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
         if p.outlineMat then
-            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[p.index]))
+            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(p.index)))
         end
     end
 
@@ -1246,13 +1253,13 @@ end
 ---@param p table
 function Player.RestoreMaterial(p)
     if not p.material then return end
-    local c = Config.PlayerColors[p.index]
-    local e = Config.PlayerEmissive[p.index]
+    local c = Config.GetPlayerColor(p.index)
+    local e = Config.GetPlayerEmissive(p.index)
     p.material:SetShaderParameter("MatDiffColor", Variant(c))
     p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
     -- 恢复描边颜色
     if p.outlineMat then
-        p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.PlayerOutlineColors[p.index]))
+        p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(p.index)))
     end
 end
 
@@ -1317,12 +1324,12 @@ function Player.DoExplode(p, progress)
     -- 生成爆炸粒子特效
     Player.SpawnExplosionFX(pos, p.index)
 
-    -- 屏幕震动（强度随爆炸半径缩放）
+    -- 屏幕震动（强度随爆炸半径缩放，仅在视野内）
     local shakeIntensity = 0.15 + actualRadius * 0.05  -- 1格≈0.20, 7格≈0.50
-    Camera.Shake(shakeIntensity, 0.25)
+    Camera.Shake(shakeIntensity, 0.25, pos)
 
     -- 爆炸音效
-    SFX.Play("explosion", 0.8)
+    SFX.Play("explosion", 0.8, pos.x, pos.y)
 
     print("[Player] Player " .. p.index .. " exploded! Radius=" .. actualRadius .. " Destroyed=" .. destroyed .. " blocks")
 end
@@ -1340,7 +1347,7 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     local effect = ParticleEffect:new()
 
     -- 圆形粒子材质 - 极高饱和度、低不透明度
-    local color = Config.PlayerColors[playerIndex]
+    local color = Config.GetPlayerColor(playerIndex)
     local satR, satG, satB = boostSaturation(color.r, color.g, color.b)
     local mat = makeCircleMat(satR, satG, satB)
     effect:SetMaterial(mat)
@@ -1472,12 +1479,12 @@ function Player.Kill(p, reason, killerIndex)
 
                 -- 击杀得分：基础分 + 连杀加成
                 local killBonus = Config.KillScoreBase
-                if killer.multiKillCount == 2 then
-                    killBonus = killBonus + 10  -- 双杀 +10 额外
-                elseif killer.multiKillCount == 3 then
-                    killBonus = killBonus + 20  -- 三杀 +20 额外
-                elseif killer.multiKillCount >= 4 then
-                    killBonus = killBonus + 40 * math.pow(2, killer.multiKillCount - 4)  -- 四杀起 ×2 递增
+                local mkCount = killer.multiKillCount
+                if Config.MultiKillBonus[mkCount] then
+                    killBonus = killBonus + Config.MultiKillBonus[mkCount]
+                elseif mkCount > 4 then
+                    -- 超过四杀，沿用四杀基础 ×2 递增
+                    killBonus = killBonus + Config.MultiKillBonus[4] * math.pow(2, mkCount - 4)
                 end
                 killer.killScore = killer.killScore + killBonus
                 killer.score = killer.heightScore + killer.killScore + killer.pickupScore
@@ -1492,8 +1499,8 @@ function Player.Kill(p, reason, killerIndex)
     end
 
     -- 隐藏玩家节点 + 停止物理
+    local deathPos = p.node and p.node.position or nil
     if p.node then
-        local deathPos = p.node.position
 
         -- 1) 先停止物理（必须在禁用节点之前，否则访问已禁用组件可能无效）
         if p.body then
@@ -1518,7 +1525,11 @@ function Player.Kill(p, reason, killerIndex)
     -- 死亡重置连杀
     p.killStreak = 0
 
-    SFX.Play("death", 0.7)
+    if deathPos then
+        SFX.Play("death", 0.7, deathPos.x, deathPos.y)
+    else
+        SFX.Play("death", 0.7)
+    end
 
     print("[Player] Player " .. p.index .. " died (" .. reason .. ")")
 end
@@ -1529,7 +1540,7 @@ end
 function Player.SpawnSplatFX(pos, playerIndex)
     if scene_ == nil then return end
 
-    local color = Config.PlayerColors[playerIndex]
+    local color = Config.GetPlayerColor(playerIndex)
     local r, g, b = boostSaturation(color.r, color.g, color.b)
 
     -- === 第 1 层：大量碎片向四周飞散（主体喷溅） ===
@@ -1661,8 +1672,8 @@ function Player.SpawnSplatFX(pos, playerIndex)
     starEmitter.emitting = true
     starEmitter.autoRemoveMode = REMOVE_NODE
 
-    -- === 屏幕震动 ===
-    Camera.Shake(0.3, 0.3)
+    -- === 屏幕震动（仅在视野内） ===
+    Camera.Shake(0.3, 0.3, pos)
 end
 
 --- 在死亡位置生成哭脸贴图（替代角色形象，直到重生时移除）
@@ -1836,6 +1847,134 @@ function Player.ResetAll()
     end
 end
 
+--- 将 AI 玩家散布到地图检查点上，模拟"正在攀爬"
+function Player.ScatterAI()
+    local cpList = MapData.CheckpointYList
+    if #cpList == 0 then
+        print("[Player] ScatterAI: no checkpoints, skip")
+        return
+    end
+    -- 只取下方 AIScatterMaxRatio 的检查点
+    local maxIdx = math.max(1, math.floor(#cpList * Config.AIScatterMaxRatio))
+    local grid = mapModule_ and mapModule_.GetGrid() or nil
+
+    for _, p in ipairs(Player.list) do
+        if not p.isHuman then
+            -- 随机选一个检查点
+            local cpIdx = math.random(1, maxIdx)
+            local cpY = cpList[cpIdx]
+            -- 找检查点层的可站立 X
+            local wx = (MapData.Width * 0.5) * Config.BlockSize  -- 默认中心
+            if grid then
+                local gridY = math.floor(cpY / Config.BlockSize) + 1
+                local validXs = {}
+                for x = 1, MapData.Width do
+                    if grid[gridY] and grid[gridY][x] ~= Config.BLOCK_EMPTY then
+                        table.insert(validXs, x)
+                    end
+                end
+                if #validXs > 0 then
+                    local rx = validXs[math.random(1, #validXs)]
+                    wx = (rx - 1) * Config.BlockSize + Config.BlockSize * 0.5
+                end
+            end
+            -- 传送
+            if p.node then
+                p.node.position = Vector3(wx, cpY + Config.BlockSize, 0)
+            end
+            if p.body then
+                p.body.linearVelocity = Vector3(0, 0, 0)
+            end
+            -- 标记经过的检查点为已激活
+            p.activatedCheckpoints = {}
+            for i = 1, cpIdx do
+                p.activatedCheckpoints[i] = true
+            end
+            p.lastCheckpointIndex = cpIdx
+            p.maxHeight = cpY
+            p.alive = true
+            if p.visualNode then
+                p.visualNode.enabled = true
+            end
+            print("[Player] ScatterAI: P" .. p.index .. " → CP#" .. cpIdx .. " Y=" .. cpY)
+        end
+    end
+end
+
+--- 只重置所有玩家的计分，不影响位置
+function Player.ResetScoresOnly()
+    for _, p in ipairs(Player.list) do
+        p.score = 0
+        p.heightScore = 0
+        p.killScore = 0
+        p.pickupScore = 0
+        p.maxHeight = p.node and p.node.position.y or 0
+        p.deaths = 0
+        p.kills = 0
+        p.killStreak = 0
+        p.multiKillCount = 0
+        p.multiKillTimer = 0
+    end
+    print("[Player] ResetScoresOnly: all scores zeroed")
+end
+
+--- 只重置人类玩家到出生点（全状态重置），AI 不受影响
+function Player.ResetHumanToSpawn()
+    for _, p in ipairs(Player.list) do
+        if p.isHuman then
+            Player.RemoveDeathFace(p)
+            p.alive = true
+            p.energy = 0
+            p.charging = false
+            p.chargeTimer = 0
+            p.chargeProgress = 0
+            p.explodeRecovery = 0
+            Player.RestoreMaterial(p)
+            p.invincibleTimer = 0
+            p.respawnTimer = 0
+            p.jumpCount = 0
+            p.wasOnGround = false
+            p.dashTimer = 0
+            p.dashCooldown = 0
+            p.inputMoveX = 0
+            p.inputJump = false
+            p.inputDash = false
+            p.inputCharging = false
+            p.inputExplodeRelease = false
+            p.inputSlam = false
+            p.wasChargingInput = false
+            p.slamming = false
+            p.stunTimer = 0
+            p.activatedCheckpoints = {}
+            p.lastCheckpointIndex = 0
+            -- 重置视觉
+            p.squashScaleX = 1.0
+            p.squashScaleY = 1.0
+            p.squashVelX = 0
+            p.squashVelY = 0
+            p.dashRoll = 0
+            p.prevVelY = 0
+            p.hitWallX = 0
+            if p.visualNode then
+                p.visualNode.scale = Vector3(0.9, 0.9, 0.9)
+                p.visualNode.rotation = Quaternion.IDENTITY
+                p.visualNode.enabled = true
+            end
+            -- 传送到出生点
+            local sx, sy = MapData.GetSpawnPosition(p.index)
+            if p.node then
+                p.node.enabled = true
+                p.node.position = Vector3(sx, sy, 0)
+            end
+            if p.body then
+                p.body.linearVelocity = Vector3(0, 0, 0)
+            end
+            print("[Player] ResetHumanToSpawn: P" .. p.index .. " → spawn")
+            break
+        end
+    end
+end
+
 --- 添加能量
 ---@param p table
 ---@param amount number 0~1
@@ -1890,7 +2029,7 @@ end
 function Player.SpawnFireworkFX(pos, playerIndex)
     if scene_ == nil then return end
 
-    local color = Config.PlayerColors[playerIndex] or { r = 1, g = 0.6, b = 0.2 }
+    local color = Config.GetPlayerColor(playerIndex) or { r = 1, g = 0.6, b = 0.2 }
     local r, g, b = boostSaturation(color.r, color.g, color.b)
     local centerY = pos.y + 1.5
 
@@ -2002,7 +2141,7 @@ function Player.SpawnFireworkFX(pos, playerIndex)
     flashEmitter.emitting = true
     flashEmitter.autoRemoveMode = REMOVE_NODE
 
-    Camera.Shake(0.2, 0.4)
+    Camera.Shake(0.2, 0.4, pos)
 end
 
 return Player

@@ -78,14 +78,35 @@ function GameManager.EnterMenu()
     GameManager.SetState(GameManager.STATE_MENU)
 end
 
---- 开始新游戏
-function GameManager.StartGame()
+--- 初始化持久世界（首次加载时调用，散布 AI）
+function GameManager.InitWorld()
+    GameManager.gameTimer = Config.GameDuration
+    GameManager.killEvents = {}
+    -- 将 AI 散布到检查点位置，模拟已经在攀爬
+    if playerModule_ and playerModule_.ScatterAI then
+        playerModule_.ScatterAI()
+    end
+    if pickupModule_ then pickupModule_.Reset() end
+    if randomPickupModule_ then randomPickupModule_.Reset() end
+    print("[GameManager] World initialized (AI scattered)")
+end
+
+--- 玩家加入游戏（点击"开始"或"再来一局"）
+--- 只重置分数和人类玩家位置，AI 保持当前位置继续攀爬
+function GameManager.JoinGame()
     GameManager.gameTimer = Config.GameDuration
     GameManager.killEvents = {}
 
-    -- 重置地图和玩家
-    if mapModule_ then mapModule_.Reset() end
-    if playerModule_ then playerModule_.ResetAll() end
+    -- 不重置地图、不重置 AI 位置
+    -- 只重置所有玩家分数
+    if playerModule_ and playerModule_.ResetScoresOnly then
+        playerModule_.ResetScoresOnly()
+    end
+    -- 只重置人类玩家到出生点
+    if playerModule_ and playerModule_.ResetHumanToSpawn then
+        playerModule_.ResetHumanToSpawn()
+    end
+    -- 重置道具（公平分布）
     if pickupModule_ then pickupModule_.Reset() end
     if randomPickupModule_ then randomPickupModule_.Reset() end
 
@@ -93,12 +114,17 @@ function GameManager.StartGame()
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
 
     GameManager.SetState(GameManager.STATE_COUNTDOWN, Config.CountdownTime)
-    print("[GameManager] Game starting (countdown)")
+    print("[GameManager] Player joining game (countdown)")
+end
+
+--- 开始新游戏（兼容旧调用，实际走 JoinGame）
+function GameManager.StartGame()
+    GameManager.JoinGame()
 end
 
 --- 重新开始（从结算画面回到游戏）
 function GameManager.Restart()
-    GameManager.StartGame()
+    GameManager.JoinGame()
 end
 
 --- 设置状态
@@ -237,6 +263,14 @@ end
 ---@return boolean
 function GameManager.CanPlayersMove()
     return GameManager.state == GameManager.STATE_PLAYING
+end
+
+--- AI 是否可以移动（菜单、游戏中、结算时都可以，持久世界）
+---@return boolean
+function GameManager.CanAIMove()
+    return GameManager.state == GameManager.STATE_MENU
+        or GameManager.state == GameManager.STATE_PLAYING
+        or GameManager.state == GameManager.STATE_RESULT
 end
 
 return GameManager

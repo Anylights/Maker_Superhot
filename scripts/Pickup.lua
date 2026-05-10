@@ -4,6 +4,7 @@
 
 local Config = require("Config")
 local SFX = require("SFX")
+local HUD = require("HUD")
 
 local Pickup = {}
 
@@ -203,7 +204,15 @@ function Pickup.Update(dt)
                                 playerModule_.AddPickupScore(p, scorePoints)
                             end
                             pk.collected = true
-                            SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6)
+                            -- 只给人类玩家(P1)显示浮动加分数字
+                            if p.index == 1 and HUD.AddScorePopup then
+                                local popColor = (pk.size == "large")
+                                    and {r = 255, g = 220, b = 50}
+                                    or  {r = 100, g = 255, b = 220}
+                                local popSize = (pk.size == "large") and 22 or 16
+                                HUD.AddScorePopup(pkX, pkY, "+" .. scorePoints, popColor.r, popColor.g, popColor.b, popSize)
+                            end
+                            SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6, pkX, pkY)
                             print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " (+" .. scorePoints .. " score)")
                             break
                         end

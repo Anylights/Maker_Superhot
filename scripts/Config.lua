@@ -157,8 +157,13 @@ Config.HeightScoreUnit   = 10      -- 每上升 1 格得分
 Config.HeightPenaltyUnit = 10      -- 每下降 1 格扣分（同步实时）
 
 -- 击杀积分
-Config.KillScoreBase     = 10      -- 单杀基础分
+Config.KillScoreBase     = 50      -- 单杀基础分
 Config.DeathPenalty      = 10      -- 死亡扣分
+Config.MultiKillBonus    = {       -- 连杀额外加分（在基础分之上）
+    [2] = 50,                      -- 双杀 +50
+    [3] = 100,                     -- 三杀 +100
+    [4] = 200,                     -- 四杀 +200
+}
 Config.MultiKillWindow   = 2.0     -- 连续击杀判定窗口（秒）
 Config.MultiKillTexts    = {       -- 连杀文字（按连续击杀数索引）
     [1] = "击杀!",
@@ -174,8 +179,8 @@ Config.KillStreakTexts    = {       -- 连杀文字（按连续不死击杀数�
 }
 
 -- 拾取物积分
-Config.PickupSmallScore  = 1       -- 小能量块得分
-Config.PickupLargeScore  = 3       -- 大能量块得分
+Config.PickupSmallScore  = 10      -- 小能量块得分
+Config.PickupLargeScore  = 30      -- 大能量块得分
 
 -- 检查点
 Config.CheckpointInterval = 20     -- 每隔多少格放一个检查点
@@ -188,6 +193,10 @@ Config.IntroZoomOutTime      = 1.0   -- 拉远回全景过渡时间（秒）
 Config.IntroFinishOrtho      = 8.0   -- 聚焦终点时的正交尺寸（拉近）
 Config.IntroSpawnOrtho       = 10.0  -- 聚焦起点时的正交尺寸
 
+-- 伪联机：观战与 AI 散布
+Config.SpectateSwitchTime  = 5.0   -- 观战切换 AI 目标间隔（秒）
+Config.AIScatterMaxRatio   = 0.6   -- AI 散布到地图下方 60% 的检查点
+
 -- 相机
 Config.CameraZ           = -40.0   -- 相机 Z 位置（侧视）
 Config.CameraMinOrtho    = 12.0    -- 最小正交尺寸
@@ -196,8 +205,8 @@ Config.CameraPadding     = 4.0     -- 相机包围盒边距
 Config.CameraSmoothSpeed = 3.0     -- 相机平滑速度
 Config.CameraEndTransDur = 1.5     -- 回合结束时镜头过渡到全景的时长（秒）
 
--- 玩家数量（1 人类 + 5 AI）
-Config.NumPlayers = 6
+-- 玩家数量（1 人类 + 24 AI，保证检查点间密度 3-4 人）
+Config.NumPlayers = 25
 
 -- 默认地图尺寸（30 宽 × 200 高，大地图攀登模式）
 Config.DefaultMapWidth  = 30
@@ -212,6 +221,27 @@ Config.SpawnBlockTypes = {
     Config.BLOCK_SPAWN_P5,
     Config.BLOCK_SPAWN_P6,
 }
+
+--- 获取玩家颜色（超过 6 人时循环复用）
+---@param index number 玩家编号 1~N
+---@return Color
+function Config.GetPlayerColor(index)
+    return Config.PlayerColors[(index - 1) % #Config.PlayerColors + 1]
+end
+
+--- 获取玩家描边颜色（超过 6 人时循环复用）
+---@param index number
+---@return Color
+function Config.GetPlayerOutlineColor(index)
+    return Config.PlayerOutlineColors[(index - 1) % #Config.PlayerOutlineColors + 1]
+end
+
+--- 获取玩家自发光颜色（超过 6 人时循环复用）
+---@param index number
+---@return Color
+function Config.GetPlayerEmissive(index)
+    return Config.PlayerEmissive[(index - 1) % #Config.PlayerEmissive + 1]
+end
 
 --- 判断方块类型是否为出生点（含旧版和 P1-P6）
 ---@param blockType number

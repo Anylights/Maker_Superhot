@@ -25,6 +25,12 @@ Camera.manualMode = false
 -- 固定模式（游戏时显示全局地图，禁用自动跟随）
 Camera.fixedMode = false
 
+-- 观战模式（菜单/结算时跟随随机 AI 玩家）
+Camera.spectateMode = false
+local spectateTarget_ = nil   -- 当前跟随的 AI 玩家
+local spectateTimer_ = 0      -- 切换目标倒计时
+local playerModule_ = nil     -- Player 模块引用（延迟设置）
+
 -- 屏幕震动状态
 local shakeTimer_ = 0
 local shakeDuration_ = 0
@@ -58,6 +64,26 @@ function Camera.Init(scene)
     print("[Camera] Initialized orthographic side-view camera")
 end
 
+--- 设置 Player 模块引用（观战模式需要）
+---@param playerRef table
+function Camera.SetPlayerModule(playerRef)
+    playerModule_ = playerRef
+end
+
+--- 随机选择一个存活的 AI 玩家作为观战目标
+---@return table|nil
+local function pickRandomAI()
+    if not playerModule_ then return nil end
+    local candidates = {}
+    for _, p in ipairs(playerModule_.list) do
+        if not p.isHuman and p.alive and p.node then
+            table.insert(candidates, p)
+        end
+    end
+    if #candidates == 0 then return nil end
+    return candidates[math.random(1, #candidates)]
+end
+
 --- 每帧更新：跟随人类玩家（P1）
 --- 大地图攀登模式：固定 orthoSize，只跟踪人类玩家位置
 ---@param dt number
@@ -66,6 +92,31 @@ end
 function Camera.Update(dt, playerPositions, humanPos)
     if Camera.node == nil then return end
     if Camera.manualMode then return end
+
+    -- 观战模式：跟随随机 AI 玩家，定时切换目标
+    if Camera.spectateMode then
+        spectateTimer_ = spectateTimer_ - dt
+        -- 需要选新目标：定时切换 / 当前目标死亡 / 无目标
+        if spectateTarget_ == nil or not spectateTarget_.alive
+            or spectateTarget_.node == nil or spectateTimer_ <= 0 then
+            spectateTarget_ = pickRandomAI()
+            spectateTimer_ = Config.SpectateSwitchTime
+        end
+        if spectateTarget_ and spectateTarget_.node then
+            local pos = spectateTarget_.node.position
+            targetCenter_ = Vector3(pos.x, pos.y, 0)
+            targetOrtho_ = Config.CameraMinOrtho
+
+            local smooth = Config.CameraSmoothSpeed * dt
+            smooth = math.min(smooth, 1.0)
+            currentCenter_ = currentCenter_ + (targetCenter_ - currentCenter_) * smooth
+            currentOrtho_ = currentOrtho_ + (targetOrtho_ - currentOrtho_) * smooth
+
+            Camera.node.position = Vector3(currentCenter_.x, currentCenter_.y, Config.CameraZ)
+            Camera.camera.orthoSize = currentOrtho_
+        end
+        return
+    end
 
     -- 固定模式：仍需处理屏幕震动（但动画中不覆盖位置）
     if Camera.fixedMode then
@@ -334,7 +385,20 @@ end
 --- 触发屏幕震动
 ---@param intensity number 震动强度（世界坐标单位偏移）
 ---@param duration number 震动持续时间（秒）
-function Camera.Shake(intensity, duration)
+---@param worldPos Vector3|nil 可选，事件发生的世界坐标；若提供则仅在摄像机视野内才震动
+function Camera.Shake(intensity, duration, worldPos)
+    -- 如果提供了位置，检查是否在摄像机视野内（加一点边距）
+    if worldPos and Camera.camera then
+        local halfH = currentOrtho_ * 0.5
+        local aspect = Camera.camera.aspectRatio or 1.0
+        local halfW = halfH * aspect
+        local margin = 2.0  -- 额外边距（米）
+        local dx = math.abs(worldPos.x - currentCenter_.x)
+        local dy = math.abs(worldPos.y - currentCenter_.y)
+        if dx > halfW + margin or dy > halfH + margin then
+            return  -- 不在视野内，跳过震动
+        end
+    end
     shakeIntensity_ = intensity
     shakeDuration_ = duration
     shakeTimer_ = duration

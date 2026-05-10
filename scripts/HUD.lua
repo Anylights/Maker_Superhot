@@ -72,10 +72,34 @@ local flashAlpha_ = 0
 local killFloatTexts_ = {}
 local KILL_FLOAT_DURATION = 2.0
 local lastRenderTime_ = 0
--- 每个玩家的弹跳动画状态（支持 6 名玩家）
+local renderDt_ = 0  -- 帧间隔（模块共享，供浮动文字/弹幕动画用）
+-- 每个玩家的弹跳动画状态
 local killBounceTimers_ = {}
 for i = 1, Config.NumPlayers do killBounceTimers_[i] = 0 end
 local KILL_BOUNCE_DURATION = 0.8
+
+-- 浮动加分数字队列（在玩家头顶浮起的 +10、+50 等）
+local scorePopups_ = {}
+local SCORE_POPUP_DURATION = 1.2
+
+--- 添加浮动加分数字（供外部调用）
+---@param worldX number 世界坐标 X
+---@param worldY number 世界坐标 Y
+---@param text string 显示文字（如 "+50"）
+---@param r number 颜色 R（0-255）
+---@param g number 颜色 G
+---@param b number 颜色 B
+---@param fontSize number|nil 字号（默认 20）
+function HUD.AddScorePopup(worldX, worldY, text, r, g, b, fontSize)
+    table.insert(scorePopups_, {
+        wx = worldX, wy = worldY,
+        text = text,
+        r = r or 255, g = g or 255, b = b or 50,
+        fontSize = fontSize or 20,
+        startTime = time.elapsedTime,
+        duration = SCORE_POPUP_DURATION,
+    })
+end
 
 -- 云端排行榜缓存
 local cloudLeaderboard_ = nil        -- 排行榜数据
@@ -169,10 +193,11 @@ function HandleNanoVGRender(eventType, eventData)
     if vg_ == nil then return end
 
     -- 计算帧间隔（用于浮动文字动画）
-    local now = os.clock()
+    local now = time.elapsedTime
     local renderDt = now - lastRenderTime_
     if renderDt > 0.1 then renderDt = 0.016 end
     lastRenderTime_ = now
+    renderDt_ = renderDt
 
     -- 更新浮动文字计时
     HUD.UpdateKillFloats(renderDt)
@@ -201,8 +226,8 @@ function HandleNanoVGRender(eventType, eventData)
     HUD.DrawEnergyBars()
 
     if state == "playing" or state == "countdown" then
+        HUD.DrawPlayerScore()
         HUD.DrawScoreRankings()
-        HUD.DrawKillScorePanel()
     end
 
     if state == "playing" then
@@ -213,6 +238,7 @@ function HandleNanoVGRender(eventType, eventData)
     -- 消费击杀事件 + 绘制浮动文字
     HUD.ConsumeKillEvents()
     HUD.DrawKillFloatTexts()
+    HUD.DrawScorePopups()
 
     -- 状态覆盖层
     if state == "countdown" then
@@ -234,7 +260,7 @@ end
 
 --- 绘制半透明山丘剪影（叠加在 3D 渐变背景之上）
 function HUD.DrawBackground()
-    local t = (os.clock() or 0) * 0.02
+    local t = (time.elapsedTime or 0) * 0.02
     -- 远山（浅色）
     nvgBeginPath(vg_)
     nvgMoveTo(vg_, 0, logH_)
@@ -325,13 +351,13 @@ function HUD.DrawWorldIndicators()
                 local currentWorldRadius = maxWorldRadius * p.chargeProgress
                 local screenRadius = Camera.WorldSizeToScreen(currentWorldRadius, logH_)
 
-                local pc = Config.PlayerColors[p.index]
+                local pc = Config.GetPlayerColor(p.index)
                 local pr = math.floor(pc.r * 255)
                 local pg = math.floor(pc.g * 255)
                 local pb = math.floor(pc.b * 255)
 
                 local freq = 4 + p.chargeProgress * 12
-                local pulse = math.abs(math.sin(os.clock() * freq)) * 0.4 + 0.2
+                local pulse = math.abs(math.sin(time.elapsedTime * freq)) * 0.4 + 0.2
 
                 local fillAlpha = math.floor(52 + pulse * 127)
                 nvgBeginPath(vg_)
@@ -377,7 +403,7 @@ function HUD.DrawDestroyedBlockGhosts()
         local drawY = sy - halfS + inset
 
         local progress = 1.0 - (info.timer / info.totalTime)
-        local alpha = 80 + math.floor(math.abs(math.sin(os.clock() * 3 + info.x * 0.7)) * 40)
+        local alpha = 80 + math.floor(math.abs(math.sin(time.elapsedTime * 3 + info.x * 0.7)) * 40)
 
         nvgStrokeColor(vg_, nvgRGBA(200, 200, 220, alpha))
         nvgStrokeWidth(vg_, 2.5)
@@ -604,7 +630,7 @@ function HUD.DrawEnergyBars()
         if not p.alive or not p.node then goto continueBar end
 
         local pos = p.node.position
-        local color = Config.PlayerColors[p.index]
+        local color = Config.GetPlayerColor(p.index)
         local r = math.floor(color.r * 255)
         local g = math.floor(color.g * 255)
         local b = math.floor(color.b * 255)
@@ -632,7 +658,7 @@ function HUD.DrawEnergyBars()
             nvgBeginPath(vg_)
             nvgRoundedRect(vg_, bx, by, fillW, barH, cornerR)
             if p.energy >= 1.0 then
-                local pulse = math.abs(math.sin(os.clock() * 4)) * 55 + 200
+                local pulse = math.abs(math.sin(time.elapsedTime * 4)) * 55 + 200
                 nvgFillColor(vg_, nvgRGBA(255, 40, 30, math.floor(pulse)))
             else
                 nvgFillColor(vg_, nvgRGBA(180, 220, 255, 210))
@@ -671,7 +697,7 @@ function HUD.DrawScoreRankings()
 
     for rank, entry in ipairs(rankings) do
         local y = startY + 20 + (rank - 1) * 22
-        local color = Config.PlayerColors[entry.index]
+        local color = Config.GetPlayerColor(entry.index)
         local r = math.floor(color.r * 255)
         local g = math.floor(color.g * 255)
         local b = math.floor(color.b * 255)
@@ -707,7 +733,7 @@ function HUD.DrawGameTimer()
     nvgBeginPath(vg_)
     nvgRoundedRect(vg_, tx, ty, tw, th, 6)
     if remaining <= 10 then
-        local pulse = math.abs(math.sin(os.clock() * 3)) * 100 + 50
+        local pulse = math.abs(math.sin(time.elapsedTime * 3)) * 100 + 50
         nvgFillColor(vg_, nvgRGBA(180, 30, 30, math.floor(pulse) + 100))
     else
         nvgFillColor(vg_, nvgRGBA(50, 38, 30, 210))
@@ -773,32 +799,36 @@ function HUD.ConsumeKillEvents()
         local killerIdx = evt.killerIndex
         local multiKill = evt.multiKillCount
         local streak = evt.killStreak
+        -- 只对人类玩家（P1）显示击杀文字特效
+        if killerIdx ~= 1 then goto continueEvt end
 
-        -- 触发该玩家的弹跳
-        if killerIdx >= 1 and killerIdx <= Config.NumPlayers then
-            killBounceTimers_[killerIdx] = KILL_BOUNCE_DURATION
+        -- 计算本次击杀的总加分
+        local killBonus = Config.KillScoreBase
+        if Config.MultiKillBonus[multiKill] then
+            killBonus = killBonus + Config.MultiKillBonus[multiKill]
+        elseif multiKill > 4 then
+            killBonus = killBonus + Config.MultiKillBonus[4] * math.pow(2, multiKill - 4)
         end
 
         -- 玩家颜色
-        local pc = Config.PlayerColors[killerIdx]
+        local pc = Config.GetPlayerColor(killerIdx)
         local cr = math.floor(pc.r * 255)
         local cg = math.floor(pc.g * 255)
         local cb = math.floor(pc.b * 255)
 
-        -- 双杀及以上
-        if multiKill >= 2 then
-            local mainText = Config.MultiKillTexts[multiKill] or Config.MultiKillTexts[5]
-            if multiKill > 5 then mainText = Config.MultiKillTexts[5] end
-            table.insert(killFloatTexts_, {
-                text = mainText,
-                r = cr, g = cg, b = cb,
-                timer = KILL_FLOAT_DURATION,
-                duration = KILL_FLOAT_DURATION,
-                kind = "multi",
-            })
-        end
+        -- 击杀文字（单杀也显示）
+        local killText = Config.MultiKillTexts[multiKill] or Config.MultiKillTexts[1] or "击杀!"
+        if multiKill > 5 then killText = Config.MultiKillTexts[5] end
+        local displayText = killText .. " +" .. killBonus
+        table.insert(killFloatTexts_, {
+            text = displayText,
+            r = cr, g = cg, b = cb,
+            startTime = time.elapsedTime,
+            duration = KILL_FLOAT_DURATION,
+            kind = multiKill >= 2 and "multi" or "single",
+        })
 
-        -- 连杀 ≥3
+        -- 连杀 ≥3（额外一行）
         if streak >= 3 then
             local streakText = nil
             for s = streak, 3, -1 do
@@ -811,12 +841,14 @@ function HUD.ConsumeKillEvents()
                 table.insert(killFloatTexts_, {
                     text = streakText,
                     r = 255, g = 210, b = 50,
-                    timer = KILL_FLOAT_DURATION,
+                    startTime = time.elapsedTime,
                     duration = KILL_FLOAT_DURATION,
                     kind = "streak",
                 })
             end
         end
+
+        ::continueEvt::
     end
 
     gameManager_.killEvents = {}
@@ -824,11 +856,12 @@ end
 
 --- 更新动效计时器
 function HUD.UpdateKillFloats(dt)
+    local now = time.elapsedTime
     local i = 1
     while i <= #killFloatTexts_ do
         local ft = killFloatTexts_[i]
-        ft.timer = ft.timer - dt
-        if ft.timer <= 0 then
+        local elapsed = now - ft.startTime
+        if elapsed >= ft.duration then
             table.remove(killFloatTexts_, i)
         else
             i = i + 1
@@ -841,6 +874,40 @@ function HUD.UpdateKillFloats(dt)
             if killBounceTimers_[pi] < 0 then killBounceTimers_[pi] = 0 end
         end
     end
+end
+
+--- 绘制左上角玩家总分
+function HUD.DrawPlayerScore()
+    if playerModule_ == nil then return end
+    local p1 = playerModule_.list[1]
+    if not p1 then return end
+
+    local x = 14
+    local y = 14
+
+    -- 背景
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, x - 6, y - 6, 130, 42, 8)
+    nvgFillColor(vg_, nvgRGBA(20, 12, 8, 160))
+    nvgFill(vg_)
+
+    -- "SCORE" 标签
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 11)
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(255, 220, 180, 160))
+    nvgText(vg_, x, y, "SCORE")
+
+    -- 分数数字
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 24)
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+    -- 描边
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
+    nvgText(vg_, x + 1, y + 13, tostring(p1.score))
+    -- 主文字（金色）
+    nvgFillColor(vg_, nvgRGBA(255, 230, 80, 255))
+    nvgText(vg_, x, y + 12, tostring(p1.score))
 end
 
 --- 绘制左上角击杀面板
@@ -874,7 +941,7 @@ function HUD.DrawKillScorePanel()
 
     for i = 1, Config.NumPlayers do
         local y = panelY + headerH + (i - 1) * lineH
-        local pc = Config.PlayerColors[i]
+        local pc = Config.GetPlayerColor(i)
         local r = math.floor(pc.r * 255)
         local g = math.floor(pc.g * 255)
         local b = math.floor(pc.b * 255)
@@ -966,7 +1033,7 @@ function HUD.DrawKillFloatTexts()
 
     local slot = 0
     for _, ft in ipairs(killFloatTexts_) do
-        local progress = 1.0 - (ft.timer / ft.duration)
+        local progress = (time.elapsedTime - ft.startTime) / ft.duration
 
         local alpha
         if progress < 0.08 then alpha = progress / 0.08
@@ -1031,6 +1098,60 @@ function HUD.DrawKillFloatTexts()
 end
 
 -- ============================================================================
+-- 世界空间加分浮动数字
+-- ============================================================================
+
+--- 绘制世界空间加分浮动数字（道具拾取 +10/+30 等）
+function HUD.DrawScorePopups()
+    local now = time.elapsedTime
+    local i = 1
+    while i <= #scorePopups_ do
+        local sp = scorePopups_[i]
+        local elapsed = now - sp.startTime
+        if elapsed >= sp.duration then
+            table.remove(scorePopups_, i)
+        else
+            -- 进度 0→1（0=刚出现，1=即将消失）
+            local progress = elapsed / sp.duration
+
+            -- 向上飘动（世界空间上升 1.5 米）
+            local floatY = sp.wy + progress * 1.5
+
+            -- 转换到屏幕坐标
+            local sx, sy = Camera.WorldToScreen(sp.wx, floatY, logW_, logH_)
+
+            -- 淡出（后 40% 开始淡出）
+            local alpha = 1.0
+            if progress > 0.6 then
+                alpha = 1.0 - (progress - 0.6) / 0.4
+            end
+
+            -- 弹出缩放效果（前 20% 从 1.5x→1.0x）
+            local scale = 1.0
+            if progress < 0.2 then
+                scale = 1.5 - 0.5 * (progress / 0.2)
+            end
+
+            local fontSize = sp.fontSize * scale
+
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, fontSize)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+            -- 描边（黑色阴影）
+            nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(alpha * 200)))
+            nvgText(vg_, sx + 1, sy + 1, sp.text)
+
+            -- 主色
+            nvgFillColor(vg_, nvgRGBA(sp.r, sp.g, sp.b, math.floor(alpha * 255)))
+            nvgText(vg_, sx, sy, sp.text)
+
+            i = i + 1
+        end
+    end
+end
+
+-- ============================================================================
 -- 状态覆盖层
 -- ============================================================================
 
@@ -1073,10 +1194,10 @@ end
 function HUD.DrawResultScreen()
     if gameManager_ == nil then return end
 
-    -- 半透明背景
+    -- 半透明背景（透过背景可见 AI 玩家攀爬）
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillColor(vg_, nvgRGBA(30, 18, 10, 220))
+    nvgFillColor(vg_, nvgRGBA(30, 18, 10, 160))
     nvgFill(vg_)
 
     local cx = logW_ * 0.5
@@ -1096,7 +1217,7 @@ function HUD.DrawResultScreen()
     local winner = gameManager_.GetWinner()
     if winner == 1 then
         -- 玩家胜利
-        local pulse = math.abs(math.sin(os.clock() * 2)) * 30 + 225
+        local pulse = math.abs(math.sin(time.elapsedTime * 2)) * 30 + 225
         nvgFillColor(vg_, nvgRGBA(0, 0, 0, 180))
         nvgText(vg_, cx + 2, 44, "你赢了！")
         nvgFillColor(vg_, nvgRGBA(255, 215, 0, math.floor(pulse)))
@@ -1136,7 +1257,7 @@ function HUD.DrawResultScreen()
     -- 数据行
     for rank, entry in ipairs(rankings) do
         local y = tableY + 18 + (rank - 1) * rowH
-        local pc = Config.PlayerColors[entry.index]
+        local pc = Config.GetPlayerColor(entry.index)
         local r = math.floor(pc.r * 255)
         local g = math.floor(pc.g * 255)
         local b = math.floor(pc.b * 255)
@@ -1515,16 +1636,14 @@ end
 -- ============================================================================
 
 function HUD.DrawMenu()
-    -- 全屏背景渐变
-    local bgPaint = nvgLinearGradient(vg_, 0, 0, logW_, logH_,
-        nvgRGBA(250, 217, 179, 255), nvgRGBA(224, 166, 153, 255))
+    -- 半透明背景（透过背景可见 AI 玩家攀爬）
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
-    nvgFillPaint(vg_, bgPaint)
+    nvgFillColor(vg_, nvgRGBA(30, 18, 10, 140))
     nvgFill(vg_)
 
     -- 装饰粒子
-    local t = os.clock()
+    local t = time.elapsedTime
     for i = 1, 20 do
         local px = (math.sin(t * 0.3 + i * 1.7) * 0.5 + 0.5) * logW_
         local py = (math.cos(t * 0.2 + i * 2.3) * 0.5 + 0.5) * logH_
@@ -1597,29 +1716,6 @@ function HUD.DrawMenu()
     local clicked = HUD.DrawRubberButton(btnX, btnY, btnW, btnH, "开始游戏", 242, 56, 46, hovered)
     if clicked then
         menuButtonClicked_ = "startGame"
-    end
-
-    -- 底部玩家颜色指示（6 名玩家）
-    local dotY = btnY + btnH + 30
-    local dotSpacing = 42
-    local dotStartX = cx - dotSpacing * (Config.NumPlayers - 1) * 0.5
-    nvgFontSize(vg_, 11)
-    for i = 1, Config.NumPlayers do
-        local dx = dotStartX + (i - 1) * dotSpacing
-        local color = Config.PlayerColors[i]
-        local r = math.floor(color.r * 255)
-        local g = math.floor(color.g * 255)
-        local b = math.floor(color.b * 255)
-
-        nvgBeginPath(vg_)
-        nvgRoundedRect(vg_, dx - 7, dotY - 7, 14, 14, 4)
-        nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-        nvgFill(vg_)
-
-        nvgFillColor(vg_, nvgRGBA(100, 70, 50, 200))
-        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-        local label = i == 1 and "你" or ("AI" .. (i - 1))
-        nvgText(vg_, dx, dotY + 10, label)
     end
 
     -- 操作说明

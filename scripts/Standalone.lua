@@ -55,6 +55,7 @@ function Standalone.Start()
     SFX.Init(scene_)
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, Camera)
     Camera.Init(scene_)
+    Camera.SetPlayerModule(Player)
 
     -- 设置视口
     local viewport = Viewport:new(scene_, Camera.GetCamera())
@@ -217,8 +218,10 @@ function Standalone.CreateGameContent()
     end
 
     RandomPickup.Reset()
+    GameManager.InitWorld()
     GameManager.EnterMenu()
-    print("[Standalone] Game content created - waiting at menu")
+    Camera.spectateMode = true
+    print("[Standalone] Game content created - world initialized, spectating")
 end
 
 -- ============================================================================
@@ -230,26 +233,28 @@ function Standalone.HandleUpdate(dt)
     -- 缓存鼠标输入（必须在 Update 阶段，渲染阶段 GetMouseButtonPress 不可靠）
     HUD.CacheInput()
 
-    -- 主菜单：点击开始 → 立即进入游戏
+    -- 主菜单：点击开始 → 加入游戏（不阻塞后续逻辑，AI 继续运行）
     if GameManager.state == GameManager.STATE_MENU then
+        Camera.spectateMode = true
         local btn = HUD.GetMenuButtonClicked()
         if btn == "startGame" then
+            Camera.spectateMode = false
             GameManager.StartGame()
             Standalone.UpdateDeathZone()
         end
-        return
     end
 
-    -- 结算画面
+    -- 结算画面（不阻塞后续逻辑，AI 继续运行）
     if GameManager.state == GameManager.STATE_RESULT then
+        Camera.spectateMode = true
         local btn = HUD.GetResultButtonClicked()
         if btn == "restart" then
+            Camera.spectateMode = false
             GameManager.Restart()
             Standalone.UpdateDeathZone()
         elseif btn == "menu" then
             GameManager.EnterMenu()
         end
-        return
     end
 
     -- 调参面板切换
@@ -277,7 +282,8 @@ function Standalone.HandleUpdate(dt)
         end
     end
 
-    if GameManager.CanPlayersMove() then
+    -- AI 在菜单/游戏中/结算时都可以运动（持久世界）
+    if GameManager.CanAIMove() then
         AIController.Update(dt)
     end
 

@@ -128,6 +128,7 @@ function MapData.Generate(seed)
     -- 生成平台层
     -- ====================================================================
     local currentY = spawnY  -- 上一个平台层的 Y
+    local lastCheckpointGridY = spawnY  -- 上一个存档点的格子 Y
     local layerIndex = 0
 
     while true do
@@ -139,25 +140,12 @@ function MapData.Generate(seed)
 
         layerIndex = layerIndex + 1
 
-        -- 判断是否为检查点层
-        local isCheckpointLayer = (nextY - spawnY) >= Config.CheckpointInterval
-            and ((nextY - spawnY) % Config.CheckpointInterval) < gap
-
-        -- 更精确：找最接近 CheckpointInterval 倍数的层
+        -- 判断是否为检查点层：距上一个检查点 >= CheckpointInterval 格
+        local isCheckpointLayer = false
         local heightAboveSpawn = nextY - spawnY
-        local nearestCheckpoint = math.floor(heightAboveSpawn / Config.CheckpointInterval + 0.5) * Config.CheckpointInterval
-        if math.abs(heightAboveSpawn - nearestCheckpoint) < gap and nearestCheckpoint > 0 then
-            -- 检查这个检查点是否还没生成过
-            local alreadyExists = false
-            for _, cy in ipairs(MapData.CheckpointYList) do
-                if math.abs(cy - (spawnY + nearestCheckpoint)) < Config.CheckpointInterval * 0.5 then
-                    alreadyExists = true
-                    break
-                end
-            end
-            if not alreadyExists then
-                isCheckpointLayer = true
-            end
+        local distFromLastCP = nextY - lastCheckpointGridY
+        if heightAboveSpawn >= Config.CheckpointInterval and distFromLastCP >= Config.CheckpointInterval then
+            isCheckpointLayer = true
         end
 
         -- 决定这一层的平台数量和布局
@@ -183,6 +171,7 @@ function MapData.Generate(seed)
             -- 记录检查点世界 Y
             local cpWorldY = (nextY - 1) * Config.BlockSize + Config.BlockSize * 0.5
             table.insert(MapData.CheckpointYList, cpWorldY)
+            lastCheckpointGridY = nextY  -- 更新上一个存档点位置
         else
             -- 普通层：生成多个平台段
             -- 将地图宽度分成若干区域，每个区域放一个平台
@@ -300,10 +289,15 @@ end
 --- 返回检查点索引（1-based）或 nil
 ---@param wy number 世界 Y 坐标
 ---@return number|nil checkpointIndex
-function MapData.GetCheckpointAt(wy)
+function MapData.GetCheckpointAt(wy, fromAbove)
     for i, cpY in ipairs(MapData.CheckpointYList) do
         if math.abs(wy - cpY) < 1.2 then
-            return i
+            -- fromAbove: 玩家 Y 必须 >= 存档点 Y（站在上面，不是从下面顶到）
+            if fromAbove and wy < cpY then
+                -- 从下方碰到，不算激活
+            else
+                return i
+            end
         end
     end
     return nil

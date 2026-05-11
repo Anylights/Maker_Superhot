@@ -62,6 +62,13 @@ function GameManager.Init(playerRef, mapRef, pickupRef, aiRef, randomPickupRef, 
         playerModule_.onKill = function(killerIndex, victimIndex, multiKillCount, killStreak)
             GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, killStreak)
         end
+        playerModule_.onCheckpointBonus = function(playerIndex, totalBonus)
+            GameManager.checkpointBonusEvents = GameManager.checkpointBonusEvents or {}
+            table.insert(GameManager.checkpointBonusEvents, {
+                playerIndex = playerIndex,
+                totalBonus = totalBonus,
+            })
+        end
     end
 
     print("[GameManager] Initialized (climb mode)")
@@ -242,6 +249,10 @@ function GameManager.GetRankings()
                 pickupScore = p.pickupScore or 0,
                 deaths = p.deaths or 0,
                 maxHeight = p.maxHeight or 0,
+                kills = p.kills or 0,
+                slamHits = p.slamHits or 0,
+                gotSlammed = p.gotSlammed or 0,
+                gotKilled = p.gotKilled or 0,
             })
         end
         table.sort(rankings, function(a, b) return a.score > b.score end)

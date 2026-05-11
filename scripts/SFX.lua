@@ -11,6 +11,14 @@ local scene_ = nil
 -- 预加载的音效资源
 local sounds_ = {}
 
+-- BGM 系统
+local bgmNode_ = nil       -- BGM 播放节点
+local bgmSource_ = nil     -- BGM SoundSource
+local bgmPlaylist_ = {}    -- 当前播放列表
+local bgmIndex_ = 0        -- 当前播放索引
+local bgmMode_ = ""        -- "menu" / "game"
+local sfxEnabled_ = false  -- 音效是否启用（菜单时关闭）
+
 -- 音效文件映射
 local SFX_FILES = {
     explosion    = "audio/sfx/explosion.ogg",
@@ -51,6 +59,8 @@ end
 ---@param wy number|nil 世界 Y 坐标
 function SFX.Play(name, gain, wx, wy)
     if scene_ == nil then return end
+    -- 菜单时禁止播放游戏音效（倒计时/go 音效除外）
+    if not sfxEnabled_ and name ~= "countdown" and name ~= "go" then return end
 
     local sound = sounds_[name]
     if sound == nil then return end
@@ -98,6 +108,77 @@ function SFX.Count()
     local count = 0
     for _ in pairs(sounds_) do count = count + 1 end
     return count
+end
+
+-- ============================================================================
+-- BGM 系统
+-- ============================================================================
+
+--- 播放一首 BGM（内部）
+local function PlayBGMTrack(index)
+    if scene_ == nil then return end
+    local path = bgmPlaylist_[index]
+    if not path then return end
+
+    local sound = cache:GetResource("Sound", path)
+    if not sound then
+        print("[SFX] BGM load failed: " .. path)
+        return
+    end
+
+    -- 单曲列表 → 循环；多曲列表 → 不循环，播完切下一首
+    sound.looped = (#bgmPlaylist_ == 1)
+
+    if not bgmNode_ then
+        bgmNode_ = scene_:CreateChild("BGM", LOCAL)
+        bgmSource_ = bgmNode_:CreateComponent("SoundSource")
+        bgmSource_.soundType = "Music"
+    end
+
+    bgmSource_.gain = 0.45
+    bgmSource_:Play(sound)
+    bgmIndex_ = index
+    print("[SFX] BGM playing: " .. path .. " (" .. index .. "/" .. #bgmPlaylist_ .. ")")
+end
+
+--- 切换到菜单 BGM
+function SFX.PlayMenuBGM()
+    if bgmMode_ == "menu" then return end
+    bgmMode_ = "menu"
+    bgmPlaylist_ = { "audio/超级红温开始界面.ogg" }
+    PlayBGMTrack(1)
+end
+
+--- 切换到游戏内 BGM
+function SFX.PlayGameBGM()
+    if bgmMode_ == "game" then return end
+    bgmMode_ = "game"
+    bgmPlaylist_ = {
+        "audio/跳跳糖关卡.ogg",
+        "audio/跳跳糖关卡-2.ogg",
+    }
+    PlayBGMTrack(1)
+end
+
+--- 每帧调用：检测当前曲目是否播完，自动切下一首
+function SFX.UpdateBGM()
+    if not bgmSource_ then return end
+    if #bgmPlaylist_ <= 1 then return end  -- 单曲循环不需要处理
+    if bgmSource_.playing then return end  -- 还在播
+
+    -- 当前曲目播完，切下一首
+    local next = bgmIndex_ % #bgmPlaylist_ + 1
+    PlayBGMTrack(next)
+end
+
+--- 启用游戏音效
+function SFX.EnableSFX()
+    sfxEnabled_ = true
+end
+
+--- 禁用游戏音效
+function SFX.DisableSFX()
+    sfxEnabled_ = false
 end
 
 return SFX

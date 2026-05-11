@@ -271,6 +271,10 @@ function Player.Create(index, isHuman)
         pickupScore = 0,       -- 拾取得分
         maxHeight = 0,         -- 历史最高高度（用于统计）
         deaths = 0,            -- 死亡次数
+        slamHits = 0,          -- 下砸砸晕人数
+        gotSlammed = 0,        -- 被别人砸晕次数
+        gotKilled = 0,         -- 被别人击杀次数
+        killScoreBonus = 0,    -- 检查点累加的额外击杀基础分
 
         -- 检查点
         activatedCheckpoints = {},  -- 已激活的检查点 { [cpIndex]=true }
@@ -682,17 +686,23 @@ function Player.UpdateOne(p, dt)
         Player.Kill(p, "fall")
     end
 
-    -- 检查点激活检测
-    if p.node then
-        local cpIndex = MapData.GetCheckpointAt(p.node.position.y)
+    -- 检查点激活检测（必须从上方踩上去，不能从下方顶到）
+    if p.node and p.onGround then
+        local cpIndex = MapData.GetCheckpointAt(p.node.position.y, true)
         if cpIndex and not p.activatedCheckpoints[cpIndex] then
             p.activatedCheckpoints[cpIndex] = true
             p.lastCheckpointIndex = cpIndex
+            p.killScoreBonus = (p.killScoreBonus or 0) + 10
             local pp = p.node.position
             SFX.Play("pickup_large", 0.7, pp.x, pp.y)
             Camera.Shake(0.1, 0.15)
+            -- 通知 HUD 显示浮动文字
+            if Player.onCheckpointBonus then
+                Player.onCheckpointBonus(p.index, p.killScoreBonus)
+            end
             print("[Player] Player " .. p.index .. " activated checkpoint #" .. cpIndex ..
-                  " at Y=" .. MapData.CheckpointYList[cpIndex])
+                  " at Y=" .. MapData.CheckpointYList[cpIndex] ..
+                  " killScoreBonus=" .. p.killScoreBonus)
         end
     end
 
@@ -835,6 +845,8 @@ function Player.DoSlamLanding(p)
             -- 水平距离在 SlamRadius 内且垂直距离合理（不超过 2 格）
             if dx < Config.SlamRadius and dy < 2.0 and (dx + dy) > 0.01 then
                 hitAnyPlayer = true
+                p.slamHits = (p.slamHits or 0) + 1
+                other.gotSlammed = (other.gotSlammed or 0) + 1
                 -- 击飞方向：从砸地点水平朝外
                 local kbDir = (diff.x >= 0) and 1 or -1
                 other.body.linearVelocity = Vector3(
@@ -1590,6 +1602,11 @@ function Player.Kill(p, reason, killerIndex)
     p.pickupScore = math.max(0, p.pickupScore - Config.DeathPenalty)
     p.score = p.heightScore + p.killScore + p.pickupScore
 
+    -- 被击杀计数
+    if killerIndex and killerIndex ~= p.index then
+        p.gotKilled = (p.gotKilled or 0) + 1
+    end
+
     -- 击杀者统计与得分
     if killerIndex and killerIndex ~= p.index then
         for _, killer in ipairs(Player.list) do
@@ -1605,14 +1622,13 @@ function Player.Kill(p, reason, killerIndex)
                 end
                 killer.multiKillTimer = Config.MultiKillWindow
 
-                -- 击杀得分：基础分 + 连杀加成
-                local killBonus = Config.KillScoreBase
+                -- 击杀得分：(基础分 + 检查点加成) + 连杀线性加成
+                local killBonus = Config.KillScoreBase + (killer.killScoreBonus or 0)
                 local mkCount = killer.multiKillCount
-                if Config.MultiKillBonus[mkCount] then
-                    killBonus = killBonus + Config.MultiKillBonus[mkCount]
-                elseif mkCount > 4 then
-                    -- 超过四杀，沿用四杀基础 ×2 递增
-                    killBonus = killBonus + Config.MultiKillBonus[4] * math.pow(2, mkCount - 4)
+                -- 连杀额外加分：N次连杀 = N * 单次连杀奖励（线性）
+                local multiBonus = Config.MultiKillBonus[2] or 50  -- 双杀奖励作为单位
+                if mkCount >= 2 then
+                    killBonus = killBonus + mkCount * multiBonus
                 end
                 killer.killScore = killer.killScore + killBonus
                 killer.score = killer.heightScore + killer.killScore + killer.pickupScore
@@ -1921,6 +1937,10 @@ function Player.ResetAll()
         p.pickupScore = 0
         p.maxHeight = 0
         p.deaths = 0
+        p.slamHits = 0
+        p.gotSlammed = 0
+        p.gotKilled = 0
+        p.killScoreBonus = 0
         p.activatedCheckpoints = {}
         p.lastCheckpointIndex = 0
 
@@ -2038,6 +2058,10 @@ function Player.ResetScoresOnly()
         p.pickupScore = 0
         p.maxHeight = p.node and p.node.position.y or 0
         p.deaths = 0
+        p.slamHits = 0
+        p.gotSlammed = 0
+        p.gotKilled = 0
+        p.killScoreBonus = 0
         p.kills = 0
         p.killStreak = 0
         p.multiKillCount = 0

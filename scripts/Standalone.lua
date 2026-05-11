@@ -76,6 +76,10 @@ function Standalone.Start()
     if TuningPanel then TuningPanel.Init(scene_) end
     if ExplosionTuningPanel then ExplosionTuningPanel.Init(scene_) end
 
+    -- 开始播放菜单 BGM，禁用游戏音效
+    SFX.PlayMenuBGM()
+    SFX.DisableSFX()
+
     print("[Standalone] All systems initialized")
 end
 
@@ -239,6 +243,8 @@ function Standalone.HandleUpdate(dt)
         local btn = HUD.GetMenuButtonClicked()
         if btn == "startGame" then
             Camera.spectateMode = false
+            SFX.PlayGameBGM()
+            SFX.EnableSFX()
             GameManager.StartGame()
             Standalone.UpdateDeathZone()
         end
@@ -250,9 +256,13 @@ function Standalone.HandleUpdate(dt)
         local btn = HUD.GetResultButtonClicked()
         if btn == "restart" then
             Camera.spectateMode = false
+            SFX.PlayGameBGM()
+            SFX.EnableSFX()
             GameManager.Restart()
             Standalone.UpdateDeathZone()
         elseif btn == "menu" then
+            SFX.PlayMenuBGM()
+            SFX.DisableSFX()
             GameManager.EnterMenu()
         end
     end
@@ -290,6 +300,7 @@ function Standalone.HandleUpdate(dt)
     Player.UpdateAll(dt)
     Pickup.Update(dt)
     RandomPickup.Update(dt)
+    SFX.UpdateBGM()
 
     if input:GetKeyPress(KEY_TAB) then
         debugDraw_ = not debugDraw_

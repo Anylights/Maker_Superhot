@@ -149,7 +149,7 @@ Config.InvincibleDuration = 1.0    -- 出生保护（秒）
 Config.DeathY             = -10.0  -- 死亡区域 Y 坐标
 
 -- 游戏时间
-Config.GameDuration      = 180.0   -- 单局总时长（秒）= 3 分钟
+Config.GameDuration      = 120.0   -- 单局总时长（秒）= 2 分钟
 Config.CountdownTime     = 3.0     -- 开局倒计时（秒）
 
 -- 高度积分
@@ -183,7 +183,7 @@ Config.PickupSmallScore  = 10      -- 小能量块得分
 Config.PickupLargeScore  = 30      -- 大能量块得分
 
 -- 检查点
-Config.CheckpointInterval = 20     -- 每隔多少格放一个检查点
+Config.CheckpointInterval = 20     -- 每隔多少格放一个检查点（~5层）
 
 -- 开场镜头动画
 Config.IntroFocusFinishTime  = 1.5   -- 聚焦终点持续时间（秒）

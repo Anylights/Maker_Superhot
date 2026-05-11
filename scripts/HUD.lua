@@ -89,14 +89,32 @@ local SCORE_POPUP_DURATION = 1.2
 -- 玩家昵称系统
 -- ============================================================================
 
--- 随机昵称池（中文游戏风格）
+-- 随机昵称池（模拟真实TapTap玩家取名风格）
 local NICKNAME_POOL = {
-    "疾风剑豪", "暴走萝莉", "星空猎手", "月光骑士", "影子刺客",
-    "雷霆战神", "冰霜女王", "烈焰法师", "暗夜行者", "光明使者",
-    "钢铁巨人", "翡翠弓手", "黄金矿工", "紫电真君", "碧海潮生",
-    "风暴使者", "极光守卫", "幽灵杀手", "赤焰狂狮", "苍穹之鹰",
-    "破晓勇士", "冰封王座", "龙牙战士", "银月刺客", "黑曜石心",
-    "天狼星辰", "赤红之瞳", "狂野猎犬", "蔚蓝骑士", "暗影魔导",
+    -- 纯英文/英文ID
+    "Skywalker", "NoobMaster", "xDarkKnightx", "ProGamer99",
+    "Shadow_X", "EzClap", "gg_wp", "Zephyr",
+    "FLAVOR", "Neko", "Astro", "vvvv",
+    "Lux", "RNGesus", "copium", "haxx0r",
+    -- 默认昵称/数字ID（很多人不改名）
+    "TapTap用户3847", "用户7291", "taptap_58023", "玩家62917",
+    "user_38471", "tap_91204", "Guest_4826", "Player7750",
+    -- 中英混搭
+    "Zzz困了", "awsl太强", "rush冲冲冲", "carry全场",
+    "duck不必", "gg开", "ez局", "afk挂机中",
+    "solo王", "buff叠满", "lag卡了", "fps战士",
+    -- 纯中文（少量）
+    "摸鱼达人", "咸鱼", "懒得取名", "路过",
+    "踏雪寻梅", "长安故人", "大橘", "柠檬茶",
+    -- 带符号/特殊格式
+    "____", "xXx_Pro_xXx", "★星辰★", "·暗影·",
+    ".jpg", "404NotFound", "0x00FF", "nullptr",
+    -- 简短随意
+    "aaa", "qwer", "emm", "www",
+    "6", "嗯", "ok", "test",
+    -- 带数字的名字
+    "小明2号", "zero0", "player1", "第5人",
+    "3cm", "7号", "No.13", "R2D2",
 }
 local playerNicknames_ = {}  -- [playerIndex] = "昵称"
 
@@ -221,6 +239,15 @@ end
 local cloudLeaderboard_ = nil
 local cloudLeaderboardLoading_ = false
 local cloudScoreSubmitted_ = false
+
+-- 今日排行榜缓存
+local dailyLeaderboard_ = nil
+local dailyLeaderboardLoading_ = false
+
+-- 菜单排行榜 tab: "history" 或 "daily"
+local menuLeaderboardTab_ = "history"
+-- 菜单是否已加载过排行榜
+local menuLeaderboardLoaded_ = false
 
 -- ============================================================================
 -- 便利：Theme 颜色快捷方法
@@ -1155,11 +1182,13 @@ function HUD.ConsumeKillEvents()
         local streak = evt.killStreak
         if killerIdx ~= 1 then goto continueEvt end
 
-        local killBonus = Config.KillScoreBase
-        if Config.MultiKillBonus[multiKill] then
-            killBonus = killBonus + Config.MultiKillBonus[multiKill]
-        elseif multiKill > 4 then
-            killBonus = killBonus + Config.MultiKillBonus[4] * math.pow(2, multiKill - 4)
+        -- 计算显示用 killBonus（与 Player.lua 逻辑一致）
+        local p1 = playerModule_ and playerModule_.list[1]
+        local cpBonus = p1 and (p1.killScoreBonus or 0) or 0
+        local killBonus = Config.KillScoreBase + cpBonus
+        local multiBonusUnit = Config.MultiKillBonus[2] or 50
+        if multiKill >= 2 then
+            killBonus = killBonus + multiKill * multiBonusUnit
         end
 
         local pc = Config.GetPlayerColor(killerIdx)
@@ -1201,6 +1230,22 @@ function HUD.ConsumeKillEvents()
     end
 
     gameManager_.killEvents = {}
+
+    -- 消费检查点击杀加成事件
+    if gameManager_.checkpointBonusEvents then
+        for _, evt in ipairs(gameManager_.checkpointBonusEvents) do
+            if evt.playerIndex == 1 then
+                table.insert(killFloatTexts_, {
+                    text = "击杀基础分 +" .. 10,
+                    r = Theme.accent[1], g = Theme.accent[2], b = Theme.accent[3],
+                    startTime = time.elapsedTime,
+                    duration = KILL_FLOAT_DURATION,
+                    kind = "streak",
+                })
+            end
+        end
+        gameManager_.checkpointBonusEvents = {}
+    end
 end
 
 --- 更新动效计时器
@@ -1565,92 +1610,151 @@ function HUD.DrawResultScreen()
         nvgText(vg_, cx, 42, "游戏结束")
     end
 
-    -- 排名表面板
-    local tableW = math.min(logW_ * 0.85, 500)
-    local tableX = cx - tableW * 0.5
-    local tableY = 75
-    local rowH = 26
-    local tableH = 24 + #rankings * rowH + 8
-
-    drawPanel(tableX - 6, tableY - 6, tableW + 12, tableH + 12, Theme.radiusLg, 200)
-
-    -- 表头
-    nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 12)
-    fillTheme(Theme.accent, 200)
-
-    local cols = {
-        { x = tableX + 10,            label = "排名", align = NVG_ALIGN_LEFT },
-        { x = tableX + 50,            label = "玩家", align = NVG_ALIGN_LEFT },
-        { x = tableX + tableW * 0.35, label = "总分", align = NVG_ALIGN_CENTER },
-        { x = tableX + tableW * 0.50, label = "高度", align = NVG_ALIGN_CENTER },
-        { x = tableX + tableW * 0.63, label = "击杀", align = NVG_ALIGN_CENTER },
-        { x = tableX + tableW * 0.76, label = "拾取", align = NVG_ALIGN_CENTER },
-        { x = tableX + tableW * 0.89, label = "死亡", align = NVG_ALIGN_CENTER },
-    }
-    for _, col in ipairs(cols) do
-        nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
-        nvgText(vg_, col.x, tableY, col.label)
+    -- 本局战绩（带高亮数字 + 评语）
+    local p1Entry = nil
+    for _, entry in ipairs(rankings) do
+        if entry.index == 1 then p1Entry = entry break end
     end
+    if p1Entry then
+        local floors = math.floor((p1Entry.heightScore or 0) / Config.HeightScoreUnit)
+        local slams = p1Entry.slamHits or 0
+        local gotSlmd = p1Entry.gotSlammed or 0
+        local dths = p1Entry.deaths or 0
+        local kls = p1Entry.kills or 0
+        local gotKld = p1Entry.gotKilled or 0
+        local falls = math.max(0, dths - gotKld)  -- 失足 = 总死亡 - 被杀
 
-    -- 数据行
-    for rank, entry in ipairs(rankings) do
-        local y = tableY + 18 + (rank - 1) * rowH
-        local pc = Config.GetPlayerColor(entry.index)
-        local r = math.floor(pc.r * 255)
-        local g = math.floor(pc.g * 255)
-        local b = math.floor(pc.b * 255)
-
-        -- P1 行高亮
-        if entry.index == 1 then
-            nvgBeginPath(vg_)
-            nvgRoundedRect(vg_, tableX, y - 2, tableW, rowH, Theme.radiusSm)
-            nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 20)))
-            nvgFill(vg_)
-        end
-
-        nvgFontFace(vg_, entry.index == 1 and "bold" or "sans")
-        nvgFontSize(vg_, 14)
-
-        local label = playerNicknames_[entry.index] or ("P" .. entry.index)
-        local values = {
-            "#" .. rank,
-            label,
-            tostring(entry.score),
-            tostring(entry.heightScore),
-            tostring(entry.killScore),
-            tostring(entry.pickupScore),
-            tostring(entry.deaths),
+        -- 定义统计行：{ 前文, 数字, 后文, 前文2, 数字2, 后文2 }
+        local statLines = {
+            { "你爬升了 ", tostring(floors), " 层",    "失足 ", tostring(falls), " 次" },
+            { "砸晕了 ",   tostring(slams),  " 人",    "被砸晕 ", tostring(gotSlmd), " 次" },
+            { "红温了 ",   tostring(dths),   " 次",    nil, nil, nil },
+            { "击杀了 ",   tostring(kls),    " 玩家",  "被爆杀 ", tostring(gotKld), " 次" },
         }
 
-        for ci, col in ipairs(cols) do
-            nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
-            nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-            nvgText(vg_, col.x, y, values[ci])
+        local lineH = 30
+        local startY = 95   -- 标题下方留 2 行间距
+        local fontSize = 21
+
+        for i, sl in ipairs(statLines) do
+            local y = startY + (i - 1) * lineH
+
+            -- 绘制左半：前文 + 高亮数字 + 后文
+            nvgFontFace(vg_, "sans")
+            nvgFontSize(vg_, fontSize)
+            nvgTextAlign(vg_, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
+
+            -- 计算宽度来居中整行
+            local leftPart = sl[1] .. sl[2] .. sl[3]
+            local rightPart = sl[4] and (sl[4] .. sl[5] .. sl[6]) or ""
+            local sep = sl[4] and "，" or ""
+            local fullText = leftPart .. sep .. rightPart
+
+            nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+            local totalW = nvgTextBounds(vg_, 0, 0, fullText)
+            local sx = cx - totalW * 0.5
+
+            -- 逐段绘制（文字用浅色，数字用主题色高亮）
+            local curX = sx
+
+            -- 前文1
+            fillTheme(Theme.textSec, 200)
+            curX = nvgText(vg_, curX, y, sl[1])
+            -- 高亮数字1
+            nvgFontFace(vg_, "bold")
+            nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], 255))
+            curX = nvgText(vg_, curX, y, sl[2])
+            -- 后文1
+            nvgFontFace(vg_, "sans")
+            fillTheme(Theme.textSec, 200)
+            curX = nvgText(vg_, curX, y, sl[3])
+
+            if sl[4] then
+                -- 分隔逗号
+                fillTheme(Theme.textSec, 120)
+                curX = nvgText(vg_, curX, y, "，")
+                -- 前文2
+                fillTheme(Theme.textSec, 200)
+                curX = nvgText(vg_, curX, y, sl[4])
+                -- 高亮数字2
+                nvgFontFace(vg_, "bold")
+                nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], 255))
+                curX = nvgText(vg_, curX, y, sl[5])
+                -- 后文2
+                nvgFontFace(vg_, "sans")
+                fillTheme(Theme.textSec, 200)
+                curX = nvgText(vg_, curX, y, sl[6])
+            end
         end
+
+        -- 调侃评语（按数据特征匹配，每个条件多个候选随机）
+        local comment = nil
+        local seed = floors + kls * 7 + dths * 13 + slams * 3  -- 伪随机种子
+
+        if dths == 0 and kls >= 5 then
+            local pool = {"无敌是多么寂寞", "零死传说，别人都在仰望你", "你是这局的天花板"}
+            comment = pool[seed % #pool + 1]
+        elseif kls >= 10 then
+            local pool = {"杀疯了！你是有多少怨气？", "杀神降临，众生退避", "别杀了，他们已经是残血了"}
+            comment = pool[seed % #pool + 1]
+        elseif gotSlmd >= 10 then
+            local pool = {"我是谁我在哪我要干什么...", "你脑袋上是不是有靶心？", "被砸十次还不跑？勇士！"}
+            comment = pool[seed % #pool + 1]
+        elseif gotKld >= 5 then
+            local pool = {"你确定不是在给别人送分？", "活靶子本人", "经验宝宝：你"}
+            comment = pool[seed % #pool + 1]
+        elseif dths >= 12 then
+            local pool = {"你是不是超级红温？", "建议先深呼吸三次", "键盘还好吗？", "屡败屡战，永不言弃！"}
+            comment = pool[seed % #pool + 1]
+        elseif falls >= 8 then
+            local pool = {"地心引力的忠实信徒", "下面的风景更好看是吧？", "失足八次...你确定有在看屏幕？"}
+            comment = pool[seed % #pool + 1]
+        elseif slams >= 10 then
+            local pool = {"下砸狂魔，无人幸免", "地面在颤抖", "你的屁股是铁做的？"}
+            comment = pool[seed % #pool + 1]
+        elseif floors >= 50 and dths <= 2 then
+            local pool = {"稳如老狗，攀岩大师", "你是壁虎转世吗？", "高处不胜寒，但你无所谓"}
+            comment = pool[seed % #pool + 1]
+        elseif floors <= 5 and dths >= 5 then
+            local pool = {"你是来旅游的吧？", "卡在第一层？需要帮忙吗", "建议先学会走再学跑"}
+            comment = pool[seed % #pool + 1]
+        elseif kls == 0 and dths == 0 then
+            local pool = {"和平主义者，但你确定在玩？", "全程划水大师", "挂机也是一种策略"}
+            comment = pool[seed % #pool + 1]
+        elseif kls == 0 and dths >= 3 then
+            local pool = {"人畜无害小绵羊", "菩萨心肠，送分童子", "不杀生是你的信仰"}
+            comment = pool[seed % #pool + 1]
+        elseif slams == 0 and gotSlmd >= 3 then
+            local pool = {"总是被砸，从不还手", "善良得让人心疼", "你的头很铁，但心更软"}
+            comment = pool[seed % #pool + 1]
+        elseif kls >= 5 and gotKld == 0 then
+            local pool = {"单方面的屠杀", "他们连碰都碰不到你", "猎人与猎物的差距"}
+            comment = pool[seed % #pool + 1]
+        elseif floors >= 30 then
+            local pool = {"勇攀高峰！", "登高望远，豪情万丈", "离天空又近了一步"}
+            comment = pool[seed % #pool + 1]
+        elseif dths >= 5 and kls >= 3 then
+            local pool = {"有来有回，势均力敌", "杀敌一千，自损八百", "这才是真正的乱斗！"}
+            comment = pool[seed % #pool + 1]
+        else
+            local pool = {"再来一局，争取更好！", "热身结束，来真的！", "不错的表现，继续加油"}
+            comment = pool[seed % #pool + 1]
+        end
+
+        local commentY = startY + #statLines * lineH + fontSize * 2  -- 统计数据下方留 2 行间距
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 16)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 200))
+        nvgText(vg_, cx, commentY, "「" .. comment .. "」")
     end
 
-    -- 分割线（渐变金色）
-    local divY = tableY + 18 + #rankings * rowH + 10
-    local divPaint = nvgLinearGradient(vg_, tableX, divY, tableX + tableW, divY,
-        nvgRGBA(Theme.rgba(Theme.primary, 0)), nvgRGBA(Theme.rgba(Theme.primary, 80)))
-    nvgBeginPath(vg_)
-    nvgMoveTo(vg_, tableX, divY)
-    nvgLineTo(vg_, tableX + tableW * 0.5, divY)
-    nvgStrokePaint(vg_, divPaint)
-    nvgStrokeWidth(vg_, 1)
-    nvgStroke(vg_)
-    local divPaint2 = nvgLinearGradient(vg_, tableX + tableW * 0.5, divY, tableX + tableW, divY,
-        nvgRGBA(Theme.rgba(Theme.primary, 80)), nvgRGBA(Theme.rgba(Theme.primary, 0)))
-    nvgBeginPath(vg_)
-    nvgMoveTo(vg_, tableX + tableW * 0.5, divY)
-    nvgLineTo(vg_, tableX + tableW, divY)
-    nvgStrokePaint(vg_, divPaint2)
-    nvgStrokeWidth(vg_, 1)
-    nvgStroke(vg_)
-
-    -- 云端排行榜
-    local cloudY = divY + 10
+    -- 排行榜（仅云端）
+    local tableW = math.min(logW_ * 0.85, 500)
+    local tableX = cx - tableW * 0.5
+    -- 调侃话语下方留 4 行间距（commentY 约在统计区末尾 + 2行处）
+    -- stats end ≈ 95 + 4*30 = 215, commentY ≈ 215 + 42 = 257, cloudY ≈ 257 + 84 = 341
+    local cloudY = 345
     HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX)
 
     -- 底部按钮
@@ -1672,6 +1776,9 @@ function HUD.DrawResultScreen()
         cloudScoreSubmitted_ = false
         cloudLeaderboard_ = nil
         cloudLeaderboardLoading_ = false
+        dailyLeaderboard_ = nil
+        dailyLeaderboardLoading_ = false
+        menuLeaderboardLoaded_ = false
         -- 重置状态跟踪和浮字
         prevPlayerStates_ = {}
         statusFloats_ = {}
@@ -1688,6 +1795,9 @@ function HUD.DrawResultScreen()
         cloudScoreSubmitted_ = false
         cloudLeaderboard_ = nil
         cloudLeaderboardLoading_ = false
+        dailyLeaderboard_ = nil
+        dailyLeaderboardLoading_ = false
+        menuLeaderboardLoaded_ = false
         -- 重置状态跟踪和浮字
         prevPlayerStates_ = {}
         statusFloats_ = {}
@@ -1699,7 +1809,12 @@ end
 -- 云端排行榜
 -- ============================================================================
 
---- 提交玩家分数到云端
+--- 获取今日日期 key（用于今日排行榜）
+local function getTodayKey()
+    return "daily_" .. os.date("%Y%m%d")
+end
+
+--- 提交玩家分数到云端（历史最高 + 今日最高）
 function HUD.SubmitCloudScore(rankings)
     local p1Entry = nil
     for _, entry in ipairs(rankings) do
@@ -1715,48 +1830,55 @@ function HUD.SubmitCloudScore(rankings)
         return
     end
 
+    local kills = p1Entry.killScore or 0
+    local height = p1Entry.maxHeight or 0
+    local dailyKey = getTodayKey()
+
     clientCloud:Get("high_score", {
         ok = function(values, iscores)
             local oldScore = iscores.high_score or 0
+            local oldDaily = iscores[dailyKey] or 0
+            local batch = clientCloud:BatchSet()
+            -- 历史最高
             if score > oldScore then
-                clientCloud:BatchSet()
-                    :SetInt("high_score", score)
-                    :SetInt("max_height", p1Entry.maxHeight or 0)
-                    :Add("play_count", 1)
-                    :Save("game result", {
-                        ok = function()
-                            print("[HUD] Cloud score submitted: " .. score)
-                            HUD.LoadCloudLeaderboard()
-                        end,
-                        error = function(code, reason)
-                            print("[HUD] Cloud submit error: " .. tostring(reason))
-                            HUD.LoadCloudLeaderboard()
-                        end
-                    })
-            else
-                clientCloud:Add("play_count", 1, {
-                    ok = function()
-                        print("[HUD] Play count incremented")
-                        HUD.LoadCloudLeaderboard()
-                    end,
-                    error = function(code, reason)
-                        HUD.LoadCloudLeaderboard()
-                    end
-                })
+                batch:SetInt("high_score", score)
+                batch:SetInt("max_height", height)
+                batch:SetInt("max_kills", kills)
             end
+            -- 今日最高
+            if score > oldDaily then
+                batch:SetInt(dailyKey, score)
+            end
+            batch:Add("play_count", 1)
+            batch:Save("game result", {
+                ok = function()
+                    print("[HUD] Cloud score submitted: " .. score .. " kills: " .. kills)
+                    HUD.LoadCloudLeaderboard()
+                    HUD.LoadDailyLeaderboard()
+                end,
+                error = function(code, reason)
+                    print("[HUD] Cloud submit error: " .. tostring(reason))
+                    HUD.LoadCloudLeaderboard()
+                    HUD.LoadDailyLeaderboard()
+                end
+            })
         end,
         error = function(code, reason)
             print("[HUD] Cloud get error: " .. tostring(reason))
             clientCloud:BatchSet()
                 :SetInt("high_score", score)
-                :SetInt("max_height", p1Entry.maxHeight or 0)
+                :SetInt("max_height", height)
+                :SetInt("max_kills", kills)
+                :SetInt(dailyKey, score)
                 :Add("play_count", 1)
                 :Save("game result", {
                     ok = function()
                         HUD.LoadCloudLeaderboard()
+                        HUD.LoadDailyLeaderboard()
                     end,
                     error = function()
                         HUD.LoadCloudLeaderboard()
+                        HUD.LoadDailyLeaderboard()
                     end
                 })
         end
@@ -1823,6 +1945,70 @@ function HUD.LoadCloudLeaderboard()
     }, "max_height", "play_count")
 end
 
+--- 加载今日排行榜
+function HUD.LoadDailyLeaderboard()
+    if not clientCloud then return end
+    if dailyLeaderboardLoading_ then return end
+
+    dailyLeaderboardLoading_ = true
+    dailyLeaderboard_ = nil
+
+    local dailyKey = getTodayKey()
+    clientCloud:GetRankList(dailyKey, 0, 10, {
+        ok = function(rankList)
+            local leaderboard = {}
+            local userIds = {}
+            for i, item in ipairs(rankList) do
+                local dailyScore = item.iscore[dailyKey] or 0
+                if dailyScore > 0 then
+                    table.insert(leaderboard, {
+                        rank = #leaderboard + 1,
+                        userId = item.userId,
+                        score = dailyScore,
+                        maxHeight = item.iscore.max_height or 0,
+                        playCount = item.iscore.play_count or 0,
+                        isMe = item.userId == clientCloud.userId,
+                    })
+                    table.insert(userIds, item.userId)
+                end
+            end
+
+            if #userIds == 0 then
+                dailyLeaderboard_ = leaderboard
+                dailyLeaderboardLoading_ = false
+                return
+            end
+
+            GetUserNickname({
+                userIds = userIds,
+                onSuccess = function(nicknames)
+                    local map = {}
+                    for _, info in ipairs(nicknames) do
+                        map[info.userId] = info.nickname or ""
+                    end
+                    for _, entry in ipairs(leaderboard) do
+                        entry.nickname = map[entry.userId] or "未知"
+                    end
+                    dailyLeaderboard_ = leaderboard
+                    dailyLeaderboardLoading_ = false
+                    print("[HUD] Daily leaderboard loaded: " .. #leaderboard .. " entries")
+                end,
+                onError = function(errorCode)
+                    for _, entry in ipairs(leaderboard) do
+                        entry.nickname = "玩家"
+                    end
+                    dailyLeaderboard_ = leaderboard
+                    dailyLeaderboardLoading_ = false
+                end
+            })
+        end,
+        error = function(code, reason)
+            print("[HUD] Daily leaderboard load error: " .. tostring(reason))
+            dailyLeaderboardLoading_ = false
+        end
+    }, "max_height", "play_count")
+end
+
 --- 绘制云端排行榜（在结算画面中）
 function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
     -- 标题（金色）
@@ -1830,7 +2016,7 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
     nvgFontSize(vg_, 16)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 230)
-    nvgText(vg_, cx, startY, "云端排行榜")
+    nvgText(vg_, cx, startY, "排行榜")
 
     local contentY = startY + 24
 
@@ -1847,7 +2033,7 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
         nvgFontSize(vg_, 14)
         fillTheme(Theme.textSec, 180)
         if not clientCloud then
-            nvgText(vg_, cx, contentY, "云端排行榜暂不可用")
+            nvgText(vg_, cx, contentY, "排行榜暂不可用")
         else
             nvgText(vg_, cx, contentY, "暂无数据")
         end
@@ -2088,15 +2274,15 @@ function HUD.DrawMenu()
     nvgFontSize(vg_, 16)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     fillTheme(Theme.textSec, 200)
-    nvgText(vg_, cx, subtitleY, "大地图攀登挑战  3分钟限时赛")
+    nvgText(vg_, cx, subtitleY, "大地图攀登挑战  2分钟限时赛")
 
     -- 开始按钮（金色，居中大按钮）
     local mx = input.mousePosition.x / dpr_
     local my = input.mousePosition.y / dpr_
 
     local btnW = 180
-    local btnH = 56
-    local btnY = subtitleY + 32
+    local btnH = 50
+    local btnY = subtitleY + 28
     local btnX = cx - btnW * 0.5
 
     local hovered = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
@@ -2104,6 +2290,159 @@ function HUD.DrawMenu()
         Theme.primary[1], Theme.primary[2], Theme.primary[3], hovered)
     if clicked then
         menuButtonClicked_ = "startGame"
+    end
+
+    -- ====================================================================
+    -- 排行榜区域（历史 / 今日 Tab 切换）
+    -- ====================================================================
+    local lbTop = btnY + btnH + 16
+    local lbW = math.min(logW_ * 0.85, 460)
+    local lbX = cx - lbW * 0.5
+
+    -- 首次进入菜单时自动加载
+    if not menuLeaderboardLoaded_ then
+        menuLeaderboardLoaded_ = true
+        HUD.LoadCloudLeaderboard()
+        HUD.LoadDailyLeaderboard()
+    end
+
+    -- Tab 按钮
+    local tabW = 80
+    local tabH = 26
+    local tabGap = 8
+    local tabTotalW = tabW * 2 + tabGap
+    local tabX = cx - tabTotalW * 0.5
+    local tabY = lbTop
+
+    -- "历史排行" tab
+    local histHover = mx >= tabX and mx <= tabX + tabW and my >= tabY and my <= tabY + tabH
+    local histActive = menuLeaderboardTab_ == "history"
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, tabX, tabY, tabW, tabH, Theme.radiusSm)
+    if histActive then
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, histHover and 180 or 120)))
+    end
+    nvgFill(vg_)
+    nvgFontFace(vg_, histActive and "bold" or "sans")
+    nvgFontSize(vg_, 13)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, histActive and 255 or 180))
+    nvgText(vg_, tabX + tabW * 0.5, tabY + tabH * 0.5, "历史排行")
+
+    if cachedMousePress_ and histHover and not histActive then
+        menuLeaderboardTab_ = "history"
+    end
+
+    -- "今日排行" tab
+    local dailyTabX = tabX + tabW + tabGap
+    local dailyHover = mx >= dailyTabX and mx <= dailyTabX + tabW and my >= tabY and my <= tabY + tabH
+    local dailyActive = menuLeaderboardTab_ == "daily"
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, dailyTabX, tabY, tabW, tabH, Theme.radiusSm)
+    if dailyActive then
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, dailyHover and 180 or 120)))
+    end
+    nvgFill(vg_)
+    nvgFontFace(vg_, dailyActive and "bold" or "sans")
+    nvgFontSize(vg_, 13)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, dailyActive and 255 or 180))
+    nvgText(vg_, dailyTabX + tabW * 0.5, tabY + tabH * 0.5, "今日排行")
+
+    if cachedMousePress_ and dailyHover and not dailyActive then
+        menuLeaderboardTab_ = "daily"
+    end
+
+    -- 排行榜内容区
+    local contentY = tabY + tabH + 8
+    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or dailyLeaderboard_
+    local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or dailyLeaderboardLoading_
+
+    -- 面板背景
+    local panelH = 200
+    drawPanel(lbX - 6, contentY - 4, lbW + 12, panelH + 8, Theme.radiusMd, 160)
+
+    if isLoading then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 14)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        fillTheme(Theme.textSec, 180)
+        nvgText(vg_, cx, contentY + panelH * 0.5, "加载中...")
+    elseif not currentData or #currentData == 0 then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 14)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        fillTheme(Theme.textSec, 180)
+        if not clientCloud then
+            nvgText(vg_, cx, contentY + panelH * 0.5, "排行榜暂不可用")
+        else
+            nvgText(vg_, cx, contentY + panelH * 0.5, "暂无数据")
+        end
+    else
+        -- 表头
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 11)
+        fillTheme(Theme.accent, 180)
+        local lbCols = {
+            { x = lbX + 10,          label = "#",    align = NVG_ALIGN_LEFT },
+            { x = lbX + 30,          label = "昵称",  align = NVG_ALIGN_LEFT },
+            { x = lbX + lbW * 0.55,  label = "最高分", align = NVG_ALIGN_CENTER },
+            { x = lbX + lbW * 0.75,  label = "最高高度", align = NVG_ALIGN_CENTER },
+            { x = lbX + lbW * 0.92,  label = "场次", align = NVG_ALIGN_CENTER },
+        }
+        for _, col in ipairs(lbCols) do
+            nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
+            nvgText(vg_, col.x, contentY, col.label)
+        end
+
+        local rowH = 18
+        for i, entry in ipairs(currentData) do
+            if i > 10 then break end
+            local y = contentY + 16 + (i - 1) * rowH
+
+            if entry.isMe then
+                nvgBeginPath(vg_)
+                nvgRoundedRect(vg_, lbX, y - 2, lbW, rowH, 3)
+                nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 20)))
+                nvgFill(vg_)
+            end
+
+            nvgFontFace(vg_, entry.isMe and "bold" or "sans")
+            nvgFontSize(vg_, 12)
+
+            local nameDisplay = entry.nickname or "玩家"
+            if entry.isMe then nameDisplay = nameDisplay .. " (我)" end
+            if #nameDisplay > 16 then nameDisplay = nameDisplay:sub(1, 14) .. ".." end
+
+            local values = {
+                tostring(entry.rank),
+                nameDisplay,
+                tostring(entry.score),
+                tostring(entry.maxHeight),
+                tostring(entry.playCount),
+            }
+
+            local textColor
+            if entry.isMe then
+                textColor = nvgRGBA(Theme.rgba(Theme.primary, 255))
+            elseif entry.rank == 1 then
+                textColor = nvgRGBA(Theme.rgba(Theme.primary, 240))
+            elseif entry.rank <= 3 then
+                textColor = nvgRGBA(Theme.rgba(Theme.text, 220))
+            else
+                textColor = nvgRGBA(Theme.rgba(Theme.textSec, 180))
+            end
+
+            for ci, col in ipairs(lbCols) do
+                nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
+                nvgFillColor(vg_, textColor)
+                nvgText(vg_, col.x, y, values[ci])
+            end
+        end
     end
 
     -- 底部操作说明（带渐变背景条）

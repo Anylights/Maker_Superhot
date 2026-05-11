@@ -103,7 +103,26 @@ local playerNicknames_ = {}  -- [playerIndex] = "昵称"
 --- 为所有玩家分配昵称
 local function assignNicknames()
     playerNicknames_ = {}
-    playerNicknames_[1] = "You"  -- 人类玩家
+    playerNicknames_[1] = "你"  -- 默认先显示"你"，异步获取TapTap昵称后替换
+
+    -- 异步获取当前用户的 TapTap 昵称
+    if clientCloud and clientCloud.userId then
+        GetUserNickname({
+            userIds = { clientCloud.userId },
+            onSuccess = function(nicknames)
+                if nicknames and #nicknames > 0 then
+                    local nick = nicknames[1].nickname
+                    if nick and nick ~= "" then
+                        playerNicknames_[1] = nick
+                        print("[HUD] Player nickname: " .. nick)
+                    end
+                end
+            end,
+            onError = function(errorCode)
+                print("[HUD] Failed to get user nickname, keeping default")
+            end
+        })
+    end
 
     -- 打乱昵称池（Fisher-Yates）
     local pool = {}
@@ -957,7 +976,12 @@ end
 function HUD.DrawScoreRankings()
     if gameManager_ == nil or playerModule_ == nil then return end
 
-    local rankings = gameManager_.GetRankings()
+    local allRankings = gameManager_.GetRankings()
+    -- 只显示前10名
+    local rankings = {}
+    for i = 1, math.min(10, #allRankings) do
+        rankings[i] = allRankings[i]
+    end
     local panelW = 140
     local lineH = 22
     local headerH = 22
@@ -973,7 +997,7 @@ function HUD.DrawScoreRankings()
     nvgFontSize(vg_, 12)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 220)
-    nvgText(vg_, panelX + panelW * 0.5, panelY + 5, "SCORE")
+    nvgText(vg_, panelX + panelW * 0.5, panelY + 5, "排行")
 
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 14)
@@ -1004,8 +1028,8 @@ function HUD.DrawScoreRankings()
         end
         nvgText(vg_, panelX + 8, y + 3, "#" .. rank)
 
-        -- 玩家名
-        local label = entry.index == 1 and "You" or ("P" .. entry.index)
+        -- 玩家名（使用昵称）
+        local label = playerNicknames_[entry.index] or ("P" .. entry.index)
         nvgFontFace(vg_, entry.index == 1 and "bold" or "sans")
         nvgFontSize(vg_, 13)
         nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
@@ -1114,7 +1138,7 @@ function HUD.DrawHeightIndicator()
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, 11)
     fillTheme(Theme.primary, 180)
-    nvgText(vg_, x + 10, y + 30, "MAX " .. maxBlocks)
+    nvgText(vg_, x + 10, y + 30, "最高 " .. maxBlocks)
 end
 
 -- ============================================================================
@@ -1208,7 +1232,7 @@ function HUD.DrawPlayerScore()
     if not p1 then return end
 
     local pw = 130
-    local ph = 46
+    local ph = 54
     local x = 12
     local y = 12
 
@@ -1219,7 +1243,7 @@ function HUD.DrawPlayerScore()
     nvgFontSize(vg_, 10)
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.accent, 180)
-    nvgText(vg_, x + 10, y + 6, "SCORE")
+    nvgText(vg_, x + 10, y + 6, "得分")
 
     -- 分数数字（金色渐变效果模拟）
     nvgFontFace(vg_, "bold")
@@ -1256,7 +1280,7 @@ function HUD.DrawKillScorePanel()
     nvgFontSize(vg_, 12)
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 200)
-    nvgText(vg_, panelX, panelY, "KILLS")
+    nvgText(vg_, panelX, panelY, "击杀")
 
     for i = 1, Config.NumPlayers do
         local y = panelY + headerH + (i - 1) * lineH
@@ -1289,7 +1313,7 @@ function HUD.DrawKillScorePanel()
 
         nvgFontFace(vg_, "sans")
         nvgFontSize(vg_, 13)
-        local label = playerNicknames_[i] or (i == 1 and "You" or ("P" .. i))
+        local label = playerNicknames_[i] or ("P" .. i)
         -- 截断过长昵称（面板空间有限）
         if #label > 12 then label = string.sub(label, 1, 12) end
         nvgFillColor(vg_, nvgRGBA(r, g, b, 220))
@@ -1588,7 +1612,7 @@ function HUD.DrawResultScreen()
         nvgFontFace(vg_, entry.index == 1 and "bold" or "sans")
         nvgFontSize(vg_, 14)
 
-        local label = entry.index == 1 and "You" or ("P" .. entry.index)
+        local label = playerNicknames_[entry.index] or ("P" .. entry.index)
         local values = {
             "#" .. rank,
             label,

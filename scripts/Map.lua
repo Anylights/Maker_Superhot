@@ -275,8 +275,8 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         geom:SetMaterial(mat)
     end
 
-    -- 描边子节点（检查点方块不加描边，保持单层视觉）
-    if blockType ~= Config.BLOCK_CHECKPOINT then
+    -- 描边子节点
+    do
         local outlineNode = node:CreateChild("Outline")
         outlineNode.position = Vector3(0, 0, 0.1)
         outlineNode.scale = Vector3(1.12, 1.12, 1.0)
@@ -295,7 +295,7 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         local isLeftEdge = (leftType ~= blockType)
         local isRightEdge = (rightType ~= blockType)
         local flagColor = (blockType == Config.BLOCK_FINISH)
-            and Color(1.0, 0.85, 0.1) or Color(0.3, 0.5, 0.9)
+            and Color(1.0, 0.85, 0.1) or Color(0.22, 0.855, 0.867)
         if isLeftEdge then
             Map.CreateFlag(node, bs, flagColor, false)
         end

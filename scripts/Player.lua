@@ -319,40 +319,57 @@ function Player.Create(index, isHuman)
     }
 
     -- =====================
-    -- 拖尾粒子发射器（持续型，根据速度开关）
+    -- 拖尾粒子发射器（在 scene 下创建，每帧跟随角色位置）
+    -- 必须挂在 scene 而不是角色子节点，否则粒子会跟着角色走，看不到拖尾
     -- =====================
-    local trailEffect = ParticleEffect:new()
-    local color = Config.GetPlayerColor(index)
-    local tR, tG, tB = boostSaturation(color.r, color.g, color.b)
-    local trailMat = makeCircleMat(tR, tG, tB)
-    trailEffect:SetMaterial(trailMat)
-    trailEffect:SetNumParticles(30)
-    trailEffect:SetEmitterType(EMITTER_SPHERE)
-    trailEffect:SetEmitterSize(Vector3(0.2, 0.2, 0.1))
-    trailEffect:SetMinDirection(Vector3(-0.3, -0.3, -0.1))
-    trailEffect:SetMaxDirection(Vector3(0.3, 0.3, 0.1))
-    trailEffect:SetMinVelocity(0.2)
-    trailEffect:SetMaxVelocity(0.8)
-    trailEffect:SetDampingForce(1.0)
-    trailEffect:SetMinParticleSize(Vector2(0.04, 0.04))
-    trailEffect:SetMaxParticleSize(Vector2(0.08, 0.08))
-    trailEffect:SetSizeAdd(-0.05)
-    trailEffect:SetMinTimeToLive(0.15)
-    trailEffect:SetMaxTimeToLive(0.35)
-    trailEffect:SetMinEmissionRate(20)
-    trailEffect:SetMaxEmissionRate(35)
-    trailEffect:SetNumColorFrames(3)
-    trailEffect:SetColorFrame(0, ColorFrame(Color(tR, tG, tB, 0.5), 0.0))
-    trailEffect:SetColorFrame(1, ColorFrame(Color(tR, tG, tB, 0.25), 0.5))
-    trailEffect:SetColorFrame(2, ColorFrame(Color(tR, tG, tB, 0.0), 1.0))
+    do
+        local trailEffect = ParticleEffect:new()
+        local clr = Config.GetPlayerColor(index)
+        -- 拉到最大亮度确保鲜艳
+        local maxC = math.max(clr.r, clr.g, clr.b, 0.01)
+        local tR = math.min(1.0, clr.r / maxC * 1.2)
+        local tG = math.min(1.0, clr.g / maxC * 1.2)
+        local tB = math.min(1.0, clr.b / maxC * 1.2)
+        local trailMat = makeCircleMat(tR, tG, tB)
+        trailEffect:SetMaterial(trailMat)
+        trailEffect:SetNumParticles(60)
+        trailEffect:SetEmitterType(EMITTER_SPHERE)
+        trailEffect:SetEmitterSize(Vector3(0.15, 0.15, 0.05))
+        -- 粒子几乎不主动移动，留在原地形成拖尾
+        trailEffect:SetMinDirection(Vector3(-0.1, 0.05, 0))
+        trailEffect:SetMaxDirection(Vector3(0.1, 0.15, 0))
+        trailEffect:SetMinVelocity(0.05)
+        trailEffect:SetMaxVelocity(0.3)
+        trailEffect:SetDampingForce(3.0)
+        -- 粒子大小
+        trailEffect:SetMinParticleSize(Vector2(0.08, 0.08))
+        trailEffect:SetMaxParticleSize(Vector2(0.15, 0.15))
+        trailEffect:SetSizeAdd(-0.08)
+        -- 生命期
+        trailEffect:SetMinTimeToLive(0.2)
+        trailEffect:SetMaxTimeToLive(0.45)
+        trailEffect:SetMinEmissionRate(30)
+        trailEffect:SetMaxEmissionRate(50)
+        -- 颜色渐变：鲜艳 → 淡出
+        trailEffect:SetNumColorFrames(3)
+        trailEffect:SetColorFrame(0, ColorFrame(Color(tR, tG, tB, 0.85), 0.0))
+        trailEffect:SetColorFrame(1, ColorFrame(Color(tR, tG, tB, 0.4), 0.5))
+        trailEffect:SetColorFrame(2, ColorFrame(Color(tR, tG, tB, 0.0), 1.0))
 
-    local trailNode = node:CreateChild("TrailFX", LOCAL)
-    trailNode.position = Vector3(0, 0, 0.1)
-    local trailEmitter = trailNode:CreateComponent("ParticleEmitter")
-    trailEmitter.effect = trailEffect
-    trailEmitter.emitting = false  -- 初始关闭，运动时开启
+        -- 挂在 scene 下而不是角色子节点
+        local trailNode = scene_:CreateChild("TrailFX_" .. index, LOCAL)
+        local pos = node.position
+        trailNode.position = Vector3(pos.x, pos.y, -0.3)
+        local trailEmitter = trailNode:CreateComponent("ParticleEmitter")
+        trailEmitter.effect = trailEffect
+        trailEmitter.emitting = false  -- 初始关闭，运动时开启
 
-    p.trailEmitter = trailEmitter
+        p.trailEmitter = trailEmitter
+        p.trailNode = trailNode
+        p.trailColorR = tR
+        p.trailColorG = tG
+        p.trailColorB = tB
+    end
 
     -- 注册碰撞回调
     node:CreateScriptObject("PlayerCollision")
@@ -762,6 +779,51 @@ function Player.DoSlamLanding(p)
     Camera.Shake(0.10, 0.15, pos)
     SFX.Play("explosion", 0.6, pos.x, pos.y)
 
+    -- 下砸落地粒子爆发（水平扩散的小圆粒子，高饱和鲜艳）
+    if scene_ then
+        local slamFXNode = scene_:CreateChild("SlamLandFX", LOCAL)
+        slamFXNode.position = Vector3(pos.x, pos.y - 0.3, -0.4)
+
+        local slamEffect = ParticleEffect:new()
+        local clr = Config.GetPlayerColor(p.index)
+        -- 直接用原始颜色并拉到最大亮度，确保鲜艳
+        local maxC = math.max(clr.r, clr.g, clr.b, 0.01)
+        local sR = math.min(1.0, clr.r / maxC * 1.2)
+        local sG = math.min(1.0, clr.g / maxC * 1.2)
+        local sB = math.min(1.0, clr.b / maxC * 1.2)
+        local slamMat = makeCircleMat(sR, sG, sB)
+        slamEffect:SetMaterial(slamMat)
+        slamEffect:SetNumParticles(30)
+        slamEffect:SetEmitterType(EMITTER_SPHERE)
+        slamEffect:SetEmitterSize(Vector3(0.25, 0.05, 0.1))
+        -- 水平向两侧扩散，略微向上
+        slamEffect:SetMinDirection(Vector3(-1.0, 0.2, -0.1))
+        slamEffect:SetMaxDirection(Vector3(1.0, 0.8, 0.1))
+        slamEffect:SetMinVelocity(2.5)
+        slamEffect:SetMaxVelocity(6.0)
+        slamEffect:SetDampingForce(3.0)
+        slamEffect:SetConstantForce(Vector3(0, -5, 0))
+        slamEffect:SetMinParticleSize(Vector2(0.06, 0.06))
+        slamEffect:SetMaxParticleSize(Vector2(0.12, 0.12))
+        slamEffect:SetSizeAdd(-0.08)
+        slamEffect:SetMinTimeToLive(0.2)
+        slamEffect:SetMaxTimeToLive(0.45)
+        slamEffect:SetMinEmissionRate(250)
+        slamEffect:SetMaxEmissionRate(350)
+        slamEffect:SetActiveTime(0.08)
+        slamEffect:SetInactiveTime(999)
+        slamEffect:SetNumColorFrames(3)
+        -- 起始极亮白闪 → 高饱和玩家色 → 淡出
+        slamEffect:SetColorFrame(0, ColorFrame(Color(1.0, 1.0, 1.0, 1.0), 0.0))
+        slamEffect:SetColorFrame(1, ColorFrame(Color(sR, sG, sB, 0.9), 0.2))
+        slamEffect:SetColorFrame(2, ColorFrame(Color(sR, sG, sB, 0.0), 1.0))
+
+        local slamEmitter = slamFXNode:CreateComponent("ParticleEmitter")
+        slamEmitter.effect = slamEffect
+        slamEmitter.emitting = true
+        slamEmitter.autoRemoveMode = REMOVE_NODE
+    end
+
     -- 击退周围玩家
     local hitAnyPlayer = false
     for _, other in ipairs(Player.list) do
@@ -1070,9 +1132,12 @@ function Player.UpdateVisualEffects(p, dt)
     end
 
     -- =====================
-    -- 拖尾粒子开关：移动或下落时开启
+    -- 拖尾粒子：每帧同步位置到角色 + 速度判断开关
+    -- trailNode 挂在 scene 下，需要手动跟随
     -- =====================
-    if p.trailEmitter then
+    if p.trailEmitter and p.trailNode and p.node then
+        local pos = p.node.position
+        p.trailNode.position = Vector3(pos.x, pos.y, -0.3)
         local vel = p.body and p.body.linearVelocity or Vector3.ZERO
         local speedH = math.abs(vel.x)
         local speedV = vel.y

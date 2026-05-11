@@ -318,6 +318,42 @@ function Player.Create(index, isHuman)
         idleTimer = 0,         -- 静止计时器
     }
 
+    -- =====================
+    -- 拖尾粒子发射器（持续型，根据速度开关）
+    -- =====================
+    local trailEffect = ParticleEffect:new()
+    local color = Config.GetPlayerColor(index)
+    local tR, tG, tB = boostSaturation(color.r, color.g, color.b)
+    local trailMat = makeCircleMat(tR, tG, tB)
+    trailEffect:SetMaterial(trailMat)
+    trailEffect:SetNumParticles(30)
+    trailEffect:SetEmitterType(EMITTER_SPHERE)
+    trailEffect:SetEmitterSize(Vector3(0.2, 0.2, 0.1))
+    trailEffect:SetMinDirection(Vector3(-0.3, -0.3, -0.1))
+    trailEffect:SetMaxDirection(Vector3(0.3, 0.3, 0.1))
+    trailEffect:SetMinVelocity(0.2)
+    trailEffect:SetMaxVelocity(0.8)
+    trailEffect:SetDampingForce(1.0)
+    trailEffect:SetMinParticleSize(Vector2(0.04, 0.04))
+    trailEffect:SetMaxParticleSize(Vector2(0.08, 0.08))
+    trailEffect:SetSizeAdd(-0.05)
+    trailEffect:SetMinTimeToLive(0.15)
+    trailEffect:SetMaxTimeToLive(0.35)
+    trailEffect:SetMinEmissionRate(20)
+    trailEffect:SetMaxEmissionRate(35)
+    trailEffect:SetNumColorFrames(3)
+    trailEffect:SetColorFrame(0, ColorFrame(Color(tR, tG, tB, 0.5), 0.0))
+    trailEffect:SetColorFrame(1, ColorFrame(Color(tR, tG, tB, 0.25), 0.5))
+    trailEffect:SetColorFrame(2, ColorFrame(Color(tR, tG, tB, 0.0), 1.0))
+
+    local trailNode = node:CreateChild("TrailFX", LOCAL)
+    trailNode.position = Vector3(0, 0, 0.1)
+    local trailEmitter = trailNode:CreateComponent("ParticleEmitter")
+    trailEmitter.effect = trailEffect
+    trailEmitter.emitting = false  -- 初始关闭，运动时开启
+
+    p.trailEmitter = trailEmitter
+
     -- 注册碰撞回调
     node:CreateScriptObject("PlayerCollision")
     local scriptObj = node:GetScriptObject()
@@ -722,11 +758,12 @@ function Player.DoSlamLanding(p)
     p.squashVelY = 0
     p.squashVelX = 0
 
-    -- 屏幕震动（仅在视野内）
-    Camera.Shake(0.25, 0.2, pos)
+    -- 屏幕震动（仅在视野内，幅度适中）
+    Camera.Shake(0.10, 0.15, pos)
     SFX.Play("explosion", 0.6, pos.x, pos.y)
 
     -- 击退周围玩家
+    local hitAnyPlayer = false
     for _, other in ipairs(Player.list) do
         if other.index ~= p.index and other.alive and other.node and other.body then
             if other.invincibleTimer > 0 then goto continueSL end
@@ -735,6 +772,7 @@ function Player.DoSlamLanding(p)
             local dy = math.abs(diff.y)
             -- 水平距离在 SlamRadius 内且垂直距离合理（不超过 2 格）
             if dx < Config.SlamRadius and dy < 2.0 and (dx + dy) > 0.01 then
+                hitAnyPlayer = true
                 -- 击飞方向：从砸地点水平朝外
                 local kbDir = (diff.x >= 0) and 1 or -1
                 other.body.linearVelocity = Vector3(
@@ -752,6 +790,19 @@ function Player.DoSlamLanding(p)
             end
             ::continueSL::
         end
+    end
+
+    -- 砸中其他玩家时弹跳起（约两次跳跃高度）
+    if hitAnyPlayer and p.body then
+        local bounceSpeed = Config.JumpSpeed * 1.42  -- sqrt(2) ≈ 两倍跳跃高度
+        p.body.linearVelocity = Vector3(p.body.linearVelocity.x, bounceSpeed, 0)
+        p.slamming = false
+        p.jumpCount = 0  -- 重置跳跃次数，允许空中再跳
+        -- 弹跳视觉：纵向拉伸
+        p.squashScaleY = 1.35
+        p.squashScaleX = 0.7
+        p.squashVelY = 0
+        p.squashVelX = 0
     end
 end
 
@@ -1016,6 +1067,18 @@ function Player.UpdateVisualEffects(p, dt)
         end
     else
         if stunOverlay then stunOverlay.enabled = false end
+    end
+
+    -- =====================
+    -- 拖尾粒子开关：移动或下落时开启
+    -- =====================
+    if p.trailEmitter then
+        local vel = p.body and p.body.linearVelocity or Vector3.ZERO
+        local speedH = math.abs(vel.x)
+        local speedV = vel.y
+        -- 水平移动速度 > 1.5 或下落速度 > 3.0 时开启拖尾
+        local shouldTrail = p.alive and (speedH > 1.5 or speedV < -3.0)
+        p.trailEmitter.emitting = shouldTrail
     end
 
     -- =====================

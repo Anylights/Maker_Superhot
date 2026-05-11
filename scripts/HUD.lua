@@ -85,6 +85,100 @@ local KILL_BOUNCE_DURATION = 0.8
 local scorePopups_ = {}
 local SCORE_POPUP_DURATION = 1.2
 
+-- ============================================================================
+-- 玩家昵称系统
+-- ============================================================================
+
+-- 随机昵称池（中文游戏风格）
+local NICKNAME_POOL = {
+    "疾风剑豪", "暴走萝莉", "星空猎手", "月光骑士", "影子刺客",
+    "雷霆战神", "冰霜女王", "烈焰法师", "暗夜行者", "光明使者",
+    "钢铁巨人", "翡翠弓手", "黄金矿工", "紫电真君", "碧海潮生",
+    "风暴使者", "极光守卫", "幽灵杀手", "赤焰狂狮", "苍穹之鹰",
+    "破晓勇士", "冰封王座", "龙牙战士", "银月刺客", "黑曜石心",
+    "天狼星辰", "赤红之瞳", "狂野猎犬", "蔚蓝骑士", "暗影魔导",
+}
+local playerNicknames_ = {}  -- [playerIndex] = "昵称"
+
+--- 为所有玩家分配昵称
+local function assignNicknames()
+    playerNicknames_ = {}
+    playerNicknames_[1] = "You"  -- 人类玩家
+
+    -- 打乱昵称池（Fisher-Yates）
+    local pool = {}
+    for i, name in ipairs(NICKNAME_POOL) do pool[i] = name end
+    for i = #pool, 2, -1 do
+        local j = math.random(1, i)
+        pool[i], pool[j] = pool[j], pool[i]
+    end
+
+    -- 为 AI 分配不重复昵称
+    for i = 2, Config.NumPlayers do
+        playerNicknames_[i] = pool[((i - 2) % #pool) + 1]
+    end
+end
+
+-- ============================================================================
+-- 状态反馈浮字系统（砸晕/爆炸文字）
+-- ============================================================================
+
+local statusFloats_ = {}        -- 世界空间浮字列表
+local STATUS_FLOAT_DURATION = 1.5
+-- 每个玩家上一帧的状态快照（用于检测状态变化）
+local prevPlayerStates_ = {}    -- [playerIndex] = { stunTimer, charging, explodeRecovery }
+
+--- 添加状态反馈浮字
+---@param worldX number
+---@param worldY number
+---@param text string
+---@param r number 颜色 R (0-255)
+---@param g number 颜色 G
+---@param b number 颜色 B
+---@param fontSize number|nil
+local function addStatusFloat(worldX, worldY, text, r, g, b, fontSize)
+    table.insert(statusFloats_, {
+        wx = worldX, wy = worldY,
+        text = text,
+        r = r or 255, g = g or 255, b = b or 50,
+        fontSize = fontSize or 18,
+        startTime = time.elapsedTime,
+        duration = STATUS_FLOAT_DURATION,
+    })
+end
+
+--- 检测玩家状态变化并生成浮字
+local function detectPlayerStateChanges()
+    if playerModule_ == nil then return end
+    for _, p in ipairs(playerModule_.list) do
+        if p.alive and p.node then
+            local prev = prevPlayerStates_[p.index]
+            if prev == nil then
+                prev = { stunTimer = 0, charging = false, explodeRecovery = 0 }
+                prevPlayerStates_[p.index] = prev
+            end
+            local pos = p.node.position
+
+            -- 被砸晕：stunTimer 从 0 变为 >0
+            if p.stunTimer > 0 and prev.stunTimer <= 0 then
+                addStatusFloat(pos.x, pos.y + 1.0, "砸晕！",
+                    Theme.warning[1], Theme.warning[2], Theme.warning[3], 22)
+            end
+
+            -- 爆炸释放：explodeRecovery 从 0 变为 >0
+            if p.explodeRecovery > 0 and prev.explodeRecovery <= 0 then
+                addStatusFloat(pos.x, pos.y + 1.2, "超级红温！",
+                    Theme.error[1], Theme.error[2], Theme.error[3], 26)
+            end
+
+            -- 更新快照
+            prev.stunTimer = p.stunTimer
+            prev.charging = p.charging
+            prev.explodeRecovery = p.explodeRecovery
+        end
+    end
+end
+
 --- 添加浮动加分数字（供外部调用）
 ---@param worldX number 世界坐标 X
 ---@param worldY number 世界坐标 Y
@@ -159,6 +253,9 @@ function HUD.Init(playerRef, gmRef, mapRef)
     else
         print("[HUD] Warning: title image not found, fallback to text")
     end
+
+    -- 分配玩家昵称
+    assignNicknames()
 
     -- 订阅渲染事件
     SubscribeToEvent(vg_, "NanoVGRender", "HandleNanoVGRender")
@@ -341,9 +438,76 @@ end
 function HUD.DrawWorldIndicators()
     if playerModule_ == nil then return end
 
+    -- 检测状态变化并生成浮字
+    detectPlayerStateChanges()
+
     for _, p in ipairs(playerModule_.list) do
         if p.alive and p.node then
             local pos = p.node.position
+            local pc = Config.GetPlayerColor(p.index)
+            local pr = math.floor(pc.r * 255)
+            local pg = math.floor(pc.g * 255)
+            local pb = math.floor(pc.b * 255)
+
+            -- ----- 玩家昵称（头顶上方） -----
+            local nameY = pos.y + 1.1
+            local nsx, nsy = Camera.WorldToScreen(pos.x, nameY, logW_, logH_)
+            local nickname = playerNicknames_[p.index] or ("P" .. p.index)
+            local nameFontSize = Camera.WorldSizeToScreen(0.3, logH_)
+            nameFontSize = math.max(8, math.min(14, nameFontSize))
+
+            nvgFontFace(vg_, "sans")
+            nvgFontSize(vg_, nameFontSize)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_BOTTOM)
+
+            -- 名牌背景胶囊
+            local nameW = nvgTextBounds(vg_, 0, 0, nickname)
+            local padX, padY = 5, 2
+            nvgBeginPath(vg_)
+            nvgRoundedRect(vg_, nsx - nameW * 0.5 - padX, nsy - nameFontSize - padY,
+                nameW + padX * 2, nameFontSize + padY * 2, 4)
+            nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
+            nvgFill(vg_)
+
+            -- 名字文字（自己红色，其他白色）
+            if p.isHuman then
+                nvgFillColor(vg_, nvgRGBA(255, 75, 75, 240))
+            else
+                nvgFillColor(vg_, nvgRGBA(255, 255, 255, 220))
+            end
+            nvgText(vg_, nsx, nsy, nickname)
+
+            -- ----- 人类玩家标识箭头（▼ + 光晕） -----
+            if p.isHuman then
+                local arrowY = nameY + 0.4
+                local asx, asy = Camera.WorldToScreen(pos.x, arrowY, logW_, logH_)
+                local arrowSize = math.max(6, Camera.WorldSizeToScreen(0.2, logH_))
+
+                -- 光晕（脉冲呼吸效果）
+                local pulse = math.abs(math.sin(time.elapsedTime * 2.5)) * 0.4 + 0.6
+                local glowR = arrowSize * 2.5
+                local glowPaint = nvgRadialGradient(vg_, asx, asy, arrowSize * 0.5, glowR,
+                    nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], math.floor(pulse * 80)),
+                    nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], 0))
+                nvgBeginPath(vg_)
+                nvgCircle(vg_, asx, asy, glowR)
+                nvgFillPaint(vg_, glowPaint)
+                nvgFill(vg_)
+
+                -- 下指三角箭头（金色）
+                nvgBeginPath(vg_)
+                nvgMoveTo(vg_, asx - arrowSize, asy - arrowSize * 0.4)
+                nvgLineTo(vg_, asx + arrowSize, asy - arrowSize * 0.4)
+                nvgLineTo(vg_, asx, asy + arrowSize * 0.8)
+                nvgClosePath(vg_)
+                nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3],
+                    math.floor(pulse * 255)))
+                nvgFill(vg_)
+                -- 描边
+                nvgStrokeColor(vg_, nvgRGBA(0, 0, 0, 160))
+                nvgStrokeWidth(vg_, 1.5)
+                nvgStroke(vg_)
+            end
 
             -- ----- 冲刺冷却环 -----
             if p.dashCooldown > 0 then
@@ -374,17 +538,12 @@ function HUD.DrawWorldIndicators()
                 end
             end
 
-            -- ----- 蓄力警告区域 -----
+            -- ----- 蓄力警告区域 + "红温中" 文字 -----
             if p.charging then
                 local sx, sy = Camera.WorldToScreen(pos.x, pos.y, logW_, logH_)
                 local maxWorldRadius = Config.ExplosionRadius * Config.BlockSize
                 local currentWorldRadius = maxWorldRadius * p.chargeProgress
                 local screenRadius = Camera.WorldSizeToScreen(currentWorldRadius, logH_)
-
-                local pc = Config.GetPlayerColor(p.index)
-                local pr = math.floor(pc.r * 255)
-                local pg = math.floor(pc.g * 255)
-                local pb = math.floor(pc.b * 255)
 
                 local freq = 4 + p.chargeProgress * 12
                 local pulse = math.abs(math.sin(time.elapsedTime * freq)) * 0.4 + 0.2
@@ -398,12 +557,99 @@ function HUD.DrawWorldIndicators()
                 local strokeAlpha = math.floor(pulse * 200 + 55 + p.chargeProgress * 80)
                 drawDashedCircle(sx, sy, screenRadius, pr, pg, pb,
                     math.min(255, strokeAlpha), 2.0)
+
+                -- "红温中" 浮字（在蓄力圆圈上方）
+                local chargeTextY = pos.y + 1.6
+                local ctx, cty = Camera.WorldToScreen(pos.x, chargeTextY, logW_, logH_)
+                local ctSize = math.max(12, math.min(20, Camera.WorldSizeToScreen(0.35, logH_)))
+                local ctPulse = math.abs(math.sin(time.elapsedTime * 6)) * 0.3 + 0.7
+
+                nvgFontFace(vg_, "bold")
+                nvgFontSize(vg_, ctSize)
+                nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+                -- 阴影
+                nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(ctPulse * 180)))
+                nvgText(vg_, ctx + 1, cty + 1, "红温中")
+                -- 红色闪烁文字
+                nvgFillColor(vg_, nvgRGBA(Theme.error[1], Theme.error[2], Theme.error[3],
+                    math.floor(ctPulse * 255)))
+                nvgText(vg_, ctx, cty, "红温中")
+            end
+
+            -- ----- 眩晕文字（持续显示） -----
+            if p.stunTimer > 0 then
+                local stunTextY = pos.y + 1.3
+                local stx, sty = Camera.WorldToScreen(pos.x, stunTextY, logW_, logH_)
+                local stSize = math.max(10, math.min(16, Camera.WorldSizeToScreen(0.28, logH_)))
+                local wobble = math.sin(time.elapsedTime * 8) * 3
+
+                nvgFontFace(vg_, "bold")
+                nvgFontSize(vg_, stSize)
+                nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+                nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+                nvgText(vg_, stx + 1 + wobble, sty + 1, "💫")
+                nvgFillColor(vg_, nvgRGBA(Theme.warning[1], Theme.warning[2], Theme.warning[3], 220))
+                nvgText(vg_, stx + wobble, sty, "💫")
             end
         end
     end
 
+    -- ----- 状态反馈浮字（砸晕！/超级红温！） -----
+    HUD.DrawStatusFloats()
+
     -- ----- 被炸方块虚线轮廓 + 重生进度条 -----
     HUD.DrawDestroyedBlockGhosts()
+end
+
+--- 绘制状态反馈浮字（砸晕/爆炸触发的一次性浮字）
+function HUD.DrawStatusFloats()
+    local now = time.elapsedTime
+    local i = 1
+    while i <= #statusFloats_ do
+        local sf = statusFloats_[i]
+        local elapsed = now - sf.startTime
+        if elapsed >= sf.duration then
+            table.remove(statusFloats_, i)
+        else
+            local progress = elapsed / sf.duration
+            local floatUpY = sf.wy + progress * 2.0
+            local sx, sy = Camera.WorldToScreen(sf.wx, floatUpY, logW_, logH_)
+
+            -- 淡出
+            local alpha = 1.0
+            if progress > 0.5 then
+                alpha = 1.0 - (progress - 0.5) / 0.5
+            end
+
+            -- 弹出缩放
+            local scale = 1.0
+            if progress < 0.15 then
+                local t = progress / 0.15
+                scale = 1.8 - 0.8 * t
+            end
+
+            -- 抖动效果（前30%）
+            local shakeX = 0
+            if progress < 0.3 then
+                shakeX = math.sin(progress * 60) * (1.0 - progress / 0.3) * 3
+            end
+
+            local fontSize = sf.fontSize * scale
+
+            nvgFontFace(vg_, "bold")
+            nvgFontSize(vg_, fontSize)
+            nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+
+            -- 阴影
+            nvgFillColor(vg_, nvgRGBA(0, 0, 0, math.floor(alpha * 200)))
+            nvgText(vg_, sx + 1 + shakeX, sy + 1, sf.text)
+            -- 彩色文字
+            nvgFillColor(vg_, nvgRGBA(sf.r, sf.g, sf.b, math.floor(alpha * 255)))
+            nvgText(vg_, sx + shakeX, sy, sf.text)
+
+            i = i + 1
+        end
+    end
 end
 
 --- 绘制被炸方块的虚线轮廓和重生进度条
@@ -1043,7 +1289,9 @@ function HUD.DrawKillScorePanel()
 
         nvgFontFace(vg_, "sans")
         nvgFontSize(vg_, 13)
-        local label = i == 1 and "You" or ("P" .. i)
+        local label = playerNicknames_[i] or (i == 1 and "You" or ("P" .. i))
+        -- 截断过长昵称（面板空间有限）
+        if #label > 12 then label = string.sub(label, 1, 12) end
         nvgFillColor(vg_, nvgRGBA(r, g, b, 220))
         nvgText(vg_, panelX + 14, y + 9, label)
 
@@ -1400,6 +1648,10 @@ function HUD.DrawResultScreen()
         cloudScoreSubmitted_ = false
         cloudLeaderboard_ = nil
         cloudLeaderboardLoading_ = false
+        -- 重置状态跟踪和浮字
+        prevPlayerStates_ = {}
+        statusFloats_ = {}
+        assignNicknames()  -- 重新分配 AI 昵称
     end
 
     -- "返回菜单" 按钮（蓝色）
@@ -1412,6 +1664,10 @@ function HUD.DrawResultScreen()
         cloudScoreSubmitted_ = false
         cloudLeaderboard_ = nil
         cloudLeaderboardLoading_ = false
+        -- 重置状态跟踪和浮字
+        prevPlayerStates_ = {}
+        statusFloats_ = {}
+        assignNicknames()
     end
 end
 

@@ -275,22 +275,33 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         geom:SetMaterial(mat)
     end
 
-    -- 描边子节点（在方块后面 Z+0.1，略大）
-    local outlineNode = node:CreateChild("Outline")
-    outlineNode.position = Vector3(0, 0, 0.1)
-    outlineNode.scale = Vector3(1.12, 1.12, 1.0)
-    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
-    buildRoundedBox(outlineGeom, bs, 0.1)
-    outlineGeom.castShadows = false
-    if outlineMat_ then
-        outlineGeom:SetMaterial(outlineMat_)
+    -- 描边子节点（检查点方块不加描边，保持单层视觉）
+    if blockType ~= Config.BLOCK_CHECKPOINT then
+        local outlineNode = node:CreateChild("Outline")
+        outlineNode.position = Vector3(0, 0, 0.1)
+        outlineNode.scale = Vector3(1.12, 1.12, 1.0)
+        local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+        buildRoundedBox(outlineGeom, bs, 0.1)
+        outlineGeom.castShadows = false
+        if outlineMat_ then
+            outlineGeom:SetMaterial(outlineMat_)
+        end
     end
 
-    -- 终点方块 / 检查点方块：添加旗帜视觉效果
-    if blockType == Config.BLOCK_FINISH then
-        Map.CreateFlag(node, bs, Color(1.0, 0.85, 0.1))  -- 金色旗帜
-    elseif blockType == Config.BLOCK_CHECKPOINT then
-        Map.CreateFlag(node, bs, Color(0.2, 0.85, 0.95))  -- 青色旗帜
+    -- 终点方块 / 检查点方块：只在平台两端放置旗帜
+    if blockType == Config.BLOCK_CHECKPOINT or blockType == Config.BLOCK_FINISH then
+        local leftType = (gx > 1) and grid_[gy][gx - 1] or Config.BLOCK_EMPTY
+        local rightType = (gx < MapData.Width) and grid_[gy][gx + 1] or Config.BLOCK_EMPTY
+        local isLeftEdge = (leftType ~= blockType)
+        local isRightEdge = (rightType ~= blockType)
+        local flagColor = (blockType == Config.BLOCK_FINISH)
+            and Color(1.0, 0.85, 0.1) or Color(0.3, 0.5, 0.9)
+        if isLeftEdge then
+            Map.CreateFlag(node, bs, flagColor, false)
+        end
+        if isRightEdge then
+            Map.CreateFlag(node, bs, flagColor, true)
+        end
     end
 
     -- 物理碰撞（静态刚体，mass=0）- 碰撞形状仍是方盒（简化物理）
@@ -303,71 +314,63 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     return node
 end
 
---- 在终点/检查点方块上方创建旗帜（旗杆+三角旗）
+--- 在终点/检查点方块上方创建旗帜（简洁扁平风格）
 ---@param parentNode Node 方块节点
 ---@param bs number 方块边长
 ---@param flagColor Color 旗帜颜色
-function Map.CreateFlag(parentNode, bs, flagColor)
+---@param facingRight boolean 旗帜朝向（true=右，false=左）
+function Map.CreateFlag(parentNode, bs, flagColor, facingRight)
     local halfBS = bs * 0.5
+    local poleHeight = bs * 1.8
+    local poleRadius = bs * 0.025
+    local unlitTech = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
 
-    -- 旗杆（细长圆柱）
+    -- 简洁旗杆（无光照扁平色，无金属质感）
     local poleNode = parentNode:CreateChild("FlagPole")
-    local poleHeight = bs * 2.0
-    local poleRadius = bs * 0.04
     poleNode.position = Vector3(0, halfBS + poleHeight * 0.5, -0.05)
     poleNode.scale = Vector3(poleRadius * 2, poleHeight, poleRadius * 2)
     local poleModel = poleNode:CreateComponent("StaticModel")
     poleModel:SetModel(cache:GetResource("Model", "Models/Cylinder.mdl"))
-    -- 白色旗杆
     local poleMat = Material:new()
-    poleMat:SetTechnique(0, pbrTechnique_)
-    poleMat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.95, 0.95)))
-    poleMat:SetShaderParameter("Metallic", Variant(0.6))
-    poleMat:SetShaderParameter("Roughness", Variant(0.3))
+    poleMat:SetTechnique(0, unlitTech)
+    poleMat:SetShaderParameter("MatDiffColor", Variant(Color(0.85, 0.80, 0.70)))
     poleModel:SetMaterial(poleMat)
 
-    -- 三角旗（使用 CustomGeometry）
+    -- 简洁三角旗（无光照扁平色，从旗杆顶部向外延伸）
     local flagNode = parentNode:CreateChild("Flag")
-    flagNode.position = Vector3(0, halfBS + poleHeight * 0.75, -0.06)
+    local flagTopY = halfBS + poleHeight * 0.88
+    local flagW = bs * 0.65
+    local flagH = bs * 0.4
+    local dir = facingRight and 1 or -1
+
+    flagNode.position = Vector3(0, flagTopY, -0.06)
+
     local flagGeom = flagNode:CreateComponent("CustomGeometry")
     flagGeom:SetNumGeometries(1)
     flagGeom:BeginGeometry(0, TRIANGLE_LIST)
 
-    -- 三角旗尺寸
-    local flagW = bs * 0.7   -- 旗帜宽度（向右伸出）
-    local flagH = bs * 0.5   -- 旗帜高度
+    -- 三角旗形状：从旗杆顶部向外伸出
+    local p1 = Vector3(0, 0, 0)                        -- 旗杆顶部
+    local p2 = Vector3(0, -flagH, 0)                    -- 旗杆底部
+    local p3 = Vector3(dir * flagW, -flagH * 0.35, 0)   -- 旗尖
 
-    -- 正面三角形（右侧展开）
-    local p1 = Vector3(0, flagH * 0.5, 0)            -- 左上（旗杆顶部附近）
-    local p2 = Vector3(0, -flagH * 0.5, 0)           -- 左下
-    local p3 = Vector3(flagW, 0, 0)                   -- 右侧尖端
     local nF = Vector3(0, 0, -1)
-
-    flagGeom:DefineVertex(p1)
-    flagGeom:DefineNormal(nF)
-    flagGeom:DefineVertex(p2)
-    flagGeom:DefineNormal(nF)
-    flagGeom:DefineVertex(p3)
-    flagGeom:DefineNormal(nF)
-
-    -- 背面三角形（反转绕序）
     local nB = Vector3(0, 0, 1)
-    flagGeom:DefineVertex(p1)
-    flagGeom:DefineNormal(nB)
-    flagGeom:DefineVertex(p3)
-    flagGeom:DefineNormal(nB)
-    flagGeom:DefineVertex(p2)
-    flagGeom:DefineNormal(nB)
+
+    -- 正面
+    flagGeom:DefineVertex(p1); flagGeom:DefineNormal(nF)
+    flagGeom:DefineVertex(p2); flagGeom:DefineNormal(nF)
+    flagGeom:DefineVertex(p3); flagGeom:DefineNormal(nF)
+    -- 背面
+    flagGeom:DefineVertex(p2); flagGeom:DefineNormal(nB)
+    flagGeom:DefineVertex(p1); flagGeom:DefineNormal(nB)
+    flagGeom:DefineVertex(p3); flagGeom:DefineNormal(nB)
 
     flagGeom:Commit()
 
-    -- 旗帜材质：使用传入的颜色
     local flagMat = Material:new()
-    flagMat:SetTechnique(0, pbrTechnique_)
+    flagMat:SetTechnique(0, unlitTech)
     flagMat:SetShaderParameter("MatDiffColor", Variant(flagColor))
-    flagMat:SetShaderParameter("Metallic", Variant(0.1))
-    flagMat:SetShaderParameter("Roughness", Variant(0.6))
-    flagMat:SetShaderParameter("MatEmissiveColor", Variant(Color(flagColor.r * 0.5, flagColor.g * 0.5, flagColor.b * 0.05)))
     flagGeom:SetMaterial(flagMat)
 end
 

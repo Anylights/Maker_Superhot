@@ -161,13 +161,13 @@ function Pickup.Spawn(x, y, size)
         outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
     end
 
-    -- 触发器刚体（服务端和客户端都需要碰撞检测）
-    local body = node:CreateComponent("RigidBody")
+    -- 触发器刚体（仅服务端/单机需要碰撞检测；LOCAL 防止复制到客户端冲突）
+    local body = node:CreateComponent("RigidBody", LOCAL)
     body.trigger = true
     body.collisionLayer = 4
     body.collisionMask = 2  -- 只检测玩家
 
-    local shape = node:CreateComponent("CollisionShape")
+    local shape = node:CreateComponent("CollisionShape", LOCAL)
     shape:SetSphere(scale * 1.2)
 
     local pickup = {
@@ -329,6 +329,48 @@ end
 --- 重置所有拾取物
 function Pickup.Reset()
     Pickup.SpawnAll()
+end
+
+-- ============================================================================
+-- 客户端视觉创建（为服务端复制过来的 Pickup 节点创建 LOCAL 视觉组件）
+-- ============================================================================
+
+--- 为已存在的复制节点创建视觉组件（客户端专用）
+--- 从节点名称解析 size（"Pickup_small" / "Pickup_large"）
+---@param node Node 已复制的 Pickup 节点
+function Pickup.CreateVisualsForNode(node)
+    if isServerMode_ then return end
+
+    -- 从节点名称解析 size
+    local size = "small"
+    if string.find(node.name, "large") then
+        size = "large"
+    end
+    local isLarge = (size == "large")
+    local scale = isLarge and 0.6 or 0.4
+
+    -- 检查是否已有视觉组件（避免重复创建）
+    if node:GetComponent("CustomGeometry") then return end
+
+    -- 钻石造型尺寸（世界坐标）
+    local dw = scale * 0.5
+    local dh = scale * 0.7
+    local dd = scale * 0.35
+
+    -- 主体钻石
+    local geom = node:CreateComponent("CustomGeometry")
+    buildDiamond(geom, dw, dh, dd)
+    geom.castShadows = true
+    geom:SetMaterial(isLarge and largeMat_ or smallMat_)
+
+    -- 描边子节点
+    local outlineNode = node:CreateChild("Outline")
+    outlineNode.position = Vector3(0, 0, 0.08)
+    outlineNode.scale = Vector3(1.18, 1.18, 1.0)
+    local outGeom = outlineNode:CreateComponent("CustomGeometry")
+    buildDiamond(outGeom, dw, dh, dd)
+    outGeom.castShadows = false
+    outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
 end
 
 return Pickup

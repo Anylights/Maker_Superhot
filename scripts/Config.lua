@@ -212,6 +212,9 @@ Config.NumPlayers = 25
 Config.DefaultMapWidth  = 30
 Config.DefaultMapHeight = 200
 
+-- 地图随机种子（固定值，确保 Server/Client 生成一致的地图）
+Config.MapSeed = 20250511
+
 -- 出生点方块类型列表（按玩家编号索引）
 Config.SpawnBlockTypes = {
     Config.BLOCK_SPAWN_P1,

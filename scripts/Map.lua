@@ -231,12 +231,12 @@ function Map.Build()
     -- 清除旧地图
     Map.Clear()
 
-    -- 生成网格数据
-    grid_ = MapData.Generate()
+    -- 生成网格数据（使用固定种子，确保 Server/Client 一致）
+    grid_ = MapData.Generate(Config.MapSeed)
 
     -- 创建地图父节点（服务端 REPLICATED，客户端/单机 LOCAL）
-    local createMode = isServerMode_ and REPLICATED or LOCAL
-    local mapRoot = scene_:CreateChild("MapRoot", createMode)
+    -- 地图方块是静态几何体，两端各自独立构建，不需要网络复制
+    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
 
     -- 遍历网格，创建方块节点
     blockNodes_ = {}
@@ -273,8 +273,7 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
     local wx = (gx - 1) * bs + bs * 0.5
     local wy = (gy - 1) * bs + bs * 0.5
 
-    local createMode = isServerMode_ and REPLICATED or LOCAL
-    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, createMode)
+    local node = parent:CreateChild("Block_" .. gx .. "_" .. gy, LOCAL)
     node.position = Vector3(wx, wy, 0)
 
     -- 视觉组件（仅客户端/单机）
@@ -783,8 +782,8 @@ function Map.BuildFromGrid(externalGrid)
     end
 
     -- 创建地图父节点（服务端 REPLICATED，客户端/单机 LOCAL）
-    local createMode = isServerMode_ and REPLICATED or LOCAL
-    local mapRoot = scene_:CreateChild("MapRoot", createMode)
+    -- 地图方块是静态几何体，两端各自独立构建，不需要网络复制
+    local mapRoot = scene_:CreateChild("MapRoot", LOCAL)
     blockNodes_ = {}
     local blockCount = 0
 

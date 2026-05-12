@@ -85,6 +85,63 @@ function Server.Start()
     AIController.Init(Player, Map)
     SFX.Init(scene_)           -- 服务端 SFX 可以静默（无音频输出）
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, nil, true)  -- isServer=true
+
+    -- 注册状态变化回调：GameManager 内部自动转换（倒计时→PLAYING、计时结束→RESULT）时广播给客户端
+    local gmToSharedState = {
+        [GameManager.STATE_MENU]      = Shared.STATE_MENU,
+        [GameManager.STATE_COUNTDOWN] = Shared.STATE_COUNTDOWN,
+        [GameManager.STATE_PLAYING]   = Shared.STATE_PLAYING,
+        [GameManager.STATE_RESULT]    = Shared.STATE_RESULT,
+    }
+    GameManager.OnStateChange(function(oldState, newState)
+        local stateInt = gmToSharedState[newState]
+        if stateInt then
+            Server.BroadcastGameState(stateInt)
+            print("[Server] State broadcast: " .. oldState .. " → " .. newState)
+        end
+    end)
+
+    -- ================================================================
+    -- 接入 Player 回调 → 广播事件给客户端
+    -- ================================================================
+
+    -- 包装 onKill：GameManager 已设置 → 链式调用，追加广播
+    local originalOnKill = Player.onKill
+    Player.onKill = function(killerIndex, victimIndex, multiKillCount, killStreak)
+        -- 先让 GameManager 处理（击杀事件记录等）
+        if originalOnKill then
+            originalOnKill(killerIndex, victimIndex, multiKillCount, killStreak)
+        end
+        -- 广播击杀事件给所有客户端
+        local killType = "explosion"  -- 当前只有爆炸击杀会触发 onKill
+        Server.BroadcastKillEvent(killerIndex, victimIndex, killType)
+    end
+
+    -- 死亡回调 → 广播 PLAYER_DIED
+    Player.onDeath = function(playerIndex, reason, killerIndex)
+        local data = VariantMap()
+        data["PlayerIndex"] = Variant(playerIndex)
+        data["Reason"]      = Variant(reason)
+        data["KillerIndex"] = Variant(killerIndex or 0)
+        for _, info in pairs(connections_) do
+            info.connection:SendRemoteEvent(EVENTS.PLAYER_DIED, true, data)
+        end
+    end
+
+    -- 复活回调 → 广播 PLAYER_RESPAWN
+    Player.onRespawn = function(playerIndex)
+        local data = VariantMap()
+        data["PlayerIndex"] = Variant(playerIndex)
+        for _, info in pairs(connections_) do
+            info.connection:SendRemoteEvent(EVENTS.PLAYER_RESPAWN, true, data)
+        end
+    end
+
+    -- 分数变化回调 → 广播 SCORE_UPDATE
+    Player.onScoreChange = function(playerIndex, score)
+        Server.BroadcastScoreUpdate(playerIndex, score)
+    end
+
     RandomPickup.Init(Map, Pickup, Player)
 
     -- 构建地图和玩家
@@ -233,9 +290,7 @@ function HandleStartGame(eventType, eventData)
     if GameManager.state == GameManager.STATE_MENU then
         GameManager.StartGame()
         Shared.UpdateDeathZone(scene_)
-
-        -- 广播游戏状态给所有客户端
-        Server.BroadcastGameState(GameManager.STATE_COUNTDOWN)
+        -- 状态广播由 OnStateChange 回调自动处理
     end
 end
 
@@ -250,7 +305,7 @@ function HandleRequestRestart(eventType, eventData)
     if GameManager.state == GameManager.STATE_RESULT then
         GameManager.Restart()
         Shared.UpdateDeathZone(scene_)
-        Server.BroadcastGameState(GameManager.STATE_COUNTDOWN)
+        -- 状态广播由 OnStateChange 回调自动处理
     end
 end
 
@@ -263,7 +318,14 @@ end
 function Server.BroadcastGameState(state)
     local data = VariantMap()
     data["State"] = Variant(state)
-    data["TimeLeft"] = Variant(GameManager.timeLeft or 0)
+    -- 倒计时用 stateTimer，游戏中用 gameTimer
+    local timeLeft = 0
+    if state == Shared.STATE_COUNTDOWN then
+        timeLeft = GameManager.stateTimer
+    elseif state == Shared.STATE_PLAYING then
+        timeLeft = GameManager.gameTimer
+    end
+    data["TimeLeft"] = Variant(timeLeft)
     for _, info in pairs(connections_) do
         info.connection:SendRemoteEvent(EVENTS.GAME_STATE, true, data)
     end

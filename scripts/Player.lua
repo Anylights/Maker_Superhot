@@ -232,10 +232,12 @@ function Player.Create(index, isHuman)
         visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
     end
 
-    -- 动态刚体
-    local body = node:GetComponent("RigidBody") or node:CreateComponent("RigidBody")
+    -- 动态刚体（LOCAL：物理只在本端模拟，不通过网络复制到客户端）
+    -- 服务端的玩家节点是 REPLICATED，但物理组件用 LOCAL，
+    -- 这样客户端只接收位置同步，不会在本地重复模拟物理导致冲突
+    local body = node:CreateComponent("RigidBody", LOCAL)
     body.mass = 1.0
-    body.friction = 0.3  -- 降低摩擦：移动由代码直接设置速度，低摩擦避免被地面约束卡住
+    body.friction = 0.3
     body.linearDamping = 0.05
     body.collisionLayer = 2
     body.collisionMask = 0xFFFF
@@ -245,9 +247,7 @@ function Player.Create(index, isHuman)
     body.linearFactor = Vector3(1, 1, 0)
     body.angularFactor = Vector3(0, 0, 0)
 
-    local shape = node:GetComponent("CollisionShape") or node:CreateComponent("CollisionShape")
-    -- 使用胶囊体代替方盒：底部圆弧可滑过方块接缝，避免边缘卡顿
-    -- 直径0.9 高度1.0（缩放0.9后有效尺寸: 直径0.81 高度0.9）
+    local shape = node:CreateComponent("CollisionShape", LOCAL)
     shape:SetCapsule(0.9, 1.0)
 
     -- 玩家数据
@@ -685,6 +685,27 @@ function Player.UpdateOne(p, dt)
         p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit
         -- 总分 = 高度 + 击杀 + 拾取
         p.score = p.heightScore + p.killScore + p.pickupScore
+    end
+
+    -- =====================
+    -- 同步关键状态到节点变量（REPLICATED 节点自动同步给客户端）
+    -- =====================
+    if isServerMode_ and p.node then
+        p.node:SetVar("Energy", Variant(p.energy))
+        p.node:SetVar("Charging", Variant(p.charging or false))
+        p.node:SetVar("ChargeProgress", Variant(p.chargeProgress or 0))
+        p.node:SetVar("ChargeTimer", Variant(p.chargeTimer or 0))
+        p.node:SetVar("DashCooldown", Variant(p.dashCooldown or 0))
+        p.node:SetVar("DashTimer", Variant(p.dashTimer or 0))
+        p.node:SetVar("DashDir", Variant(p.dashDir or 1))
+        p.node:SetVar("StunTimer", Variant(p.stunTimer or 0))
+        p.node:SetVar("Alive", Variant(p.alive))
+        p.node:SetVar("FaceDir", Variant(p.lastFaceDir or 1))
+        p.node:SetVar("Score", Variant(p.score or 0))
+        p.node:SetVar("KillScore", Variant(p.killScore or 0))
+        p.node:SetVar("PickupScore", Variant(p.pickupScore or 0))
+        p.node:SetVar("Deaths", Variant(p.deaths or 0))
+        p.node:SetVar("Kills", Variant(p.kills or 0))
     end
 
     -- =====================
@@ -1474,6 +1495,18 @@ end
 ---@type fun(killerIndex: number, victimIndex: number, multiKillCount: number, killStreak: number)|nil
 Player.onKill = nil
 
+--- 死亡事件回调（由 Server 注册）
+---@type fun(playerIndex: number, reason: string, killerIndex: number|nil)|nil
+Player.onDeath = nil
+
+--- 复活事件回调（由 Server 注册）
+---@type fun(playerIndex: number)|nil
+Player.onRespawn = nil
+
+--- 分数变化回调（由 Server 注册）
+---@type fun(playerIndex: number, score: number)|nil
+Player.onScoreChange = nil
+
 --- 击杀玩家
 ---@param p table
 ---@param reason string "explosion"|"fall"
@@ -1521,6 +1554,10 @@ function Player.Kill(p, reason, killerIndex)
                 if Player.onKill then
                     Player.onKill(killerIndex, p.index, killer.multiKillCount, killer.killStreak)
                 end
+                -- 通知分数变化（击杀者得分增加）
+                if Player.onScoreChange then
+                    Player.onScoreChange(killerIndex, killer.score)
+                end
                 break
             end
         end
@@ -1552,6 +1589,16 @@ function Player.Kill(p, reason, killerIndex)
 
     -- 死亡重置连杀
     p.killStreak = 0
+
+    -- 通知死亡回调（Server 用于广播）
+    if Player.onDeath then
+        Player.onDeath(p.index, reason, killerIndex)
+    end
+
+    -- 通知分数变化（死亡惩罚导致分数下降）
+    if Player.onScoreChange then
+        Player.onScoreChange(p.index, p.score)
+    end
 
     if deathPos then
         playSFX("death", 0.7, deathPos.x, deathPos.y)
@@ -1805,6 +1852,11 @@ function Player.Respawn(p)
         p.body.linearVelocity = Vector3(0, 0, 0)
     end
 
+    -- 通知复活回调（Server 用于广播）
+    if Player.onRespawn then
+        Player.onRespawn(p.index)
+    end
+
     print("[Player] Player " .. p.index .. " respawned at (" .. string.format("%.1f, %.1f", sx, sy) .. ")")
 end
 
@@ -2016,6 +2068,10 @@ end
 function Player.AddPickupScore(p, points)
     p.pickupScore = (p.pickupScore or 0) + points
     p.score = p.heightScore + p.killScore + p.pickupScore
+    -- 通知分数变化
+    if Player.onScoreChange then
+        Player.onScoreChange(p.index, p.score)
+    end
 end
 
 --- 获取活跃玩家位置列表

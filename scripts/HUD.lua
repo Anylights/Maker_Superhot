@@ -300,6 +300,10 @@ function HUD.Init(playerRef, gmRef, mapRef)
     fontNormal_ = nvgCreateFont(vg_, "sans", "Fonts/AlimamaFangYuanTi-Static.ttf")
     fontBold_ = nvgCreateFont(vg_, "bold", "Fonts/AlimamaFangYuanTi-Static.ttf")
     fontCJK_ = fontNormal_
+    print("[HUD] Font load: normal=" .. tostring(fontNormal_) .. " bold=" .. tostring(fontBold_))
+    if fontNormal_ == -1 then
+        print("[HUD] WARNING: Font load FAILED! Text will not render.")
+    end
 
     -- 加载标题图片
     titleImage_ = nvgCreateImage(vg_, "image/image_20260422143231.png", 0)

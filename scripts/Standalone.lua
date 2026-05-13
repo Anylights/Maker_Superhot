@@ -76,7 +76,14 @@ function Standalone.Start()
     -- 设置视口
     local viewport = Viewport:new(scene_, Camera.GetCamera())
     renderer:SetViewport(0, viewport)
-    renderer.hdrRendering = true
+
+    -- HDR 在移动端 WebGL 上可能导致 NanoVG 字体不可见 + 画面泛白，仅 PC 启用
+    local dpr = graphics:GetDPR()
+    local logH = graphics:GetHeight() / dpr
+    local isMobileDevice = (logH < 500)
+    renderer.hdrRendering = not isMobileDevice
+    print("[Standalone] HDR=" .. tostring(not isMobileDevice) .. " (logH=" .. math.floor(logH) .. ")")
+
     renderer.defaultZone.fogColor = Color(0.12, 0.08, 0.28)
 
     -- 创建游戏内容

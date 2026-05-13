@@ -156,7 +156,7 @@ local classes = {
         dashDuration       = Config.DashDuration,
         dashCount          = 1,
         slamStunDuration   = Config.SlamStunDuration,
-        explosionChargeTime = Config.ExplosionChargeTime * 0.6, -- ★ 核心：蓄力快 40%
+        explosionChargeTime = Config.ExplosionChargeTime * 0.5, -- ★ 核心：蓄力快 50%
         jumpSpeed          = Config.JumpSpeed,
         -- 外观：熔岩橙红（与街头小子区分：偏橙黄、高亮度）
         bodyColor    = Color(1.00, 0.45, 0.08, 1.0),

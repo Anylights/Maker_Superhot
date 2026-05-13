@@ -1020,7 +1020,7 @@ function Player.UpdateMovement(p, dt)
     -- 水平移动（独立于跳跃）
     -- =====================
     local moveX = p.inputMoveX
-    local speed = Config.MoveSpeed
+    local speed = Config.MoveSpeed * RandomEvent.GetMoveSpeedMul()
 
     local finalVx
     if p.onGround then

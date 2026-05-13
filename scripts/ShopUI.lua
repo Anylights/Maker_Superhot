@@ -475,7 +475,7 @@ function getStatHighlight(cls)
     if cls.energyChargeTime < 15 then return "★ 能量+20%" end
     if cls.dashCount > 1 then return "★ 连冲两次" end
     if cls.slamStunDuration > 1.5 then return "★ 晕眩×2" end
-    if cls.explosionChargeTime < 2.0 then return "★ 蓄力+40%" end
+    if cls.explosionChargeTime < 2.0 then return "★ 蓄力+50%" end
     return nil
 end
 

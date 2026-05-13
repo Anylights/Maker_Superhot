@@ -58,6 +58,20 @@ local EVENT_DEFS = {
         bgTop = { 0.70, 0.35, 0.05 },   -- 橙色
         bgBot = { 0.50, 0.22, 0.03 },
     },
+    {
+        id    = "highjump",
+        title = "平步青云！",
+        desc  = "跳跃高度提升50%",
+        bgTop = { 0.82, 0.93, 0.96 },   -- 很浅的青蓝色（接近白色）
+        bgBot = { 0.70, 0.88, 0.93 },
+    },
+    {
+        id    = "speedup",
+        title = "急急急急！",
+        desc  = "移动速度提升40%",
+        bgTop = { 0.85, 0.15, 0.45 },   -- 玫红色
+        bgBot = { 0.65, 0.08, 0.30 },
+    },
 }
 
 -- ============================================================================
@@ -174,8 +188,12 @@ end
 
 --- 返回跳跃速度乘数
 function RandomEvent.GetJumpSpeedMul()
-    if active_ and currentDef_ and currentDef_.id == "heavy" then
-        return 0.707  -- √0.5 ≈ 0.707，跳跃高度 = 速度²/2g → 恰好为正常的一半
+    if active_ and currentDef_ then
+        if currentDef_.id == "heavy" then
+            return 0.707  -- √0.5 ≈ 0.707，跳跃高度减半
+        elseif currentDef_.id == "highjump" then
+            return 1.225  -- √1.5 ≈ 1.225，跳跃高度提升50%
+        end
     end
     return 1.0
 end
@@ -194,6 +212,14 @@ function RandomEvent.GetHeightScoreMul()
         return 3   -- 基础 + 额外2倍 = 3倍
     end
     return 1
+end
+
+--- 返回移动速度乘数
+function RandomEvent.GetMoveSpeedMul()
+    if active_ and currentDef_ and currentDef_.id == "speedup" then
+        return 1.4  -- 移动速度提升40%
+    end
+    return 1.0
 end
 
 --- 返回能量充能速度乘数

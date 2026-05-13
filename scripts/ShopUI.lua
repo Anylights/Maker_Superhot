@@ -267,42 +267,47 @@ function drawClassCard(vg, x, y, w, h, cls, selectedId, mousePress, mx, my, comp
         nvgStroke(vg)
     end
 
-    -- 职业颜色圆点（预览色）
-    local dotR = compact and 14 or 18
-    local dotX = x + (compact and 20 or w * 0.5)
-    local dotY = compact and (y + h * 0.35) or (y + 28)
+    -- 职业角色形象（圆角方块 + 描边 + 眼睛，与局内一致）
+    local blockSize = compact and 24 or 32
+    local blockX = x + (compact and (20 - blockSize * 0.5) or (w * 0.5 - blockSize * 0.5))
+    local blockY = compact and (y + h * 0.35 - blockSize * 0.5) or (y + 28 - blockSize * 0.5)
+    local cornerR2 = math.floor(blockSize * 0.18)
 
-    -- 圆点外圈（描边色）
+    -- 描边层（略大）
+    local outPad = compact and 2 or 3
     nvgBeginPath(vg)
-    nvgCircle(vg, dotX, dotY, dotR + 2)
+    nvgRoundedRect(vg, blockX - outPad, blockY - outPad, blockSize + outPad * 2, blockSize + outPad * 2, cornerR2 + 1)
     nvgFillColor(vg, nvgRGBA(
         math.floor(cls.outlineColor.r * 255),
         math.floor(cls.outlineColor.g * 255),
         math.floor(cls.outlineColor.b * 255), 255))
     nvgFill(vg)
-    -- 圆点内圈（身体色）
+    -- 身体方块
     nvgBeginPath(vg)
-    nvgCircle(vg, dotX, dotY, dotR)
+    nvgRoundedRect(vg, blockX, blockY, blockSize, blockSize, cornerR2)
     nvgFillColor(vg, nvgRGBA(
         math.floor(cls.bodyColor.r * 255),
         math.floor(cls.bodyColor.g * 255),
         math.floor(cls.bodyColor.b * 255), 255))
     nvgFill(vg)
-    -- 眼睛（两个小白点）
-    local eyeR = compact and 3 or 4
-    local eyeGap = compact and 5 or 6
+    -- 眼睛（椭圆白底 + 深色瞳孔）
+    local eyeR = compact and 3.5 or 4.5
+    local eyeGap = compact and 5 or 6.5
+    local eyeCX = blockX + blockSize * 0.5
+    local eyeCY = blockY + blockSize * 0.42
     nvgBeginPath(vg)
-    nvgCircle(vg, dotX - eyeGap, dotY - 2, eyeR)
-    nvgCircle(vg, dotX + eyeGap, dotY - 2, eyeR)
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 255))
+    nvgEllipse(vg, eyeCX - eyeGap, eyeCY, eyeR, eyeR * 1.1)
+    nvgEllipse(vg, eyeCX + eyeGap, eyeCY, eyeR, eyeR * 1.1)
+    nvgFillColor(vg, nvgRGBA(
+        math.floor(cls.outlineColor.r * 255),
+        math.floor(cls.outlineColor.g * 255),
+        math.floor(cls.outlineColor.b * 255), 255))
     nvgFill(vg)
-    -- 瞳孔
-    local pupilR = compact and 1.5 or 2
-    nvgBeginPath(vg)
-    nvgCircle(vg, dotX - eyeGap + 1, dotY - 2, pupilR)
-    nvgCircle(vg, dotX + eyeGap + 1, dotY - 2, pupilR)
-    nvgFillColor(vg, nvgRGBA(20, 10, 30, 255))
-    nvgFill(vg)
+
+    -- 圆点参考变量（供后续文字布局用）
+    local dotR = blockSize * 0.5
+    local dotX = blockX + blockSize * 0.5
+    local dotY = blockY + blockSize * 0.5
 
     if compact then
         -- ===== 紧凑布局（手机）：左边圆点，右边文字 =====

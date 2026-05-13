@@ -105,6 +105,11 @@ function GameManager.JoinGame()
     GameManager.gameTimer = Config.GameDuration
     GameManager.killEvents = {}
 
+    -- 解冻所有玩家（上一局结束时冻结了物理）
+    if playerModule_ and playerModule_.UnfreezeAll then
+        playerModule_.UnfreezeAll()
+    end
+
     -- 不重置地图、不重置 AI 位置
     -- 只重置所有玩家分数
     if playerModule_ and playerModule_.ResetScoresOnly then
@@ -223,7 +228,9 @@ end
 function GameManager.EndGame()
     SFX.Play("round_end", 0.7)
     GameManager.SetState(GameManager.STATE_RESULT)
-    print("[GameManager] Game ended → result screen")
+    -- 冻结所有玩家物理体，防止结算后分数/高度继续变化
+    Player.FreezeAll()
+    print("[GameManager] Game ended → result screen (players frozen)")
 end
 
 --- 获取倒计时整数（用于 HUD 显示）
@@ -284,7 +291,6 @@ end
 function GameManager.CanAIMove()
     return GameManager.state == GameManager.STATE_MENU
         or GameManager.state == GameManager.STATE_PLAYING
-        or GameManager.state == GameManager.STATE_RESULT
 end
 
 return GameManager

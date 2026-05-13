@@ -49,9 +49,9 @@ local classes = {
         explosionChargeTime = Config.ExplosionChargeTime, -- 2.5
         jumpSpeed          = Config.JumpSpeed,           -- 14.0
         -- 外观：番茄红（复用默认 P1 色）
-        bodyColor    = Color(0.95, 0.22, 0.18, 1.0),
-        outlineColor = Color(0.45, 0.08, 0.06, 1.0),
-        emissiveColor = Color(0.12, 0.02, 0.01),
+        bodyColor    = Color(0.95, 0.25, 0.20, 1.0),
+        outlineColor = Color(0.50, 0.10, 0.08, 1.0),
+        emissiveColor = Color(0.15, 0.03, 0.02),
     },
 
     -- 2. 三段跳
@@ -71,9 +71,9 @@ local classes = {
         explosionChargeTime = Config.ExplosionChargeTime,
         jumpSpeed          = Config.JumpSpeed,
         -- 外观：薄荷绿
-        bodyColor    = Color(0.20, 0.90, 0.70, 1.0),
-        outlineColor = Color(0.05, 0.40, 0.30, 1.0),
-        emissiveColor = Color(0.02, 0.12, 0.08),
+        bodyColor    = Color(0.18, 0.92, 0.65, 1.0),
+        outlineColor = Color(0.06, 0.45, 0.32, 1.0),
+        emissiveColor = Color(0.03, 0.15, 0.10),
     },
 
     -- 3. 能量积累快 20%
@@ -93,9 +93,9 @@ local classes = {
         explosionChargeTime = Config.ExplosionChargeTime,
         jumpSpeed          = Config.JumpSpeed,
         -- 外观：电光蓝
-        bodyColor    = Color(0.15, 0.60, 1.00, 1.0),
-        outlineColor = Color(0.04, 0.22, 0.50, 1.0),
-        emissiveColor = Color(0.02, 0.08, 0.15),
+        bodyColor    = Color(0.20, 0.65, 1.00, 1.0),
+        outlineColor = Color(0.06, 0.28, 0.55, 1.0),
+        emissiveColor = Color(0.03, 0.10, 0.18),
     },
 
     -- 4. 连冲两次
@@ -115,9 +115,9 @@ local classes = {
         explosionChargeTime = Config.ExplosionChargeTime,
         jumpSpeed          = Config.JumpSpeed,
         -- 外观：暖橙
-        bodyColor    = Color(1.00, 0.60, 0.15, 1.0),
-        outlineColor = Color(0.50, 0.25, 0.03, 1.0),
-        emissiveColor = Color(0.15, 0.07, 0.01),
+        bodyColor    = Color(1.00, 0.62, 0.18, 1.0),
+        outlineColor = Color(0.55, 0.28, 0.05, 1.0),
+        emissiveColor = Color(0.18, 0.08, 0.02),
     },
 
     -- 5. 砸晕时间翻倍
@@ -136,10 +136,10 @@ local classes = {
         slamStunDuration   = Config.SlamStunDuration * 2, -- ★ 核心：眩晕翻倍
         explosionChargeTime = Config.ExplosionChargeTime,
         jumpSpeed          = Config.JumpSpeed,
-        -- 外观：深紫
-        bodyColor    = Color(0.70, 0.20, 0.90, 1.0),
-        outlineColor = Color(0.30, 0.08, 0.42, 1.0),
-        emissiveColor = Color(0.10, 0.02, 0.14),
+        -- 外观：亮紫
+        bodyColor    = Color(0.75, 0.28, 0.95, 1.0),
+        outlineColor = Color(0.35, 0.10, 0.48, 1.0),
+        emissiveColor = Color(0.12, 0.04, 0.16),
     },
 
     -- 6. 蓄力速度更快
@@ -158,10 +158,10 @@ local classes = {
         slamStunDuration   = Config.SlamStunDuration,
         explosionChargeTime = Config.ExplosionChargeTime * 0.6, -- ★ 核心：蓄力快 40%
         jumpSpeed          = Config.JumpSpeed,
-        -- 外观：熔岩红黑
-        bodyColor    = Color(0.90, 0.25, 0.10, 1.0),
-        outlineColor = Color(0.20, 0.05, 0.02, 1.0),
-        emissiveColor = Color(0.18, 0.04, 0.01),
+        -- 外观：熔岩橙红（与街头小子区分：偏橙黄、高亮度）
+        bodyColor    = Color(1.00, 0.45, 0.08, 1.0),
+        outlineColor = Color(0.55, 0.15, 0.02, 1.0),
+        emissiveColor = Color(0.25, 0.08, 0.01),
     },
 }
 

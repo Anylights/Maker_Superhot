@@ -1670,36 +1670,31 @@ function HUD.DrawResultScreen()
         nvgText(vg_, cx, titleY, "游戏结束")
     end
 
-    -- 大号分数显示
+    -- 大号分数显示（"5110 分" 在同一行）
     local scoreFs = math.max(36, math.floor(64 * uiScale_))
-    local scoreY = titleY + titleFs * 0.5 + math.floor(12 * uiScale_)
+    local scoreY = titleY + titleFs * 0.5 + math.floor(16 * uiScale_)
+    local scoreText = tostring(p1Score) .. " 分"
     nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, scoreFs)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     -- 阴影
     nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
-    nvgText(vg_, cx + 2, scoreY + 2, tostring(p1Score))
+    nvgText(vg_, cx + 2, scoreY + 2, scoreText)
     -- 金色分数
     nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 255))
-    nvgText(vg_, cx, scoreY, tostring(p1Score))
-    -- "分" 标签
-    local scoreLabelY = scoreY + scoreFs + math.floor(2 * uiScale_)
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, math.max(11, math.floor(15 * uiScale_)))
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-    fillTheme(Theme.textSec, 160)
-    nvgText(vg_, cx, scoreLabelY, "分")
+    nvgText(vg_, cx, scoreY, scoreText)
 
-    -- 金币奖励提示
+    -- 金币奖励提示（分数下方留足间距）
+    local coinY = scoreY + scoreFs + math.floor(14 * uiScale_)
     local coinReward = Economy.RewardFromScore(p1Score)
     if coinReward > 0 then
-        local coinY = scoreLabelY + math.floor(18 * uiScale_)
         nvgFontFace(vg_, "sans")
-        nvgFontSize(vg_, math.max(10, math.floor(14 * uiScale_)))
+        nvgFontSize(vg_, math.max(11, math.floor(15 * uiScale_)))
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 180))
+        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 200))
         nvgText(vg_, cx, coinY, "+" .. coinReward .. " 金币")
     end
+    local scoreLabelY = coinY
 
     -- 本局战绩（带高亮数字 + 评语）
     if p1Entry then
@@ -1719,8 +1714,8 @@ function HUD.DrawResultScreen()
             { "击杀了 ",   tostring(kls),    " 玩家",  "被爆杀 ", tostring(gotKld), " 次" },
         }
 
-        local lineH = math.floor(24 * uiScale_)
-        local startY = scoreLabelY + math.floor(42 * uiScale_)
+        local lineH = math.floor(28 * uiScale_)
+        local startY = scoreLabelY + math.floor(66 * uiScale_)
         local fontSize = math.max(11, math.floor(16 * uiScale_))
 
         for i, sl in ipairs(statLines) do
@@ -1840,7 +1835,7 @@ function HUD.DrawResultScreen()
     local tableW = math.min(logW_ * 0.85, math.floor(500 * uiScale_))
     local tableX = cx - tableW * 0.5
     -- 排行榜起始 Y 基于分数区域高度动态计算
-    local cloudY = scoreLabelY + math.floor(170 * uiScale_)
+    local cloudY = scoreLabelY + math.floor(210 * uiScale_)
     HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX)
 
     -- 底部按钮

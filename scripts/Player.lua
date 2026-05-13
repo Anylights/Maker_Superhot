@@ -228,10 +228,12 @@ function Player.Create(index, isHuman)
     local eyeBaseZ = -0.48
     local eyeRadius = 0.22
 
-    -- 人类玩家（index==1）使用选中的职业，AI 使用默认
+    -- 人类玩家（index==1）使用选中的职业，AI 随机分配职业
     local classId = 1
     if isHuman then
         classId = Economy.GetSelectedClassId()
+    else
+        classId = math.random(1, CharacterClass.GetCount())
     end
     local visualNode, mat, outlineMat = Player.CreateVisuals(node, index, classId)
 
@@ -2225,6 +2227,7 @@ function Player.ScatterAI()
 end
 
 --- 只重置所有玩家的计分，不影响位置
+--- AI 玩家每局随机重新分配职业和对应外观
 function Player.ResetScoresOnly()
     for _, p in ipairs(Player.list) do
         p.score = 0
@@ -2241,6 +2244,66 @@ function Player.ResetScoresOnly()
         p.killStreak = 0
         p.multiKillCount = 0
         p.multiKillTimer = 0
+
+        -- AI 玩家每局随机分配新职业
+        if not p.isHuman then
+            local newClassId = math.random(1, CharacterClass.GetCount())
+            CharacterClass.ApplyToPlayer(p, newClassId)
+            p.dashesUsed = 0
+
+            local bodyColor, outlineColor, emissiveColor
+            if newClassId > 1 then
+                bodyColor, outlineColor, emissiveColor = CharacterClass.GetColors(newClassId)
+            else
+                bodyColor = Config.GetPlayerColor(p.index)
+                outlineColor = Config.GetPlayerOutlineColor(p.index)
+                emissiveColor = Config.GetPlayerEmissive(p.index)
+            end
+            p.bodyColor = bodyColor
+            p.outlineColor = outlineColor
+            p.emissiveColor = emissiveColor
+
+            -- 更新身体材质
+            if p.material then
+                p.material:SetShaderParameter("MatDiffColor", Variant(bodyColor))
+                p.material:SetShaderParameter("MatEmissiveColor", Variant(emissiveColor))
+            end
+            -- 更新描边材质
+            if p.outlineMat then
+                p.outlineMat:SetShaderParameter("MatDiffColor", Variant(outlineColor))
+            end
+            -- 更新眼睛颜色
+            if p.visualNode then
+                for _, eyeName in ipairs({"EyeL", "EyeR"}) do
+                    local eye = p.visualNode:GetChild(eyeName)
+                    if eye then
+                        local mdl = eye:GetComponent("StaticModel")
+                        if mdl then
+                            local m = mdl:GetMaterial(0)
+                            if m then m:SetShaderParameter("MatDiffColor", Variant(outlineColor)) end
+                        end
+                    end
+                end
+            end
+            -- 更新拖尾粒子颜色
+            if p.trailEmitter then
+                local maxC = math.max(bodyColor.r, bodyColor.g, bodyColor.b, 0.01)
+                local tR = math.min(1.0, bodyColor.r / maxC * 1.2)
+                local tG = math.min(1.0, bodyColor.g / maxC * 1.2)
+                local tB = math.min(1.0, bodyColor.b / maxC * 1.2)
+                p.trailColorR = tR
+                p.trailColorG = tG
+                p.trailColorB = tB
+                local effect = p.trailEmitter.effect
+                if effect then
+                    effect:SetNumColorFrames(3)
+                    effect:SetColorFrame(0, ColorFrame(Color(tR, tG, tB, 0.85), 0.0))
+                    effect:SetColorFrame(1, ColorFrame(Color(tR, tG, tB, 0.4), 0.5))
+                    effect:SetColorFrame(2, ColorFrame(Color(tR, tG, tB, 0.0), 1.0))
+                end
+            end
+            print("[Player] ResetScoresOnly: AI P" .. p.index .. " → class=" .. (p.className or "默认"))
+        end
     end
     print("[Player] ResetScoresOnly: all scores zeroed")
 end

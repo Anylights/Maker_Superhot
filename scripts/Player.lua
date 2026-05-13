@@ -1748,6 +1748,11 @@ function Player.Kill(p, reason, killerIndex)
                 killer.killScore = killer.killScore + killBonus
                 killer.score = killer.heightScore + killer.killScore + killer.pickupScore + (killer.climbBonusScore or 0)
 
+                -- 超级嗜血：击杀立即回满能量
+                if RandomEvent.GetKillScoreMul() > 1 then
+                    killer.energy = 1.0
+                end
+
                 -- 击杀得分头顶弹出
                 if killer.node then
                     local HUD = require("HUD")

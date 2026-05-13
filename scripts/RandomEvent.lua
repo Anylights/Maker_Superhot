@@ -40,7 +40,7 @@ local EVENT_DEFS = {
     {
         id    = "bloodlust",
         title = "超级嗜血！",
-        desc  = "击杀得分翻倍",
+        desc  = "击杀得分翻倍，击杀回满能量",
         bgTop = { 0.55, 0.08, 0.08 },   -- 红色
         bgBot = { 0.35, 0.04, 0.04 },
     },
@@ -68,7 +68,7 @@ local EVENT_DEFS = {
     {
         id    = "speedup",
         title = "急急急急！",
-        desc  = "移动速度提升40%",
+        desc  = "移动速度提升60%",
         bgTop = { 0.85, 0.15, 0.45 },   -- 玫红色
         bgBot = { 0.65, 0.08, 0.30 },
     },
@@ -217,7 +217,7 @@ end
 --- 返回移动速度乘数
 function RandomEvent.GetMoveSpeedMul()
     if active_ and currentDef_ and currentDef_.id == "speedup" then
-        return 1.4  -- 移动速度提升40%
+        return 1.6  -- 移动速度提升60%
     end
     return 1.0
 end

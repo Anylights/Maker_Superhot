@@ -40,9 +40,16 @@ local EVENT_DEFS = {
     {
         id    = "bloodlust",
         title = "超级嗜血！",
-        desc  = "击杀得分翻倍，击杀回满能量",
+        desc  = "能量立即回满，击杀分数翻倍",
         bgTop = { 0.55, 0.08, 0.08 },   -- 红色
         bgBot = { 0.35, 0.04, 0.04 },
+    },
+    {
+        id    = "chainkiller",
+        title = "连环凶手！",
+        desc  = "击杀后立即回满能量",
+        bgTop = { 0.40, 0.02, 0.02 },   -- 深红色
+        bgBot = { 0.25, 0.01, 0.01 },
     },
     {
         id    = "climb",
@@ -93,6 +100,10 @@ local originalBgBot_ = nil
 
 -- 避免连续重复同一事件
 local lastEventIndex_ = 0
+
+--- 事件触发回调（由外部注册，传入事件 def）
+---@type fun(def: table)|nil
+RandomEvent.onTrigger = nil
 
 -- NanoVG 引用（由 HUD 传入）
 ---@type integer
@@ -172,6 +183,11 @@ function RandomEvent.TriggerRandom()
     nextTrigger_   = elapsedPlay_ + DURATION + INTERVAL  -- 当前事件结束后再等 INTERVAL
 
     print("[RandomEvent] Triggered: " .. currentDef_.title .. " (#" .. triggeredCount_ .. ")")
+
+    -- 通知外部（如回满能量等即时效果）
+    if RandomEvent.onTrigger then
+        RandomEvent.onTrigger(currentDef_)
+    end
 end
 
 -- ============================================================================
@@ -220,6 +236,11 @@ function RandomEvent.GetMoveSpeedMul()
         return 1.6  -- 移动速度提升60%
     end
     return 1.0
+end
+
+--- 是否击杀后立即回满能量（连环凶手事件）
+function RandomEvent.ShouldRefillEnergyOnKill()
+    return active_ and currentDef_ and currentDef_.id == "chainkiller"
 end
 
 --- 返回能量充能速度乘数

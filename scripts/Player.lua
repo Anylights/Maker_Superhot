@@ -1748,8 +1748,8 @@ function Player.Kill(p, reason, killerIndex)
                 killer.killScore = killer.killScore + killBonus
                 killer.score = killer.heightScore + killer.killScore + killer.pickupScore + (killer.climbBonusScore or 0)
 
-                -- 超级嗜血：击杀立即回满能量
-                if RandomEvent.GetKillScoreMul() > 1 then
+                -- 连环凶手：击杀立即回满能量
+                if RandomEvent.ShouldRefillEnergyOnKill() then
                     killer.energy = 1.0
                 end
 
@@ -1761,6 +1761,9 @@ function Player.Kill(p, reason, killerIndex)
                     if RandomEvent.GetKillScoreMul() > 1 then
                         label = "嗜血击杀+" .. math.floor(killBonus)
                         r, g, b = 255, 50, 50
+                    elseif RandomEvent.ShouldRefillEnergyOnKill() then
+                        label = "连环击杀+" .. math.floor(killBonus)
+                        r, g, b = 200, 30, 30
                     end
                     HUD.AddScorePopup(
                         killer.node.position.x, killer.node.position.y + 1.5,

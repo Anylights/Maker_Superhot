@@ -125,6 +125,18 @@ function GameManager.JoinGame()
     -- 重置随机事件
     RandomEvent.Init()
 
+    -- 注册事件触发回调（超级嗜血：开始时回满所有玩家能量）
+    RandomEvent.onTrigger = function(def)
+        if def.id == "bloodlust" and playerModule_ then
+            for _, p in ipairs(playerModule_.list) do
+                if p.alive then
+                    p.energy = 1.0
+                end
+            end
+            print("[GameManager] Bloodlust triggered: all players energy refilled")
+        end
+    end
+
     -- 重置倒计时音效跟踪
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
 

@@ -8,6 +8,8 @@ local MapData = require("MapData")
 local SFX = require("SFX")
 local Camera = require("Camera")
 local RandomEvent = require("RandomEvent")
+local CharacterClass = require("CharacterClass")
+local Economy = require("Economy")
 
 local Player = {}
 
@@ -88,6 +90,18 @@ local function makeCircleMat(r, g, b)
     return mat
 end
 
+--- 通过 playerIndex 获取玩家专属颜色（优先使用存储的职业色）
+---@param playerIndex number
+---@return Color
+local function getPlayerColor(playerIndex)
+    for _, p in ipairs(Player.list) do
+        if p.index == playerIndex and p.bodyColor then
+            return p.bodyColor
+        end
+    end
+    return Config.GetPlayerColor(playerIndex)
+end
+
 -- ============================================================================
 -- 初始化
 -- ============================================================================
@@ -108,9 +122,20 @@ end
 
 --- 在节点上创建视觉组件（模型、描边、眼睛）
 ---@param node Node 父节点
----@param index number 玩家编号 1~4
+---@param index number 玩家编号 1~N
+---@param classId? number 职业 ID（传入时使用职业专属颜色）
 ---@return Node visualNode, Material mat, Material outlineMat
-function Player.CreateVisuals(node, index)
+function Player.CreateVisuals(node, index, classId)
+    -- 决定颜色来源：有职业 ID 时用职业色，否则用默认配色
+    local bodyColor, outlineColor, emissiveColor
+    if classId and classId > 1 then
+        bodyColor, outlineColor, emissiveColor = CharacterClass.GetColors(classId)
+    else
+        bodyColor = Config.GetPlayerColor(index)
+        outlineColor = Config.GetPlayerOutlineColor(index)
+        emissiveColor = Config.GetPlayerEmissive(index)
+    end
+
     local visualNode = node:CreateChild("Visual")
     visualNode.scale = Vector3(0.9, 0.9, 0.9)
 
@@ -121,8 +146,8 @@ function Player.CreateVisuals(node, index)
 
     local mat = Material:new()
     mat:SetTechnique(0, pbrTechnique_)
-    mat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerColor(index)))
-    mat:SetShaderParameter("MatEmissiveColor", Variant(Config.GetPlayerEmissive(index)))
+    mat:SetShaderParameter("MatDiffColor", Variant(bodyColor))
+    mat:SetShaderParameter("MatEmissiveColor", Variant(emissiveColor))
     mat:SetShaderParameter("Metallic", Variant(Config.RubberMetallic))
     mat:SetShaderParameter("Roughness", Variant(Config.RubberRoughness))
     geom:SetMaterial(mat)
@@ -136,7 +161,7 @@ function Player.CreateVisuals(node, index)
     outlineGeom.castShadows = false
     local outlineMat = Material:new()
     outlineMat:SetTechnique(0, pbrTechnique_)
-    outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(index)))
+    outlineMat:SetShaderParameter("MatDiffColor", Variant(outlineColor))
     outlineMat:SetShaderParameter("Metallic", Variant(0.0))
     outlineMat:SetShaderParameter("Roughness", Variant(1.0))
     outlineGeom:SetMaterial(outlineMat)
@@ -146,7 +171,7 @@ function Player.CreateVisuals(node, index)
     local unlitTechnique = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
     local eyeMat = Material:new()
     eyeMat:SetTechnique(0, unlitTechnique)
-    eyeMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(index)))
+    eyeMat:SetShaderParameter("MatDiffColor", Variant(outlineColor))
 
     local eyeBaseX = 0.16
     local eyeBaseY = 0.06
@@ -203,7 +228,12 @@ function Player.Create(index, isHuman)
     local eyeBaseZ = -0.48
     local eyeRadius = 0.22
 
-    local visualNode, mat, outlineMat = Player.CreateVisuals(node, index)
+    -- 人类玩家（index==1）使用选中的职业，AI 使用默认
+    local classId = 1
+    if isHuman then
+        classId = Economy.GetSelectedClassId()
+    end
+    local visualNode, mat, outlineMat = Player.CreateVisuals(node, index, classId)
 
     -- 动态刚体
     local body = node:GetComponent("RigidBody") or node:CreateComponent("RigidBody")
@@ -335,7 +365,12 @@ function Player.Create(index, isHuman)
     -- =====================
     do
         local trailEffect = ParticleEffect:new()
-        local clr = Config.GetPlayerColor(index)
+        local clr
+        if classId and classId > 1 then
+            clr = CharacterClass.GetColors(classId)
+        else
+            clr = Config.GetPlayerColor(index)
+        end
         -- 拉到最大亮度确保鲜艳
         local maxC = math.max(clr.r, clr.g, clr.b, 0.01)
         local tR = math.min(1.0, clr.r / maxC * 1.2)
@@ -382,6 +417,18 @@ function Player.Create(index, isHuman)
         p.trailColorB = tB
     end
 
+    -- 注入职业属性（覆盖默认 Config 值）
+    CharacterClass.ApplyToPlayer(p, classId)
+
+    -- 存储玩家专属颜色（用于材质恢复、粒子特效等）
+    if classId and classId > 1 then
+        p.bodyColor, p.outlineColor, p.emissiveColor = CharacterClass.GetColors(classId)
+    else
+        p.bodyColor = Config.GetPlayerColor(index)
+        p.outlineColor = Config.GetPlayerOutlineColor(index)
+        p.emissiveColor = Config.GetPlayerEmissive(index)
+    end
+
     -- 注册碰撞回调
     node:CreateScriptObject("PlayerCollision")
     local scriptObj = node:GetScriptObject()
@@ -390,7 +437,8 @@ function Player.Create(index, isHuman)
     end
 
     table.insert(Player.list, p)
-    print("[Player] Created player " .. index .. (isHuman and " (human)" or " (AI)"))
+    local className = p.className or "默认"
+    print("[Player] Created player " .. index .. (isHuman and " (human)" or " (AI)") .. " class=" .. className)
 
     return p
 end
@@ -652,8 +700,8 @@ function Player.UpdateOne(p, dt)
     -- 蓄力中（允许水平移动，禁止跳跃/冲刺）
     if p.charging then
         -- 持续蓄力：计时递增
-        p.chargeTimer = math.min(p.chargeTimer + dt, Config.ExplosionChargeTime)
-        p.chargeProgress = p.chargeTimer / Config.ExplosionChargeTime
+        p.chargeTimer = math.min(p.chargeTimer + dt, p.explosionChargeTime)
+        p.chargeProgress = p.chargeTimer / p.explosionChargeTime
         -- 视觉效果
         Player.UpdateExplodeVisual(p)
         -- 松开右键 → 触发爆炸
@@ -818,7 +866,7 @@ function Player.DoSlamLanding(p)
         slamFXNode.position = Vector3(pos.x, pos.y - 0.3, -0.4)
 
         local slamEffect = ParticleEffect:new()
-        local clr = Config.GetPlayerColor(p.index)
+        local clr = getPlayerColor(p.index)
         -- 直接用原始颜色并拉到最大亮度，确保鲜艳
         local maxC = math.max(clr.r, clr.g, clr.b, 0.01)
         local sR = math.min(1.0, clr.r / maxC * 1.2)
@@ -882,8 +930,8 @@ function Player.DoSlamLanding(p)
                 other.squashScaleY = 1.3
                 other.squashVelX = 0
                 other.squashVelY = 0
-                -- 施加眩晕
-                other.stunTimer = Config.SlamStunDuration
+                -- 施加眩晕（使用攻击者的职业眩晕时长）
+                other.stunTimer = p.slamStunDuration
             end
             ::continueSL::
         end
@@ -891,7 +939,7 @@ function Player.DoSlamLanding(p)
 
     -- 砸中其他玩家时弹跳起（约两次跳跃高度）
     if hitAnyPlayer and p.body then
-        local bounceSpeed = Config.JumpSpeed * 1.42  -- sqrt(2) ≈ 两倍跳跃高度
+        local bounceSpeed = p.jumpSpeed * 1.42  -- sqrt(2) ≈ 两倍跳跃高度
         p.body.linearVelocity = Vector3(p.body.linearVelocity.x, bounceSpeed, 0)
         p.slamming = false
         p.jumpCount = 0  -- 重置跳跃次数，允许空中再跳
@@ -912,7 +960,7 @@ function Player.DoJump(p)
     -- 设置向上初速度（受随机事件"超重"影响）
     if p.body then
         local vel = p.body.linearVelocity
-        local jumpSpeed = Config.JumpSpeed * RandomEvent.GetJumpSpeedMul()
+        local jumpSpeed = p.jumpSpeed * RandomEvent.GetJumpSpeedMul()
         p.body.linearVelocity = Vector3(vel.x, jumpSpeed, 0)
     end
 
@@ -932,7 +980,7 @@ function Player.UpdateMovement(p, dt)
     -- 冲刺中（不受重力影响，Y 速度锁定为 0）
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
-        p.body.linearVelocity = Vector3(p.dashDir * Config.DashSpeed, 0, 0)
+        p.body.linearVelocity = Vector3(p.dashDir * p.dashSpeed, 0, 0)
         -- 冲刺击退：检测附近其他玩家并击飞
         Player.DoDashKnockback(p)
         return
@@ -1021,10 +1069,10 @@ function Player.UpdateMovement(p, dt)
         local canJump = false
 
         if p.onGround then
-            canJump = (p.jumpCount < Config.MaxJumps)
+            canJump = (p.jumpCount < p.maxJumps)
         elseif p.coyoteTimer <= Config.CoyoteTime then
-            canJump = (p.jumpCount < Config.MaxJumps)
-        elseif p.jumpCount < Config.MaxJumps then
+            canJump = (p.jumpCount < p.maxJumps)
+        elseif p.jumpCount < p.maxJumps then
             -- 空中跳跃（含第一次起跳和多段跳）
             canJump = true
         end
@@ -1036,13 +1084,26 @@ function Player.UpdateMovement(p, dt)
     end
 
     -- =====================
-    -- 冲刺
+    -- 冲刺（支持双冲职业）
     -- =====================
     if p.inputDash then
+        local canDash = false
         if p.dashCooldown <= 0 then
-            p.dashTimer = Config.DashDuration
+            -- 冷却已结束，重置已用次数
+            p.dashesUsed = 0
+            canDash = true
+        elseif (p.dashCount or 1) > 1 and (p.dashesUsed or 0) < p.dashCount then
+            -- 双冲职业：冷却中但还有剩余冲刺次数
+            canDash = true
+        end
+        if canDash then
+            p.dashTimer = p.dashDuration
             p.dashDir = p.lastFaceDir
-            p.dashCooldown = Config.DashCooldown
+            p.dashesUsed = (p.dashesUsed or 0) + 1
+            -- 只在第一次冲刺时启动冷却
+            if p.dashesUsed == 1 then
+                p.dashCooldown = p.dashCooldownMax or Config.DashCooldown
+            end
             local pp = p.node.position
             SFX.Play("dash", 0.6, pp.x, pp.y)
         end
@@ -1353,7 +1414,7 @@ end
 ---@param dt number
 function Player.UpdateEnergy(p, dt)
     if p.energy < 1.0 then
-        p.energy = p.energy + dt / Config.EnergyChargeTime * RandomEvent.GetEnergyChargeMul()
+        p.energy = p.energy + dt / p.energyChargeTime * RandomEvent.GetEnergyChargeMul()
         if p.energy > 1.0 then
             p.energy = 1.0
         end
@@ -1396,12 +1457,13 @@ function Player.UpdateExplodeVisual(p)
         end
     else
         -- 短暂恢复原色（形成闪烁对比）
-        local c = Config.GetPlayerColor(p.index)
-        local e = Config.GetPlayerEmissive(p.index)
+        local c = p.bodyColor or Config.GetPlayerColor(p.index)
+        local e = p.emissiveColor or Config.GetPlayerEmissive(p.index)
         p.material:SetShaderParameter("MatDiffColor", Variant(c))
         p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
         if p.outlineMat then
-            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(p.index)))
+            local oc = p.outlineColor or Config.GetPlayerOutlineColor(p.index)
+            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(oc))
         end
     end
 
@@ -1423,13 +1485,14 @@ end
 ---@param p table
 function Player.RestoreMaterial(p)
     if not p.material then return end
-    local c = Config.GetPlayerColor(p.index)
-    local e = Config.GetPlayerEmissive(p.index)
+    local c = p.bodyColor or Config.GetPlayerColor(p.index)
+    local e = p.emissiveColor or Config.GetPlayerEmissive(p.index)
     p.material:SetShaderParameter("MatDiffColor", Variant(c))
     p.material:SetShaderParameter("MatEmissiveColor", Variant(e))
     -- 恢复描边颜色
     if p.outlineMat then
-        p.outlineMat:SetShaderParameter("MatDiffColor", Variant(Config.GetPlayerOutlineColor(p.index)))
+        local oc = p.outlineColor or Config.GetPlayerOutlineColor(p.index)
+        p.outlineMat:SetShaderParameter("MatDiffColor", Variant(oc))
     end
 end
 
@@ -1517,7 +1580,7 @@ function Player.SpawnExplosionFX(pos, playerIndex)
     local effect = ParticleEffect:new()
 
     -- 圆形粒子材质 - 极高饱和度、低不透明度
-    local color = Config.GetPlayerColor(playerIndex)
+    local color = getPlayerColor(playerIndex)
     local satR, satG, satB = boostSaturation(color.r, color.g, color.b)
     local mat = makeCircleMat(satR, satG, satB)
     effect:SetMaterial(mat)
@@ -1730,7 +1793,7 @@ end
 function Player.SpawnSplatFX(pos, playerIndex)
     if scene_ == nil then return end
 
-    local color = Config.GetPlayerColor(playerIndex)
+    local color = getPlayerColor(playerIndex)
     local r, g, b = boostSaturation(color.r, color.g, color.b)
 
     -- === 第 1 层：大量碎片向四周飞散（主体喷溅） ===
@@ -2038,6 +2101,72 @@ function Player.ResetAll()
         if p.body then
             p.body.linearVelocity = Vector3(0, 0, 0)
         end
+
+        -- 重新应用职业属性和外观（修复切换职业后能力/外观不生效的问题）
+        local newClassId = p.classId or 1
+        if p.isHuman then
+            newClassId = Economy.GetSelectedClassId()
+        end
+        CharacterClass.ApplyToPlayer(p, newClassId)
+
+        -- 更新颜色
+        local bodyColor, outlineColor, emissiveColor
+        if newClassId > 1 then
+            bodyColor, outlineColor, emissiveColor = CharacterClass.GetColors(newClassId)
+        else
+            bodyColor = Config.GetPlayerColor(p.index)
+            outlineColor = Config.GetPlayerOutlineColor(p.index)
+            emissiveColor = Config.GetPlayerEmissive(p.index)
+        end
+        p.bodyColor = bodyColor
+        p.outlineColor = outlineColor
+        p.emissiveColor = emissiveColor
+
+        -- 更新身体材质
+        if p.material then
+            p.material:SetShaderParameter("MatDiffColor", Variant(bodyColor))
+            p.material:SetShaderParameter("MatEmissiveColor", Variant(emissiveColor))
+        end
+        -- 更新描边材质
+        if p.outlineMat then
+            p.outlineMat:SetShaderParameter("MatDiffColor", Variant(outlineColor))
+        end
+        -- 更新眼睛颜色（眼睛跟描边同色）
+        if p.visualNode then
+            local eyeL = p.visualNode:GetChild("EyeL")
+            local eyeR = p.visualNode:GetChild("EyeR")
+            if eyeL then
+                local eyeLModel = eyeL:GetComponent("StaticModel")
+                if eyeLModel then
+                    local eyeMat = eyeLModel:GetMaterial(0)
+                    if eyeMat then eyeMat:SetShaderParameter("MatDiffColor", Variant(outlineColor)) end
+                end
+            end
+            if eyeR then
+                local eyeRModel = eyeR:GetComponent("StaticModel")
+                if eyeRModel then
+                    local eyeMat = eyeRModel:GetMaterial(0)
+                    if eyeMat then eyeMat:SetShaderParameter("MatDiffColor", Variant(outlineColor)) end
+                end
+            end
+        end
+        -- 更新拖尾粒子颜色
+        if p.trailEmitter then
+            local maxC = math.max(bodyColor.r, bodyColor.g, bodyColor.b, 0.01)
+            local tR = math.min(1.0, bodyColor.r / maxC * 1.2)
+            local tG = math.min(1.0, bodyColor.g / maxC * 1.2)
+            local tB = math.min(1.0, bodyColor.b / maxC * 1.2)
+            p.trailColorR = tR
+            p.trailColorG = tG
+            p.trailColorB = tB
+            local effect = p.trailEmitter.effect
+            if effect then
+                effect:SetNumColorFrames(3)
+                effect:SetColorFrame(0, ColorFrame(Color(tR, tG, tB, 0.85), 0.0))
+                effect:SetColorFrame(1, ColorFrame(Color(tR, tG, tB, 0.4), 0.5))
+                effect:SetColorFrame(2, ColorFrame(Color(tR, tG, tB, 0.0), 1.0))
+            end
+        end
     end
 end
 
@@ -2227,7 +2356,7 @@ end
 function Player.SpawnFireworkFX(pos, playerIndex)
     if scene_ == nil then return end
 
-    local color = Config.GetPlayerColor(playerIndex) or { r = 1, g = 0.6, b = 0.2 }
+    local color = getPlayerColor(playerIndex) or { r = 1, g = 0.6, b = 0.2 }
     local r, g, b = boostSaturation(color.r, color.g, color.b)
     local centerY = pos.y + 1.5
 

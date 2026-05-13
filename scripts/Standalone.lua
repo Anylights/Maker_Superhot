@@ -17,6 +17,7 @@ local HUD = require("HUD")
 local SFX = require("SFX")
 local RandomPickup = require("RandomPickup")
 local RandomEvent = require("RandomEvent")
+local Economy = require("Economy")
 local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local Standalone = {}
@@ -41,6 +42,7 @@ local isMobile_ = false
 local jumpPressed_ = false   -- 跳跃按钮本帧被按下
 local dashPressed_ = false   -- 冲刺按钮本帧被按下
 local slamPressed_ = false   -- 下砸按钮本帧被按下
+local coinRewarded_ = false  -- 本局金币已发放
 
 -- ============================================================================
 -- 生命周期
@@ -89,6 +91,9 @@ function Standalone.Start()
     -- 调参面板初始化
     if TuningPanel then TuningPanel.Init(scene_) end
     if ExplosionTuningPanel then ExplosionTuningPanel.Init(scene_) end
+
+    -- 加载经济数据（云存档）
+    Economy.Load()
 
     -- 开始播放菜单 BGM，禁用游戏音效
     SFX.PlayMenuBGM()
@@ -424,12 +429,15 @@ function Standalone.HandleUpdate(dt)
         Standalone.SetVirtualControlsVisible(false)
         local btn = HUD.GetMenuButtonClicked()
         if btn == "startGame" then
+            coinRewarded_ = false
             Camera.spectateMode = false
             Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
             GameManager.StartGame()
             Standalone.UpdateDeathZone()
+        elseif btn == "shop" then
+            HUD.SetShopOpen(true)
         end
     end
 
@@ -437,8 +445,21 @@ function Standalone.HandleUpdate(dt)
     if GameManager.state == GameManager.STATE_RESULT then
         Camera.spectateMode = true
         Standalone.SetVirtualControlsVisible(false)
+        -- 发放本局金币奖励（仅一次）
+        if not coinRewarded_ then
+            coinRewarded_ = true
+            local score = 0
+            for _, p in ipairs(Player.list) do
+                if p.isHuman then score = p.score or 0; break end
+            end
+            local reward = Economy.RewardFromScore(score)
+            if reward > 0 then
+                print("[Standalone] 本局奖励金币: " .. reward .. " (分数=" .. score .. ")")
+            end
+        end
         local btn = HUD.GetResultButtonClicked()
         if btn == "restart" then
+            coinRewarded_ = false
             Camera.spectateMode = false
             Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()

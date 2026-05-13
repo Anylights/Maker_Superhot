@@ -1,0 +1,212 @@
+-- ============================================================================
+-- Economy.lua - 货币与职业持久化（云存档）
+-- 存储：金币（iscores）、已拥有职业列表 + 当前选中职业（values）
+-- ============================================================================
+
+local CharacterClass = require("CharacterClass")
+
+local Economy = {}
+
+-- 本地缓存
+local coins_      = 0             -- 当前金币
+local ownedIds_   = { 1 }         -- 已拥有的职业 ID 列表（默认拥有 1）
+local selectedId_ = 1             -- 当前选中职业 ID
+local loaded_     = false         -- 是否已从云端加载
+local loading_    = false         -- 正在加载中
+
+-- ============================================================================
+-- 内部工具
+-- ============================================================================
+
+--- 检查是否拥有某职业
+---@param id number
+---@return boolean
+local function hasClass(id)
+    for _, v in ipairs(ownedIds_) do
+        if v == id then return true end
+    end
+    return false
+end
+
+--- 将 owned 列表序列化为逗号分隔字符串（云端存储）
+---@return string
+local function serializeOwned()
+    local parts = {}
+    for _, id in ipairs(ownedIds_) do
+        parts[#parts + 1] = tostring(id)
+    end
+    return table.concat(parts, ",")
+end
+
+--- 从逗号分隔字符串反序列化 owned 列表
+---@param str string
+---@return number[]
+local function deserializeOwned(str)
+    if not str or str == "" then return { 1 } end
+    local result = {}
+    for s in string.gmatch(str, "([^,]+)") do
+        local n = tonumber(s)
+        if n then result[#result + 1] = n end
+    end
+    -- 确保默认职业始终存在
+    local has1 = false
+    for _, v in ipairs(result) do
+        if v == 1 then has1 = true; break end
+    end
+    if not has1 then table.insert(result, 1, 1) end
+    return result
+end
+
+-- ============================================================================
+-- 云端读写
+-- ============================================================================
+
+--- 从云端加载经济数据
+function Economy.Load()
+    if not clientCloud then
+        print("[Economy] clientCloud not available, using defaults")
+        loaded_ = true
+        return
+    end
+    if loading_ then return end
+    loading_ = true
+
+    clientCloud:Get("coins", {
+        ok = function(values, iscores)
+            coins_ = iscores.coins or 0
+            -- owned_classes 和 selected_class 存在 values 里
+            if values.owned_classes then
+                ownedIds_ = deserializeOwned(tostring(values.owned_classes))
+            end
+            if values.selected_class then
+                local sel = tonumber(values.selected_class)
+                if sel and CharacterClass.GetById(sel) and hasClass(sel) then
+                    selectedId_ = sel
+                else
+                    selectedId_ = 1
+                end
+            end
+            loaded_ = true
+            loading_ = false
+            print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_)
+        end,
+        error = function(code, reason)
+            print("[Economy] Load error: " .. tostring(reason) .. " (code=" .. tostring(code) .. ")")
+            loaded_ = true
+            loading_ = false
+        end,
+    })
+end
+
+--- 保存当前经济数据到云端
+---@param callback? fun() 保存成功回调
+function Economy.Save(callback)
+    if not clientCloud then
+        if callback then callback() end
+        return
+    end
+
+    clientCloud:BatchSet()
+        :SetInt("coins", coins_)
+        :Set("owned_classes", serializeOwned())
+        :Set("selected_class", tostring(selectedId_))
+        :Save("Economy save", {
+            ok = function()
+                print("[Economy] Saved: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_)
+                if callback then callback() end
+            end,
+            error = function(code, reason)
+                print("[Economy] Save error: " .. tostring(reason))
+                if callback then callback() end
+            end,
+        })
+end
+
+-- ============================================================================
+-- 公共 API
+-- ============================================================================
+
+--- 是否已加载完成
+---@return boolean
+function Economy.IsLoaded()
+    return loaded_
+end
+
+--- 获取当前金币
+---@return number
+function Economy.GetCoins()
+    return coins_
+end
+
+--- 增加金币（比赛结束时奖励）
+---@param amount number
+function Economy.AddCoins(amount)
+    coins_ = coins_ + amount
+end
+
+--- 获取当前选中职业 ID
+---@return number
+function Economy.GetSelectedClassId()
+    return selectedId_
+end
+
+--- 设置选中职业（必须已拥有）
+---@param id number
+---@return boolean 是否设置成功
+function Economy.SelectClass(id)
+    if not hasClass(id) then return false end
+    selectedId_ = id
+    Economy.Save()
+    return true
+end
+
+--- 是否拥有某职业
+---@param id number
+---@return boolean
+function Economy.OwnsClass(id)
+    return hasClass(id)
+end
+
+--- 获取所有已拥有的职业 ID 列表
+---@return number[]
+function Economy.GetOwnedIds()
+    return ownedIds_
+end
+
+--- 购买职业
+---@param id number
+---@return boolean success
+---@return string? errorMsg
+function Economy.BuyClass(id)
+    if hasClass(id) then
+        return false, "already_owned"
+    end
+    local def = CharacterClass.GetById(id)
+    if not def then
+        return false, "invalid_class"
+    end
+    if coins_ < def.price then
+        return false, "not_enough_coins"
+    end
+
+    coins_ = coins_ - def.price
+    ownedIds_[#ownedIds_ + 1] = id
+    -- 购买后自动选中
+    selectedId_ = id
+    Economy.Save()
+    print("[Economy] Bought class " .. def.name .. " for " .. def.price .. " coins, remaining=" .. coins_)
+    return true, nil
+end
+
+--- 比赛结算奖励金币（基于分数）
+---@param score number 本局得分
+---@return number reward 获得的金币数
+function Economy.RewardFromScore(score)
+    -- 简单公式：每 100 分 = 10 金币，最低 5 金币
+    local reward = math.max(5, math.floor(score / 10))
+    Economy.AddCoins(reward)
+    Economy.Save()
+    return reward
+end
+
+return Economy

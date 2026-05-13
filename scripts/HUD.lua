@@ -10,6 +10,9 @@ local Config = require("Config")
 local Camera = require("Camera")
 local Theme = require("Theme")
 local RandomEvent = require("RandomEvent")
+local ShopUI = require("ShopUI")
+local Economy = require("Economy")
+local CharacterClass = require("CharacterClass")
 
 local HUD = {}
 
@@ -37,7 +40,10 @@ local playerModule_ = nil
 local gameManager_ = nil
 
 -- 菜单按钮点击结果
-local menuButtonClicked_ = nil  -- "startGame" | nil
+local menuButtonClicked_ = nil  -- "startGame" | "shop" | nil
+
+-- 商店状态
+local shopOpen_ = false
 
 -- 结算画面按钮点击结果
 local resultButtonClicked_ = nil  -- "restart" | "menu" | nil
@@ -338,6 +344,19 @@ function HUD.GetMenuButtonClicked()
     return v
 end
 
+--- 设置商店打开/关闭状态
+function HUD.SetShopOpen(open)
+    shopOpen_ = open
+    if open then
+        ShopUI.Reset()
+    end
+end
+
+--- 获取商店是否打开
+function HUD.IsShopOpen()
+    return shopOpen_
+end
+
 --- 获取结算画面中哪个按钮被点击（获取后自动清除）
 ---@return string|nil -- "restart" | "menu" | nil
 function HUD.GetResultButtonClicked()
@@ -413,11 +432,21 @@ function HandleNanoVGRender(eventType, eventData)
 
     nvgBeginFrame(vg_, logW_, logH_, dpr_)
 
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
     local state = gameManager_ and gameManager_.state or "playing"
 
-    -- 主菜单
+    -- 主菜单 / 商店
     if state == "menu" then
-        HUD.DrawMenu()
+        if shopOpen_ then
+            ShopUI.Draw(vg_, logW_, logH_, uiScale_, isMobileHUD_, cachedMousePress_, mx, my)
+            local shopBtn = ShopUI.GetButtonClicked()
+            if shopBtn == "back" then
+                shopOpen_ = false
+            end
+        else
+            HUD.DrawMenu()
+        end
         nvgEndFrame(vg_)
         return
     end
@@ -573,7 +602,7 @@ function HUD.DrawWorldIndicators()
                 local ringRadius = Camera.WorldSizeToScreen(0.35, logH_)
                 if ringRadius < 4 then ringRadius = 4 end
 
-                local progress = 1.0 - (p.dashCooldown / Config.DashCooldown)
+                local progress = 1.0 - (p.dashCooldown / (p.dashCooldownMax or Config.DashCooldown))
                 progress = math.max(0, math.min(1, progress))
 
                 -- 背景环（深紫灰）
@@ -1620,6 +1649,13 @@ function HUD.DrawResultScreen()
     nvgFontSize(vg_, titleFs)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
+    -- 获取玩家数据（提前取出，标题下面要用分数）
+    local p1Entry = nil
+    for _, entry in ipairs(rankings) do
+        if entry.index == 1 then p1Entry = entry break end
+    end
+    local p1Score = p1Entry and p1Entry.score or 0
+
     local winner = gameManager_.GetWinner()
     if winner == 1 then
         local pulse = math.abs(math.sin(time.elapsedTime * 2)) * 30 + 225
@@ -1634,11 +1670,38 @@ function HUD.DrawResultScreen()
         nvgText(vg_, cx, titleY, "游戏结束")
     end
 
-    -- 本局战绩（带高亮数字 + 评语）
-    local p1Entry = nil
-    for _, entry in ipairs(rankings) do
-        if entry.index == 1 then p1Entry = entry break end
+    -- 大号分数显示
+    local scoreFs = math.max(36, math.floor(64 * uiScale_))
+    local scoreY = titleY + titleFs * 0.5 + math.floor(12 * uiScale_)
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, scoreFs)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    -- 阴影
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
+    nvgText(vg_, cx + 2, scoreY + 2, tostring(p1Score))
+    -- 金色分数
+    nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 255))
+    nvgText(vg_, cx, scoreY, tostring(p1Score))
+    -- "分" 标签
+    local scoreLabelY = scoreY + scoreFs + math.floor(2 * uiScale_)
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, math.max(11, math.floor(15 * uiScale_)))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    fillTheme(Theme.textSec, 160)
+    nvgText(vg_, cx, scoreLabelY, "分")
+
+    -- 金币奖励提示
+    local coinReward = Economy.RewardFromScore(p1Score)
+    if coinReward > 0 then
+        local coinY = scoreLabelY + math.floor(18 * uiScale_)
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, math.max(10, math.floor(14 * uiScale_)))
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 180))
+        nvgText(vg_, cx, coinY, "+" .. coinReward .. " 金币")
     end
+
+    -- 本局战绩（带高亮数字 + 评语）
     if p1Entry then
         local floors = math.floor((p1Entry.heightScore or 0) / Config.HeightScoreUnit)
         local slams = p1Entry.slamHits or 0
@@ -1656,9 +1719,9 @@ function HUD.DrawResultScreen()
             { "击杀了 ",   tostring(kls),    " 玩家",  "被爆杀 ", tostring(gotKld), " 次" },
         }
 
-        local lineH = math.floor(30 * uiScale_)
-        local startY = math.floor(95 * uiScale_)
-        local fontSize = math.max(13, math.floor(21 * uiScale_))
+        local lineH = math.floor(24 * uiScale_)
+        local startY = scoreLabelY + math.floor(42 * uiScale_)
+        local fontSize = math.max(11, math.floor(16 * uiScale_))
 
         for i, sl in ipairs(statLines) do
             local y = startY + (i - 1) * lineH
@@ -1765,9 +1828,9 @@ function HUD.DrawResultScreen()
             comment = pool[seed % #pool + 1]
         end
 
-        local commentY = startY + #statLines * lineH + fontSize * 2
+        local commentY = startY + #statLines * lineH + math.floor(10 * uiScale_)
         nvgFontFace(vg_, "sans")
-        nvgFontSize(vg_, math.max(11, math.floor(16 * uiScale_)))
+        nvgFontSize(vg_, math.max(10, math.floor(14 * uiScale_)))
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
         nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 200))
         nvgText(vg_, cx, commentY, "「" .. comment .. "」")
@@ -1776,7 +1839,8 @@ function HUD.DrawResultScreen()
     -- 排行榜（仅云端）
     local tableW = math.min(logW_ * 0.85, math.floor(500 * uiScale_))
     local tableX = cx - tableW * 0.5
-    local cloudY = math.floor(345 * uiScale_)
+    -- 排行榜起始 Y 基于分数区域高度动态计算
+    local cloudY = scoreLabelY + math.floor(170 * uiScale_)
     HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX)
 
     -- 底部按钮
@@ -2325,17 +2389,40 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     fillTheme(Theme.textSec, 200)
     nvgText(vg_, cx, subtitleY, "大地图攀登挑战 2分钟限时赛")
 
-    -- 开始按钮
-    local btnW = 120
-    local btnH = 34
-    local btnY = subtitleY + 18
-    local btnX = cx - btnW * 0.5
+    -- 当前职业显示
+    local classId = Economy.GetSelectedClassId()
+    local classDef = CharacterClass.GetById(classId)
+    local classLabelY = subtitleY + 16
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 10)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    fillTheme(Theme.textSec, 160)
+    local classLabel = "职业: " .. (classDef and (classDef.icon .. " " .. classDef.name) or "街头小子")
+    nvgText(vg_, cx, classLabelY, classLabel)
 
-    local hovered = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
-    local clicked = HUD.DrawRubberButton(btnX, btnY, btnW, btnH, "开始游戏",
-        Theme.primary[1], Theme.primary[2], Theme.primary[3], hovered)
-    if clicked then
+    -- 按钮区域（开始 + 商店 横排）
+    local btnW = 100
+    local btnH = 34
+    local btnGap = 10
+    local btnY = classLabelY + 14
+    local totalBtnW = btnW * 2 + btnGap
+    local btnStartX = cx - totalBtnW * 0.5
+
+    -- 开始游戏按钮
+    local startHovered = mx >= btnStartX and mx <= btnStartX + btnW and my >= btnY and my <= btnY + btnH
+    local startClicked = HUD.DrawRubberButton(btnStartX, btnY, btnW, btnH, "开始游戏",
+        Theme.primary[1], Theme.primary[2], Theme.primary[3], startHovered)
+    if startClicked then
         menuButtonClicked_ = "startGame"
+    end
+
+    -- 商店按钮
+    local shopX = btnStartX + btnW + btnGap
+    local shopHovered = mx >= shopX and mx <= shopX + btnW and my >= btnY and my <= btnY + btnH
+    local shopClicked = HUD.DrawRubberButton(shopX, btnY, btnW, btnH, "商店",
+        Theme.accent[1], Theme.accent[2], Theme.accent[3], shopHovered)
+    if shopClicked then
+        menuButtonClicked_ = "shop"
     end
 
     -- ==================== 下方：排行榜（可滚动，居中，较窄）====================
@@ -2638,17 +2725,40 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     fillTheme(Theme.textSec, 200)
     nvgText(vg_, cx, subtitleY, "大地图攀登挑战  2分钟限时赛")
 
-    -- 开始按钮
-    local btnW = 180
-    local btnH = 50
-    local btnY = subtitleY + 28
-    local btnX = cx - btnW * 0.5
+    -- 当前职业显示
+    local classId = Economy.GetSelectedClassId()
+    local classDef = CharacterClass.GetById(classId)
+    local classLabelY = subtitleY + 22
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 13)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    fillTheme(Theme.textSec, 160)
+    local classLabel = "当前职业: " .. (classDef and (classDef.icon .. " " .. classDef.name) or "街头小子")
+    nvgText(vg_, cx, classLabelY, classLabel)
 
-    local hovered = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
-    local clicked = HUD.DrawRubberButton(btnX, btnY, btnW, btnH, "开始游戏",
-        Theme.primary[1], Theme.primary[2], Theme.primary[3], hovered)
-    if clicked then
+    -- 按钮区域（开始 + 商店 横排）
+    local btnW = 140
+    local btnH = 50
+    local btnGap = 16
+    local btnY = classLabelY + 18
+    local totalBtnW = btnW * 2 + btnGap
+    local btnStartX = cx - totalBtnW * 0.5
+
+    -- 开始游戏按钮
+    local startHovered = mx >= btnStartX and mx <= btnStartX + btnW and my >= btnY and my <= btnY + btnH
+    local startClicked = HUD.DrawRubberButton(btnStartX, btnY, btnW, btnH, "开始游戏",
+        Theme.primary[1], Theme.primary[2], Theme.primary[3], startHovered)
+    if startClicked then
         menuButtonClicked_ = "startGame"
+    end
+
+    -- 商店按钮
+    local shopX = btnStartX + btnW + btnGap
+    local shopHovered = mx >= shopX and mx <= shopX + btnW and my >= btnY and my <= btnY + btnH
+    local shopClicked = HUD.DrawRubberButton(shopX, btnY, btnW, btnH, "商店",
+        Theme.accent[1], Theme.accent[2], Theme.accent[3], shopHovered)
+    if shopClicked then
+        menuButtonClicked_ = "shop"
     end
 
     -- 排行榜区域

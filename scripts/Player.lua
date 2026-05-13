@@ -518,7 +518,6 @@ end
 --- 每帧更新所有玩家
 ---@param dt number
 function Player.UpdateAll(dt)
-    if Player.frozen then return end  -- 结算时冻结，跳过所有更新
     for _, p in ipairs(Player.list) do
         Player.UpdateOne(p, dt)
     end
@@ -785,7 +784,8 @@ function Player.UpdateOne(p, dt)
     end
 
     -- 高度得分实时计算（基于当前 Y 位置）
-    if p.node then
+    -- 结算冻结时跳过分数更新
+    if p.node and not Player.frozen then
         local currentY = p.node.position.y
         -- 记录历史最高
         if currentY > p.maxHeight then
@@ -1693,6 +1693,7 @@ Player.onKill = nil
 function Player.Kill(p, reason, killerIndex)
     if not p.alive then return end
     if p.invincibleTimer > 0 then return end
+    if Player.frozen then return end  -- 结算后不再计分
 
     p.alive = false
     p.respawnTimer = Config.RespawnDelay
@@ -2235,29 +2236,14 @@ end
 
 --- 冻结所有玩家（结算时调用，防止物理碰撞导致数据变化）
 function Player.FreezeAll()
-    for _, p in ipairs(Player.list) do
-        if p.body then
-            p.body.linearVelocity = Vector3(0, 0, 0)
-            p.body.mass = 0  -- 变成静态体，不再受物理影响
-        end
-        -- 关闭拖尾粒子
-        if p.trailEmitter then
-            p.trailEmitter.emitting = false
-        end
-    end
     Player.frozen = true
-    print("[Player] FreezeAll: all players frozen")
+    print("[Player] FreezeAll: scores frozen")
 end
 
 --- 解冻所有玩家（新一局开始时调用）
 function Player.UnfreezeAll()
-    for _, p in ipairs(Player.list) do
-        if p.body then
-            p.body.mass = 1.0  -- 恢复动态体
-        end
-    end
     Player.frozen = false
-    print("[Player] UnfreezeAll: all players unfrozen")
+    print("[Player] UnfreezeAll: scores unfrozen")
 end
 
 --- 只重置所有玩家的计分，不影响位置
@@ -2470,6 +2456,7 @@ end
 ---@param p table
 ---@param points number
 function Player.AddPickupScore(p, points)
+    if Player.frozen then return end  -- 结算后不再计分
     p.pickupScore = (p.pickupScore or 0) + points
     p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
 end

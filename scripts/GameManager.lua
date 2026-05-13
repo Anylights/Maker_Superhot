@@ -293,6 +293,7 @@ end
 function GameManager.CanAIMove()
     return GameManager.state == GameManager.STATE_MENU
         or GameManager.state == GameManager.STATE_PLAYING
+        or GameManager.state == GameManager.STATE_RESULT
 end
 
 return GameManager

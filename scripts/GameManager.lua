@@ -229,7 +229,9 @@ function GameManager.EndGame()
     SFX.Play("round_end", 0.7)
     GameManager.SetState(GameManager.STATE_RESULT)
     -- 冻结所有玩家物理体，防止结算后分数/高度继续变化
-    Player.FreezeAll()
+    if playerModule_ and playerModule_.FreezeAll then
+        playerModule_.FreezeAll()
+    end
     print("[GameManager] Game ended → result screen (players frozen)")
 end
 

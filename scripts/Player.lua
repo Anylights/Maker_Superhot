@@ -289,8 +289,9 @@ function Player.Create(index, isHuman)
         -- 能量
         energy = 0,
 
-        -- 欲穷千里事件：落地额外得分弹出
+        -- 欲穷千里事件：落地额外得分
         lastLandingBaseHeight = 0,  -- 上次落地时的基础高度分
+        climbBonusScore = 0,        -- 欲穷千里累计额外加分
 
         -- 爆炸（蓄力机制）
         charging = false,       -- 是否在蓄力中
@@ -598,18 +599,21 @@ function Player.UpdateOne(p, dt)
             Player.DoSlamLanding(p)
         end
 
-        -- 欲穷千里事件：落地时弹出额外高度得分
-        if RandomEvent.GetHeightScoreMul() > 1 and p.isHuman and p.node then
+        -- 欲穷千里事件：落地时给予额外高度得分（累加，不会回退）
+        if RandomEvent.GetHeightScoreMul() > 1 and p.node then
             local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
             local heightBlocks = (p.node.position.y - spawnY) / Config.BlockSize
             local currentBase = math.floor(heightBlocks) * Config.HeightScoreUnit
             local extraScore = (currentBase - p.lastLandingBaseHeight) * 2  -- 额外2倍部分
             if extraScore > 0 then
-                local HUD = require("HUD")
-                HUD.AddScorePopup(
-                    p.node.position.x, p.node.position.y + 1.5,
-                    "额外加分+" .. math.floor(extraScore), 80, 255, 80, 22
-                )
+                p.climbBonusScore = (p.climbBonusScore or 0) + extraScore
+                if p.isHuman then
+                    local HUD = require("HUD")
+                    HUD.AddScorePopup(
+                        p.node.position.x, p.node.position.y + 1.5,
+                        "额外加分+" .. math.floor(extraScore), 80, 255, 80, 22
+                    )
+                end
             end
             p.lastLandingBaseHeight = currentBase
         end
@@ -791,9 +795,9 @@ function Player.UpdateOne(p, dt)
         -- 下降时分数也减少
         local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
         local heightBlocks = (currentY - spawnY) / Config.BlockSize
-        p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit * RandomEvent.GetHeightScoreMul()
-        -- 总分 = 高度 + 击杀 + 拾取
-        p.score = p.heightScore + p.killScore + p.pickupScore
+        p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit
+        -- 总分 = 高度 + 击杀 + 拾取 + 欲穷千里额外
+        p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
     end
 
     -- =====================
@@ -1696,7 +1700,7 @@ function Player.Kill(p, reason, killerIndex)
 
     -- 死亡惩罚
     p.pickupScore = math.max(0, p.pickupScore - Config.DeathPenalty)
-    p.score = p.heightScore + p.killScore + p.pickupScore
+    p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
 
     -- 被击杀计数
     if killerIndex and killerIndex ~= p.index then
@@ -1728,7 +1732,7 @@ function Player.Kill(p, reason, killerIndex)
                 end
                 killBonus = killBonus * RandomEvent.GetKillScoreMul()
                 killer.killScore = killer.killScore + killBonus
-                killer.score = killer.heightScore + killer.killScore + killer.pickupScore
+                killer.score = killer.heightScore + killer.killScore + killer.pickupScore + (killer.climbBonusScore or 0)
 
                 -- 击杀得分头顶弹出
                 if killer.node then
@@ -2047,6 +2051,8 @@ function Player.ResetAll()
         p.heightScore = 0
         p.killScore = 0
         p.pickupScore = 0
+        p.climbBonusScore = 0
+        p.lastLandingBaseHeight = 0
         p.maxHeight = 0
         p.deaths = 0
         p.slamHits = 0
@@ -2262,6 +2268,8 @@ function Player.ResetScoresOnly()
         p.heightScore = 0
         p.killScore = 0
         p.pickupScore = 0
+        p.climbBonusScore = 0
+        p.lastLandingBaseHeight = 0
         p.maxHeight = p.node and p.node.position.y or 0
         p.deaths = 0
         p.slamHits = 0
@@ -2463,7 +2471,7 @@ end
 ---@param points number
 function Player.AddPickupScore(p, points)
     p.pickupScore = (p.pickupScore or 0) + points
-    p.score = p.heightScore + p.killScore + p.pickupScore
+    p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
 end
 
 --- 获取活跃玩家位置列表

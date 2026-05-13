@@ -6,6 +6,7 @@
 local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
+local RandomEvent = require("RandomEvent")
 
 local GameManager = {}
 
@@ -116,6 +117,8 @@ function GameManager.JoinGame()
     -- 重置道具（公平分布）
     if pickupModule_ then pickupModule_.Reset() end
     if randomPickupModule_ then randomPickupModule_.Reset() end
+    -- 重置随机事件
+    RandomEvent.Init()
 
     -- 重置倒计时音效跟踪
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1

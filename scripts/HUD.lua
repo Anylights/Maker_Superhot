@@ -9,6 +9,7 @@
 local Config = require("Config")
 local Camera = require("Camera")
 local Theme = require("Theme")
+local RandomEvent = require("RandomEvent")
 
 local HUD = {}
 
@@ -441,6 +442,7 @@ function HandleNanoVGRender(eventType, eventData)
     if state == "playing" then
         HUD.DrawGameTimer()
         HUD.DrawHeightIndicator()
+        RandomEvent.DrawAnnouncement(vg_, logW_, logH_)
     end
 
     -- 消费击杀事件 + 绘制浮动文字

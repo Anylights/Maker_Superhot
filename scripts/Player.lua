@@ -7,6 +7,7 @@ local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
 local Camera = require("Camera")
+local RandomEvent = require("RandomEvent")
 
 local Player = {}
 
@@ -212,6 +213,9 @@ function Player.Create(index, isHuman)
     body.collisionLayer = 2
     body.collisionMask = 0xFFFF
     body.collisionEventMode = COLLISION_ALWAYS
+    -- CCD 防止高速下砸穿墙（胶囊半径0.45，阈值略小于半径）
+    body.ccdRadius = 0.4
+    body.ccdMotionThreshold = 0.3
 
     -- 2.5D 约束：锁 Z 移动，锁全旋转
     body.linearFactor = Vector3(1, 1, 0)
@@ -252,6 +256,9 @@ function Player.Create(index, isHuman)
 
         -- 能量
         energy = 0,
+
+        -- 欲穷千里事件：落地额外得分弹出
+        lastLandingBaseHeight = 0,  -- 上次落地时的基础高度分
 
         -- 爆炸（蓄力机制）
         charging = false,       -- 是否在蓄力中
@@ -540,6 +547,22 @@ function Player.UpdateOne(p, dt)
             Player.DoSlamLanding(p)
         end
 
+        -- 欲穷千里事件：落地时弹出额外高度得分
+        if RandomEvent.GetHeightScoreMul() > 1 and p.isHuman and p.node then
+            local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
+            local heightBlocks = (p.node.position.y - spawnY) / Config.BlockSize
+            local currentBase = math.floor(heightBlocks) * Config.HeightScoreUnit
+            local extraScore = (currentBase - p.lastLandingBaseHeight) * 2  -- 额外2倍部分
+            if extraScore > 0 then
+                local HUD = require("HUD")
+                HUD.AddScorePopup(
+                    p.node.position.x, p.node.position.y + 1.5,
+                    "额外加分+" .. math.floor(extraScore), 80, 255, 80, 22
+                )
+            end
+            p.lastLandingBaseHeight = currentBase
+        end
+
         -- 着陆时检查跳跃缓冲：缓冲窗口内有按键 → 自动起跳
         if p.jumpBufferTimer > 0 then
             p.jumpBufferTimer = 0
@@ -717,7 +740,7 @@ function Player.UpdateOne(p, dt)
         -- 下降时分数也减少
         local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
         local heightBlocks = (currentY - spawnY) / Config.BlockSize
-        p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit
+        p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit * RandomEvent.GetHeightScoreMul()
         -- 总分 = 高度 + 击杀 + 拾取
         p.score = p.heightScore + p.killScore + p.pickupScore
     end
@@ -886,10 +909,11 @@ function Player.DoJump(p)
     p.jumpCount = p.jumpCount + 1
     p.coyoteTimer = Config.CoyoteTime + 1  -- 跳跃后禁止再次土狼跳
 
-    -- 设置向上初速度
+    -- 设置向上初速度（受随机事件"超重"影响）
     if p.body then
         local vel = p.body.linearVelocity
-        p.body.linearVelocity = Vector3(vel.x, Config.JumpSpeed, 0)
+        local jumpSpeed = Config.JumpSpeed * RandomEvent.GetJumpSpeedMul()
+        p.body.linearVelocity = Vector3(vel.x, jumpSpeed, 0)
     end
 
     if p.node then
@@ -980,6 +1004,12 @@ function Player.UpdateMovement(p, dt)
         if vy < -Config.MaxFallSpeed then
             vy = -Config.MaxFallSpeed
         end
+    end
+
+    -- 随机事件：八级大风（施加水平力）
+    local windForce = RandomEvent.GetWindForce()
+    if windForce ~= 0 then
+        finalVx = finalVx + windForce * dt
     end
 
     p.body.linearVelocity = Vector3(finalVx, vy, 0)
@@ -1323,7 +1353,7 @@ end
 ---@param dt number
 function Player.UpdateEnergy(p, dt)
     if p.energy < 1.0 then
-        p.energy = p.energy + dt / Config.EnergyChargeTime
+        p.energy = p.energy + dt / Config.EnergyChargeTime * RandomEvent.GetEnergyChargeMul()
         if p.energy > 1.0 then
             p.energy = 1.0
         end
@@ -1630,8 +1660,24 @@ function Player.Kill(p, reason, killerIndex)
                 if mkCount >= 2 then
                     killBonus = killBonus + mkCount * multiBonus
                 end
+                killBonus = killBonus * RandomEvent.GetKillScoreMul()
                 killer.killScore = killer.killScore + killBonus
                 killer.score = killer.heightScore + killer.killScore + killer.pickupScore
+
+                -- 击杀得分头顶弹出
+                if killer.node then
+                    local HUD = require("HUD")
+                    local label = "击杀+" .. math.floor(killBonus)
+                    local r, g, b = 255, 80, 80  -- 红色
+                    if RandomEvent.GetKillScoreMul() > 1 then
+                        label = "嗜血击杀+" .. math.floor(killBonus)
+                        r, g, b = 255, 50, 50
+                    end
+                    HUD.AddScorePopup(
+                        killer.node.position.x, killer.node.position.y + 1.5,
+                        label, r, g, b, 22
+                    )
+                end
 
                 -- 通知 GameManager
                 if Player.onKill then

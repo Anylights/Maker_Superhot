@@ -16,6 +16,7 @@ local GameManager = require("GameManager")
 local HUD = require("HUD")
 local SFX = require("SFX")
 local RandomPickup = require("RandomPickup")
+local RandomEvent = require("RandomEvent")
 local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local Standalone = {}
@@ -347,6 +348,37 @@ function Standalone.CreateBackgroundPlane()
         mat:SetShaderParameter("Metallic", Variant(0.0))
         mat:SetShaderParameter("Roughness", Variant(1.0))
         model:SetMaterial(mat)
+        -- 保存材质引用，用于随机事件背景渐变
+        if not Standalone.bgStripMaterials_ then
+            Standalone.bgStripMaterials_ = {}
+        end
+        Standalone.bgStripMaterials_[i + 1] = mat
+    end
+end
+
+function Standalone.UpdateBackgroundColors()
+    local mats = Standalone.bgStripMaterials_
+    if not mats then return end
+    local topColor, botColor = RandomEvent.GetBgColors()
+    if not topColor then
+        topColor = Config.BgColorTop
+        botColor = Config.BgColorBot
+    end
+    local strips = #mats
+    for i = 1, strips do
+        local t0 = (i - 1) / strips
+        local t1 = i / strips
+        local r0 = topColor[1] + (botColor[1] - topColor[1]) * t0
+        local g0 = topColor[2] + (botColor[2] - topColor[2]) * t0
+        local b0 = topColor[3] + (botColor[3] - topColor[3]) * t0
+        local r1 = topColor[1] + (botColor[1] - topColor[1]) * t1
+        local g1 = topColor[2] + (botColor[2] - topColor[2]) * t1
+        local b1 = topColor[3] + (botColor[3] - topColor[3]) * t1
+        local midR = (r0 + r1) * 0.5
+        local midG = (g0 + g1) * 0.5
+        local midB = (b0 + b1) * 0.5
+        mats[i]:SetShaderParameter("MatDiffColor", Variant(Color(midR, midG, midB, 1.0)))
+        mats[i]:SetShaderParameter("MatEmissiveColor", Variant(Color(midR * 0.3, midG * 0.3, midB * 0.3)))
     end
 end
 
@@ -427,6 +459,13 @@ function Standalone.HandleUpdate(dt)
     local tuningOpen = (TuningPanel and TuningPanel.IsVisible()) or (ExplosionTuningPanel and ExplosionTuningPanel.IsVisible())
     if not tuningOpen then
         GameManager.Update(dt)
+    end
+
+    -- 随机事件更新（仅 Playing 状态）
+    if GameManager.state == GameManager.STATE_PLAYING then
+        RandomEvent.Update(dt)
+        -- 更新背景颜色
+        Standalone.UpdateBackgroundColors()
     end
 
     Map.Update(dt)

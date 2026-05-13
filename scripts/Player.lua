@@ -1700,8 +1700,21 @@ function Player.Kill(p, reason, killerIndex)
     p.deaths = (p.deaths or 0) + 1
 
     -- 死亡惩罚
-    p.pickupScore = math.max(0, p.pickupScore - Config.DeathPenalty)
-    p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
+    if reason == "fall" then
+        -- 坠落惩罚：扣除200分（20层平台高度）
+        local fallPenalty = Config.HeightScoreUnit * 20  -- 200分
+        p.pickupScore = math.max(0, p.pickupScore - fallPenalty)
+        p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
+        -- 屏幕弹出"失足！"提示（在重生点位置显示，坠落位置已不可见）
+        if p.isHuman then
+            local HUD = require("HUD")
+            local sx, sy = MapData.GetSpawnPosition(p.index)
+            HUD.AddScorePopup(sx, sy + 2, "失足！-" .. fallPenalty .. "分", 255, 80, 80, 28)
+        end
+    else
+        p.pickupScore = math.max(0, p.pickupScore - Config.DeathPenalty)
+        p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
+    end
 
     -- 被击杀计数
     if killerIndex and killerIndex ~= p.index then

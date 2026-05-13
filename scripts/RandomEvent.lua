@@ -175,7 +175,7 @@ end
 --- 返回跳跃速度乘数
 function RandomEvent.GetJumpSpeedMul()
     if active_ and currentDef_ and currentDef_.id == "heavy" then
-        return 0.6
+        return 0.707  -- √0.5 ≈ 0.707，跳跃高度 = 速度²/2g → 恰好为正常的一半
     end
     return 1.0
 end

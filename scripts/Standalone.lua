@@ -3,6 +3,7 @@
 -- ============================================================================
 
 require "LuaScripts/Utilities/Sample"
+require "urhox-libs.UI.VirtualControls"
 
 local Config = require("Config")
 local Camera = require("Camera")
@@ -15,6 +16,7 @@ local GameManager = require("GameManager")
 local HUD = require("HUD")
 local SFX = require("SFX")
 local RandomPickup = require("RandomPickup")
+local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local Standalone = {}
 
@@ -27,6 +29,17 @@ local ExplosionTuningPanel = nil
 ---@type Scene
 local scene_ = nil
 local debugDraw_ = false
+
+-- 移动端虚拟控件
+local joystick_ = nil
+local jumpButton_ = nil
+local dashButton_ = nil
+local slamButton_ = nil
+local chargeButton_ = nil
+local isMobile_ = false
+local jumpPressed_ = false   -- 跳跃按钮本帧被按下
+local dashPressed_ = false   -- 冲刺按钮本帧被按下
+local slamPressed_ = false   -- 下砸按钮本帧被按下
 
 -- ============================================================================
 -- 生命周期
@@ -80,6 +93,9 @@ function Standalone.Start()
     SFX.PlayMenuBGM()
     SFX.DisableSFX()
 
+    -- 移动端虚拟控件初始化
+    Standalone.InitMobileControls()
+
     print("[Standalone] All systems initialized")
 end
 
@@ -87,6 +103,139 @@ function Standalone.Stop()
     if TuningPanel then TuningPanel.Shutdown() end
     if ExplosionTuningPanel then ExplosionTuningPanel.Shutdown() end
     print("[Standalone] Game stopped")
+end
+
+-- ============================================================================
+-- 移动端虚拟控件
+-- ============================================================================
+
+function Standalone.InitMobileControls()
+    -- 使用屏幕尺寸检测（与 HUD 的 isMobileHUD_ 一致）
+    -- IsTouchSupported() 在 WASM 平台返回 false，不可靠
+    local dpr = graphics:GetDPR()
+    local logH = graphics:GetHeight() / dpr
+    isMobile_ = (logH < 500)
+    print("[Standalone] isMobile=" .. tostring(isMobile_) .. " (logH=" .. math.floor(logH) .. ")")
+
+    -- 初始化虚拟控件系统（横屏 1920x1080 设计分辨率）
+    VirtualControls.Initialize(1920, 1080)
+
+    -- ========== 左侧：摇杆 ==========
+    -- 缩小到之前的 0.7 倍直径
+    joystick_ = VirtualControls.CreateJoystick({
+        position = Vector2(420, -280),
+        alignment = {HA_LEFT, VA_BOTTOM},
+        baseRadius = 154,    -- 220 * 0.7
+        knobRadius = 56,     -- 80 * 0.7
+        moveRadius = 84,     -- 120 * 0.7
+        deadZone = 0.15,
+        keyBinding = "WASD",
+        opacity = 0.35,
+        activeOpacity = 0.75,
+    })
+
+    -- ========== 右侧：按钮组（围绕跳跃按钮圆心排布）==========
+    -- 按钮尺寸放大到 1.2 倍
+    local jumpR = 98    -- 82 * 1.2 ≈ 98
+    local smallR = 74   -- 62 * 1.2 ≈ 74
+    -- 轨道距离（中心间距）：390 的一半 = 195
+    local orbitDist = 195
+
+    -- 跳跃按钮中心位置：在之前基础上往上移动 0.2 个跳按钮直径（98*2*0.2≈39）
+    local jumpRight = 340   -- 距右边距不变
+    local jumpBottom = 172 + 39  -- 往上移（bottom 值增大 = 离底边更远 = 更靠上）
+
+    -- 跳跃（中心，主按钮，最大）
+    jumpButton_ = VirtualControls.CreateButton({
+        position = Vector2(-jumpRight, -jumpBottom),
+        alignment = {HA_RIGHT, VA_BOTTOM},
+        radius = jumpR,
+        label = "跳",
+        keyBinding = KEY_SPACE,
+        keyLabel = "Space",
+        color = {100, 200, 255},
+        pressedColor = {150, 230, 255},
+        opacity = 0.4,
+        activeOpacity = 0.85,
+        on_press = function()
+            jumpPressed_ = true
+        end,
+    })
+
+    -- 冲刺（跳跃按钮的左边）
+    dashButton_ = VirtualControls.CreateButton({
+        position = Vector2(-jumpRight - orbitDist, -jumpBottom),
+        alignment = {HA_RIGHT, VA_BOTTOM},
+        radius = smallR,
+        label = "冲",
+        keyBinding = KEY_SHIFT,
+        keyLabel = "Shift",
+        color = {255, 180, 80},
+        pressedColor = {255, 220, 120},
+        opacity = 0.35,
+        activeOpacity = 0.8,
+        on_press = function()
+            dashPressed_ = true
+        end,
+    })
+
+    -- 下砸（跳跃按钮的左上方，45° 方向）
+    local diagDist = math.floor(orbitDist * 0.707)  -- cos(45°) ≈ 276
+    slamButton_ = VirtualControls.CreateButton({
+        position = Vector2(-jumpRight - diagDist, -jumpBottom - diagDist),
+        alignment = {HA_RIGHT, VA_BOTTOM},
+        radius = smallR,
+        label = "砸",
+        keyBinding = KEY_S,
+        keyLabel = "S",
+        color = {255, 100, 100},
+        pressedColor = {255, 150, 150},
+        opacity = 0.35,
+        activeOpacity = 0.8,
+        on_press = function()
+            slamPressed_ = true
+        end,
+    })
+
+    -- 蓄力/爆炸（跳跃按钮的上方）
+    -- 注意：不设 mouseBinding，触摸只在按钮半径内生效；PC 鼠标左键在 HandlePlayerInput 中单独处理
+    chargeButton_ = VirtualControls.CreateButton({
+        position = Vector2(-jumpRight, -jumpBottom - orbitDist),
+        alignment = {HA_RIGHT, VA_BOTTOM},
+        radius = smallR,
+        label = "爆",
+        color = {255, 200, 50},
+        pressedColor = {255, 240, 100},
+        opacity = 0.35,
+        activeOpacity = 0.8,
+    })
+
+    print("[Standalone] Mobile controls initialized (landscape), isMobile=" .. tostring(isMobile_))
+
+    -- 初始状态：菜单中不显示虚拟控件
+    Standalone.SetVirtualControlsVisible(false)
+end
+
+--- 显示/隐藏虚拟控件（菜单和结算时隐藏，游戏中显示）
+function Standalone.SetVirtualControlsVisible(show)
+    -- PC 端不显示虚拟控件的视觉部分（键盘绑定仍通过 fallback 生效）
+    local visualShow = show and isMobile_
+
+    -- 摇杆的 _updateShouldShow 正确检查 visible 属性
+    if joystick_ then joystick_.visible = visualShow; joystick_:_updateShouldShow() end
+    -- 按钮的 _updateShouldShow 在移动端不检查 visible 属性（引擎库缺陷），
+    -- 隐藏时需要手动设置 _shouldShow = false
+    local buttons = {jumpButton_, dashButton_, slamButton_, chargeButton_}
+    for _, btn in ipairs(buttons) do
+        if btn then
+            btn.visible = visualShow
+            if visualShow then
+                btn:_updateShouldShow()
+            else
+                btn._shouldShow = false
+            end
+        end
+    end
 end
 
 -- ============================================================================
@@ -240,9 +389,11 @@ function Standalone.HandleUpdate(dt)
     -- 主菜单：点击开始 → 加入游戏（不阻塞后续逻辑，AI 继续运行）
     if GameManager.state == GameManager.STATE_MENU then
         Camera.spectateMode = true
+        Standalone.SetVirtualControlsVisible(false)
         local btn = HUD.GetMenuButtonClicked()
         if btn == "startGame" then
             Camera.spectateMode = false
+            Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
             GameManager.StartGame()
@@ -253,9 +404,11 @@ function Standalone.HandleUpdate(dt)
     -- 结算画面（不阻塞后续逻辑，AI 继续运行）
     if GameManager.state == GameManager.STATE_RESULT then
         Camera.spectateMode = true
+        Standalone.SetVirtualControlsVisible(false)
         local btn = HUD.GetResultButtonClicked()
         if btn == "restart" then
             Camera.spectateMode = false
+            Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
             GameManager.Restart()
@@ -327,22 +480,55 @@ function Standalone.HandlePlayerInput()
 
     for _, p in ipairs(Player.list) do
         if p.isHuman and p.alive then
+            -- 移动：摇杆 X 分量（手机触屏）+ 直接键盘检测（PC 兜底）
             local moveX = 0
-            if input:GetKeyDown(KEY_A) or input:GetKeyDown(KEY_LEFT) then
-                moveX = -1
-            elseif input:GetKeyDown(KEY_D) or input:GetKeyDown(KEY_RIGHT) then
-                moveX = 1
+            if joystick_ then
+                local jx, _ = joystick_:getMovement(false)
+                if math.abs(jx) > 0.1 then
+                    moveX = jx > 0 and 1 or -1
+                end
+            end
+            -- PC 直接键盘检测（WASD + 箭头键，确保 PC 输入永远可用）
+            if moveX == 0 then
+                if input:GetKeyDown(KEY_A) or input:GetKeyDown(KEY_LEFT) then
+                    moveX = -1
+                elseif input:GetKeyDown(KEY_D) or input:GetKeyDown(KEY_RIGHT) then
+                    moveX = 1
+                end
             end
             p.inputMoveX = moveX
 
-            if input:GetKeyPress(KEY_SPACE) then p.inputJump = true end
-            if input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then p.inputDash = true end
-            if input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then p.inputSlam = true end
+            -- 跳跃：VirtualControls 回调（手机）+ 直接键盘检测（PC 兜底）
+            if jumpPressed_ or input:GetKeyPress(KEY_SPACE) then
+                p.inputJump = true
+                jumpPressed_ = false
+            end
 
-            local leftDown = input:GetMouseButtonDown(MOUSEB_LEFT)
-            if leftDown then p.inputCharging = true end
-            if p.wasChargingInput and not leftDown then p.inputExplodeRelease = true end
-            p.wasChargingInput = leftDown
+            -- 冲刺：VirtualControls 回调（手机）+ 直接键盘/鼠标检测（PC 兜底）
+            if dashPressed_ or input:GetKeyPress(KEY_SHIFT) or input:GetMouseButtonPress(MOUSEB_RIGHT) then
+                p.inputDash = true
+                dashPressed_ = false
+            end
+
+            -- 下砸：VirtualControls 回调（手机）+ 直接键盘检测（PC 兜底）
+            if slamPressed_ or input:GetKeyPress(KEY_S) or input:GetKeyPress(KEY_DOWN) then
+                p.inputSlam = true
+                slamPressed_ = false
+            end
+
+            -- 蓄力/爆炸：按钮按住 = 蓄力，松开 = 爆炸
+            -- 触摸：仅爆炸按钮区域内触摸生效（VirtualControls 自带半径检测）
+            -- PC：鼠标左键全局检测（非移动端才启用）
+            local charging = false
+            if chargeButton_ then
+                charging = chargeButton_.isPressed
+            end
+            if not isMobile_ and input.numTouches == 0 and input:GetMouseButtonDown(MOUSEB_LEFT) then
+                charging = true
+            end
+            if charging then p.inputCharging = true end
+            if p.wasChargingInput and not charging then p.inputExplodeRelease = true end
+            p.wasChargingInput = charging
         end
     end
 end

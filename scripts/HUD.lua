@@ -23,6 +23,8 @@ local vg_ = nil
 local physW_, physH_ = 0, 0
 local dpr_ = 1.0
 local logW_, logH_ = 0, 0
+local uiScale_ = 1.0          -- UI 缩放因子（手机横屏≈0.5，桌面=1.0）
+local isMobileHUD_ = false     -- 小屏幕标记（调整条目数、触摸目标等）
 
 -- 字体句柄
 local fontNormal_ = -1
@@ -248,6 +250,11 @@ local dailyLeaderboardLoading_ = false
 local menuLeaderboardTab_ = "history"
 -- 菜单是否已加载过排行榜
 local menuLeaderboardLoaded_ = false
+-- 菜单排行榜滚动偏移（手机端）
+local menuScrollY_ = 0
+local menuScrollTouchId_ = nil  -- 跟踪中的触摸 ID
+local menuScrollLastY_ = 0     -- 上一帧触摸 Y
+local menuScrollVel_ = 0       -- 滚动惯性速度
 
 -- ============================================================================
 -- 便利：Theme 颜色快捷方法
@@ -345,6 +352,8 @@ function HUD.RefreshResolution()
     dpr_ = graphics:GetDPR()
     logW_ = physW_ / dpr_
     logH_ = physH_ / dpr_
+    uiScale_ = math.min(1.0, logH_ / 720)   -- 手机横屏 logH≈360 → 0.5
+    isMobileHUD_ = (logH_ < 500)
 end
 
 -- ============================================================================
@@ -1004,30 +1013,33 @@ function HUD.DrawScoreRankings()
     if gameManager_ == nil or playerModule_ == nil then return end
 
     local allRankings = gameManager_.GetRankings()
-    -- 只显示前10名
+    local s = uiScale_
+    -- 手机只显示前5名，桌面前10名
+    local maxShow = isMobileHUD_ and 5 or 10
     local rankings = {}
-    for i = 1, math.min(10, #allRankings) do
+    for i = 1, math.min(maxShow, #allRankings) do
         rankings[i] = allRankings[i]
     end
-    local panelW = 140
-    local lineH = 22
-    local headerH = 22
-    local panelH = headerH + #rankings * lineH + Theme.spSm
-    local panelX = logW_ - panelW - 12
-    local panelY = 12
+
+    -- 手机端紧凑排行（仅排名+名字+分数，单行显示）
+    local fontSize = math.max(10, math.floor(13 * s))
+    local lineH = math.max(16, math.floor(22 * s))
+    local headerH = math.max(16, math.floor(20 * s))
+    local padX = math.max(6, math.floor(8 * s))
+    local panelW = math.max(90, math.floor(140 * s))
+    local panelH = headerH + #rankings * lineH + 4
+    local panelX = logW_ - panelW - math.max(6, math.floor(10 * s))
+    local panelY = math.max(6, math.floor(10 * s))
 
     -- 面板背景
     drawPanel(panelX, panelY, panelW, panelH, Theme.radiusMd, 180)
 
     -- 标题
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 12)
+    nvgFontSize(vg_, math.max(9, math.floor(11 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 220)
-    nvgText(vg_, panelX + panelW * 0.5, panelY + 5, "排行")
-
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 14)
+    nvgText(vg_, panelX + panelW * 0.5, panelY + math.floor(3 * s), "排行")
 
     for rank, entry in ipairs(rankings) do
         local y = panelY + headerH + (rank - 1) * lineH
@@ -1039,35 +1051,33 @@ function HUD.DrawScoreRankings()
         -- P1 行高亮
         if entry.index == 1 then
             nvgBeginPath(vg_)
-            nvgRoundedRect(vg_, panelX + 4, y - 1, panelW - 8, lineH, 4)
+            nvgRoundedRect(vg_, panelX + 3, y, panelW - 6, lineH - 1, 3)
             nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 25)))
             nvgFill(vg_)
         end
 
-        -- 排名标记
-        nvgFontFace(vg_, "bold")
-        nvgFontSize(vg_, 12)
+        -- 排名+名字
+        local label = playerNicknames_[entry.index] or ("P" .. entry.index)
+        -- 手机端截短名称
+        local maxNameLen = isMobileHUD_ and 6 or 12
+        if #label > maxNameLen then label = label:sub(1, maxNameLen - 1) .. "." end
+
+        nvgFontFace(vg_, entry.index == 1 and "bold" or "sans")
+        nvgFontSize(vg_, fontSize)
         nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
         if rank <= 3 then
-            fillTheme(Theme.primary, 200)
+            nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
         else
-            fillTheme(Theme.textSec, Theme.textSecAlpha)
+            nvgFillColor(vg_, nvgRGBA(r, g, b, 200))
         end
-        nvgText(vg_, panelX + 8, y + 3, "#" .. rank)
+        nvgText(vg_, panelX + padX, y + 2, "#" .. rank .. " " .. label)
 
-        -- 玩家名（使用昵称）
-        local label = playerNicknames_[entry.index] or ("P" .. entry.index)
-        nvgFontFace(vg_, entry.index == 1 and "bold" or "sans")
-        nvgFontSize(vg_, 13)
-        nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-        nvgText(vg_, panelX + 30, y + 3, label)
-
-        -- 分数
+        -- 分数（右对齐）
         nvgFontFace(vg_, "bold")
-        nvgFontSize(vg_, 14)
+        nvgFontSize(vg_, fontSize)
         nvgTextAlign(vg_, NVG_ALIGN_RIGHT + NVG_ALIGN_TOP)
         nvgFillColor(vg_, nvgRGBA(r, g, b, 255))
-        nvgText(vg_, panelX + panelW - 8, y + 3, tostring(entry.score))
+        nvgText(vg_, panelX + panelW - padX, y + 2, tostring(entry.score))
     end
 end
 
@@ -1080,10 +1090,11 @@ function HUD.DrawGameTimer()
     local seconds = math.floor(remaining % 60)
     local timeStr = string.format("%d:%02d", minutes, seconds)
 
-    local tw = 90
-    local th = 34
+    local s = uiScale_
+    local tw = math.max(60, math.floor(90 * s))
+    local th = math.max(24, math.floor(34 * s))
     local tx = (logW_ - tw) * 0.5
-    local ty = 10
+    local ty = math.max(6, math.floor(10 * s))
 
     local isUrgent = remaining <= 10
 
@@ -1099,23 +1110,24 @@ function HUD.DrawGameTimer()
     end
 
     -- 时间图标（小圆 + 指针）
-    local iconX = tx + 16
+    local iconR = math.max(4, math.floor(6 * s))
+    local iconX = tx + math.floor(16 * s)
     local iconY = ty + th * 0.5
     nvgBeginPath(vg_)
-    nvgCircle(vg_, iconX, iconY, 6)
+    nvgCircle(vg_, iconX, iconY, iconR)
     nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(isUrgent and Theme.text or Theme.accent, 200)))
-    nvgStrokeWidth(vg_, 1.5)
+    nvgStrokeWidth(vg_, math.max(1, 1.5 * s))
     nvgStroke(vg_)
     nvgBeginPath(vg_)
     nvgMoveTo(vg_, iconX, iconY - 1)
-    nvgLineTo(vg_, iconX, iconY - 4)
+    nvgLineTo(vg_, iconX, iconY - iconR * 0.7)
     nvgMoveTo(vg_, iconX, iconY)
-    nvgLineTo(vg_, iconX + 3, iconY + 1)
+    nvgLineTo(vg_, iconX + iconR * 0.5, iconY + 1)
     nvgStroke(vg_)
 
     -- 时间文字
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 20)
+    nvgFontSize(vg_, math.max(13, math.floor(20 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
     if isUrgent then
@@ -1123,7 +1135,7 @@ function HUD.DrawGameTimer()
     else
         fillTheme(Theme.text, 240)
     end
-    nvgText(vg_, tx + tw * 0.5 + 6, ty + th * 0.5, timeStr)
+    nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, timeStr)
 end
 
 --- 绘制高度指示器（左下角）
@@ -1138,34 +1150,40 @@ function HUD.DrawHeightIndicator()
     local heightBlocks = math.floor(currentY / Config.BlockSize)
     local maxBlocks = math.floor(maxH / Config.BlockSize)
 
-    local pw = 120
-    local ph = 48
-    local x = 12
-    local y = logH_ - ph - 12
+    -- 手机端与得分面板使用相同的放大系数
+    local s = isMobileHUD_ and (uiScale_ * 1.8) or uiScale_
+    local pw = math.floor(100 * s)   -- 宽度与得分面板一致
+    local ph = math.floor(44 * s)
+    -- 得分面板底部位置（使用相同的 s）
+    local scorePanelBottom = math.floor(10 * s) + math.floor(50 * s)
+    local x = math.floor(10 * s)
+    local y = scorePanelBottom + math.floor(6 * s)
 
     drawPanel(x, y, pw, ph, Theme.radiusMd, 180)
 
     -- 上箭头图标
+    local arrX = x + math.floor(10 * s)
+    local arrY = y + math.floor(16 * s)
     nvgBeginPath(vg_)
-    nvgMoveTo(vg_, x + 14, y + 18)
-    nvgLineTo(vg_, x + 19, y + 12)
-    nvgLineTo(vg_, x + 24, y + 18)
+    nvgMoveTo(vg_, arrX, arrY)
+    nvgLineTo(vg_, arrX + math.floor(5 * s), arrY - math.floor(7 * s))
+    nvgLineTo(vg_, arrX + math.floor(10 * s), arrY)
     nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.accent, 200)))
-    nvgStrokeWidth(vg_, 2)
+    nvgStrokeWidth(vg_, math.max(1, 2 * s))
     nvgStroke(vg_)
 
     -- 当前高度
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 18)
+    nvgFontSize(vg_, math.max(12, math.floor(18 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.text, 240)
-    nvgText(vg_, x + 30, y + 8, tostring(heightBlocks))
+    nvgText(vg_, arrX + math.floor(14 * s), y + math.floor(6 * s), tostring(heightBlocks))
 
     -- "最高" 标签
     nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 11)
+    nvgFontSize(vg_, math.max(10, math.floor(12 * s)))
     fillTheme(Theme.primary, 180)
-    nvgText(vg_, x + 10, y + 30, "最高 " .. maxBlocks)
+    nvgText(vg_, x + math.floor(8 * s), y + math.floor(26 * s), "最高 " .. maxBlocks)
 end
 
 -- ============================================================================
@@ -1276,30 +1294,32 @@ function HUD.DrawPlayerScore()
     local p1 = playerModule_.list[1]
     if not p1 then return end
 
-    local pw = 130
-    local ph = 54
-    local x = 12
-    local y = 12
+    -- 手机端面板和字体放大（uiScale_≈0.5 太小），PC 端不变
+    local s = isMobileHUD_ and (uiScale_ * 1.8) or uiScale_
+    local pw = math.floor(100 * s)
+    local ph = math.floor(50 * s)
+    local x = math.floor(10 * s)
+    local y = math.floor(10 * s)
 
     drawPanel(x, y, pw, ph, Theme.radiusMd, 180)
 
-    -- "SCORE" 标签
+    -- "得分" 标签
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 10)
+    nvgFontSize(vg_, math.max(10, math.floor(13 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.accent, 180)
-    nvgText(vg_, x + 10, y + 6, "得分")
+    nvgText(vg_, x + math.floor(8 * s), y + math.floor(6 * s), "得分")
 
     -- 分数数字（金色渐变效果模拟）
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 24)
+    nvgFontSize(vg_, math.max(16, math.floor(24 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     -- 阴影
     nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
-    nvgText(vg_, x + 11, y + 20, tostring(p1.score))
+    nvgText(vg_, x + math.floor(9 * s), y + math.floor(22 * s), tostring(p1.score))
     -- 主文字（金色）
     fillTheme(Theme.primary, 255)
-    nvgText(vg_, x + 10, y + 19, tostring(p1.score))
+    nvgText(vg_, x + math.floor(8 * s), y + math.floor(21 * s), tostring(p1.score))
 end
 
 --- 绘制左上角击杀面板
@@ -1592,22 +1612,24 @@ function HUD.DrawResultScreen()
     end
 
     -- 标题
+    local titleFs = math.max(22, math.floor(42 * uiScale_))
+    local titleY = math.floor(42 * uiScale_)
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 42)
+    nvgFontSize(vg_, titleFs)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
     local winner = gameManager_.GetWinner()
     if winner == 1 then
         local pulse = math.abs(math.sin(time.elapsedTime * 2)) * 30 + 225
         nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
-        nvgText(vg_, cx + 2, 44, "你赢了!")
+        nvgText(vg_, cx + 2, titleY + 2, "你赢了!")
         nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], math.floor(pulse)))
-        nvgText(vg_, cx, 42, "你赢了!")
+        nvgText(vg_, cx, titleY, "你赢了!")
     else
         nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
-        nvgText(vg_, cx + 2, 44, "游戏结束")
+        nvgText(vg_, cx + 2, titleY + 2, "游戏结束")
         fillTheme(Theme.primary, 255)
-        nvgText(vg_, cx, 42, "游戏结束")
+        nvgText(vg_, cx, titleY, "游戏结束")
     end
 
     -- 本局战绩（带高亮数字 + 评语）
@@ -1632,9 +1654,9 @@ function HUD.DrawResultScreen()
             { "击杀了 ",   tostring(kls),    " 玩家",  "被爆杀 ", tostring(gotKld), " 次" },
         }
 
-        local lineH = 30
-        local startY = 95   -- 标题下方留 2 行间距
-        local fontSize = 21
+        local lineH = math.floor(30 * uiScale_)
+        local startY = math.floor(95 * uiScale_)
+        local fontSize = math.max(13, math.floor(21 * uiScale_))
 
         for i, sl in ipairs(statLines) do
             local y = startY + (i - 1) * lineH
@@ -1741,30 +1763,30 @@ function HUD.DrawResultScreen()
             comment = pool[seed % #pool + 1]
         end
 
-        local commentY = startY + #statLines * lineH + fontSize * 2  -- 统计数据下方留 2 行间距
+        local commentY = startY + #statLines * lineH + fontSize * 2
         nvgFontFace(vg_, "sans")
-        nvgFontSize(vg_, 16)
+        nvgFontSize(vg_, math.max(11, math.floor(16 * uiScale_)))
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
         nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 200))
         nvgText(vg_, cx, commentY, "「" .. comment .. "」")
     end
 
     -- 排行榜（仅云端）
-    local tableW = math.min(logW_ * 0.85, 500)
+    local tableW = math.min(logW_ * 0.85, math.floor(500 * uiScale_))
     local tableX = cx - tableW * 0.5
-    -- 调侃话语下方留 4 行间距（commentY 约在统计区末尾 + 2行处）
-    -- stats end ≈ 95 + 4*30 = 215, commentY ≈ 215 + 42 = 257, cloudY ≈ 257 + 84 = 341
-    local cloudY = 345
+    local cloudY = math.floor(345 * uiScale_)
     HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX)
 
     -- 底部按钮
     local mx = input.mousePosition.x / dpr_
     local my = input.mousePosition.y / dpr_
 
-    local btnW = 140
-    local btnH = 46
-    local btnGap = 20
-    local btnY = logH_ - 65
+    local btnW = math.max(100, math.floor(140 * uiScale_))
+    local btnH = math.max(isMobileHUD_ and 36 or 40, math.floor(46 * uiScale_))
+    local btnGap = math.floor(20 * uiScale_)
+    -- 确保按钮底边距屏幕底部至少 20px（手机端 uiScale_ 小时不会超出屏幕）
+    local btnBottomMargin = math.max(20, math.floor(30 * uiScale_))
+    local btnY = logH_ - btnBottomMargin - btnH
 
     -- "再来一局" 按钮（金色）
     local restartX = cx - btnW - btnGap * 0.5
@@ -2011,18 +2033,19 @@ end
 
 --- 绘制云端排行榜（在结算画面中）
 function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
+    local s = uiScale_
     -- 标题（金色）
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 16)
+    nvgFontSize(vg_, math.max(10, math.floor(16 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 230)
     nvgText(vg_, cx, startY, "排行榜")
 
-    local contentY = startY + 24
+    local contentY = startY + math.floor(24 * s)
 
     if cloudLeaderboardLoading_ then
         nvgFontFace(vg_, "sans")
-        nvgFontSize(vg_, 14)
+        nvgFontSize(vg_, math.max(10, math.floor(14 * s)))
         fillTheme(Theme.textSec, 180)
         nvgText(vg_, cx, contentY, "加载中...")
         return
@@ -2030,7 +2053,7 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
 
     if not cloudLeaderboard_ or #cloudLeaderboard_ == 0 then
         nvgFontFace(vg_, "sans")
-        nvgFontSize(vg_, 14)
+        nvgFontSize(vg_, math.max(10, math.floor(14 * s)))
         fillTheme(Theme.textSec, 180)
         if not clientCloud then
             nvgText(vg_, cx, contentY, "排行榜暂不可用")
@@ -2042,12 +2065,12 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
 
     -- 表头
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 11)
+    nvgFontSize(vg_, math.max(8, math.floor(11 * s)))
     fillTheme(Theme.accent, 180)
 
     local cloudCols = {
-        { x = tableX + 10,            label = "#",    align = NVG_ALIGN_LEFT },
-        { x = tableX + 30,            label = "昵称",  align = NVG_ALIGN_LEFT },
+        { x = tableX + math.floor(10 * s),  label = "#",    align = NVG_ALIGN_LEFT },
+        { x = tableX + math.floor(30 * s),  label = "昵称",  align = NVG_ALIGN_LEFT },
         { x = tableX + tableW * 0.55, label = "最高分", align = NVG_ALIGN_CENTER },
         { x = tableX + tableW * 0.75, label = "最高高度", align = NVG_ALIGN_CENTER },
         { x = tableX + tableW * 0.92, label = "场次", align = NVG_ALIGN_CENTER },
@@ -2057,9 +2080,11 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
         nvgText(vg_, col.x, contentY, col.label)
     end
 
-    local rowH = 20
+    local rowH = math.floor(20 * s)
+    local maxCloudEntries = isMobileHUD_ and 5 or 10
     for i, entry in ipairs(cloudLeaderboard_) do
-        local y = contentY + 16 + (i - 1) * rowH
+        if i > maxCloudEntries then break end
+        local y = contentY + math.floor(16 * s) + (i - 1) * rowH
 
         -- "我" 的行高亮
         if entry.isMe then
@@ -2070,11 +2095,12 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
         end
 
         nvgFontFace(vg_, entry.isMe and "bold" or "sans")
-        nvgFontSize(vg_, 13)
+        nvgFontSize(vg_, math.max(9, math.floor(13 * s)))
 
         local nameDisplay = entry.nickname or "玩家"
         if entry.isMe then nameDisplay = nameDisplay .. " (我)" end
-        if #nameDisplay > 20 then nameDisplay = nameDisplay:sub(1, 18) .. ".." end
+        local maxCloudNameLen = isMobileHUD_ and 12 or 20
+        if #nameDisplay > maxCloudNameLen then nameDisplay = nameDisplay:sub(1, maxCloudNameLen - 2) .. ".." end
 
         local values = {
             tostring(entry.rank),
@@ -2191,7 +2217,6 @@ function HUD.DrawMenu()
 
         nvgBeginPath(vg_)
         nvgCircle(vg_, px, py, radius)
-        -- 交替金色和青色粒子
         if i % 3 == 0 then
             nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.accent, math.floor(alpha))))
         else
@@ -2200,12 +2225,350 @@ function HUD.DrawMenu()
         nvgFill(vg_)
     end
 
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    -- 首次进入菜单时自动加载排行榜
+    if not menuLeaderboardLoaded_ then
+        menuLeaderboardLoaded_ = true
+        HUD.LoadCloudLeaderboard()
+        HUD.LoadDailyLeaderboard()
+    end
+
+    if isMobileHUD_ then
+        HUD.DrawMenu_Mobile(t, mx, my)
+    else
+        HUD.DrawMenu_Desktop(t, mx, my)
+    end
+
+    -- 底部操作说明（带渐变背景条）
+    local tipH = math.floor(28 * uiScale_)
+    local tipY = logH_ - tipH
+    local tipBg = nvgLinearGradient(vg_, 0, tipY, 0, logH_,
+        nvgRGBA(0, 0, 0, 0), nvgRGBA(Theme.bg[1], Theme.bg[2], Theme.bg[3], 120))
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, tipY, logW_, tipH)
+    nvgFillPaint(vg_, tipBg)
+    nvgFill(vg_)
+
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, math.max(9, math.floor(12 * uiScale_)))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    fillTheme(Theme.textMuted, 140)
+    local tipText = isMobileHUD_
+        and "摇杆:移动  跳:跳跃  冲:冲刺  砸:下砸  爆:蓄力爆炸"
+        or  "A/D:移动  空格:跳跃  Shift:冲刺  S:下砸  鼠标左键:蓄力爆炸"
+    nvgText(vg_, logW_ * 0.5, tipY + tipH * 0.5, tipText)
+end
+
+-- ============================================================================
+-- 手机端主菜单：竖向布局 — 标题(缩小)+按钮 在上方，排行榜在下方可滚动
+-- ============================================================================
+function HUD.DrawMenu_Mobile(t, mx, my)
+    local cx = logW_ * 0.5
+    local margin = 12
+    local s = uiScale_
+
+    -- ==================== 顶部：标题 + 副标题 + 按钮 ====================
+    local titleCy = logH_ * 0.24  -- 标题中心
+
+    local titleBottom = titleCy + 20
+    if titleImage_ > 0 and titleImageW_ > 0 then
+        -- 标题图片：最大宽度为屏幕 60%，高度限制 30%
+        local maxW = logW_ * 0.60
+        local maxH = logH_ * 0.30
+        local imgScale = math.min(maxW / titleImageW_, maxH / titleImageH_)
+        local drawW = titleImageW_ * imgScale
+        local drawH = titleImageH_ * imgScale
+        local imgX = cx - drawW * 0.5
+        local imgY = titleCy - drawH * 0.5
+        local floatY = math.sin(t * 1.2) * 2
+        imgY = imgY + floatY
+
+        -- 光晕
+        local glowCx = imgX + drawW * 0.5
+        local glowCy = imgY + drawH * 0.5
+        local glowR = math.max(drawW, drawH) * 0.5
+        local glowPulse = math.abs(math.sin(t * 1.0)) * 10 + 12
+        local glowPaint = nvgRadialGradient(vg_, glowCx, glowCy, glowR * 0.2, glowR,
+            nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], math.floor(glowPulse)),
+            nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], 0))
+        nvgBeginPath(vg_)
+        nvgRect(vg_, glowCx - glowR, glowCy - glowR, glowR * 2, glowR * 2)
+        nvgFillPaint(vg_, glowPaint)
+        nvgFill(vg_)
+
+        local imgPaint = nvgImagePattern(vg_, imgX, imgY, drawW, drawH, 0, titleImage_, 1.0)
+        nvgBeginPath(vg_)
+        nvgRect(vg_, imgX, imgY, drawW, drawH)
+        nvgFillPaint(vg_, imgPaint)
+        nvgFill(vg_)
+        titleBottom = imgY + drawH
+    else
+        nvgFontFace(vg_, "bold")
+        nvgFontSize(vg_, 34)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+        nvgText(vg_, cx + 1, titleCy + 1, Config.Title)
+        fillTheme(Theme.primary, 255)
+        nvgText(vg_, cx, titleCy, Config.Title)
+        titleBottom = titleCy + 20
+    end
+
+    -- 副标题
+    local subtitleY = titleBottom + 10
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, 11)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    fillTheme(Theme.textSec, 200)
+    nvgText(vg_, cx, subtitleY, "大地图攀登挑战 2分钟限时赛")
+
+    -- 开始按钮
+    local btnW = 120
+    local btnH = 34
+    local btnY = subtitleY + 18
+    local btnX = cx - btnW * 0.5
+
+    local hovered = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
+    local clicked = HUD.DrawRubberButton(btnX, btnY, btnW, btnH, "开始游戏",
+        Theme.primary[1], Theme.primary[2], Theme.primary[3], hovered)
+    if clicked then
+        menuButtonClicked_ = "startGame"
+    end
+
+    -- ==================== 下方：排行榜（可滚动，居中，较窄）====================
+    local lbTopY = btnY + btnH + 14   -- 排行榜区域起始
+    local lbBottomY = logH_ - 30      -- 底部提示条上方
+    local fullAreaH = lbBottomY - lbTopY
+    if fullAreaH < 40 then return end -- 屏幕太小就跳过
+
+    -- 宽度：屏幕宽度的 45%（约为之前全宽的一半）
+    local lbW = math.floor(logW_ * 0.45)
+    local lbX = math.floor((logW_ - lbW) * 0.5)  -- 居中
+    local lbCx = logW_ * 0.5
+    -- 高度：可用空间的 2/3
+    local lbAreaH = math.floor(fullAreaH * 0.67)
+    local lbBottomClamped = lbTopY + lbAreaH
+
+    -- Tab 按钮
+    local tabW = 56
+    local tabH = 20
+    local tabGap = 6
+    local tabTotalW = tabW * 2 + tabGap
+    local tabX = lbCx - tabTotalW * 0.5
+    local tabY = lbTopY
+
+    -- "历史排行" tab
+    local histHover = mx >= tabX and mx <= tabX + tabW and my >= tabY and my <= tabY + tabH
+    local histActive = menuLeaderboardTab_ == "history"
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, tabX, tabY, tabW, tabH, Theme.radiusSm)
+    if histActive then
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, histHover and 180 or 120)))
+    end
+    nvgFill(vg_)
+    nvgFontFace(vg_, histActive and "bold" or "sans")
+    nvgFontSize(vg_, 10)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, histActive and 255 or 180))
+    nvgText(vg_, tabX + tabW * 0.5, tabY + tabH * 0.5, "历史排行")
+
+    if cachedMousePress_ and histHover and not histActive then
+        menuLeaderboardTab_ = "history"
+        menuScrollY_ = 0
+    end
+
+    -- "今日排行" tab
+    local dailyTabX = tabX + tabW + tabGap
+    local dailyHover = mx >= dailyTabX and mx <= dailyTabX + tabW and my >= tabY and my <= tabY + tabH
+    local dailyActive = menuLeaderboardTab_ == "daily"
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, dailyTabX, tabY, tabW, tabH, Theme.radiusSm)
+    if dailyActive then
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, dailyHover and 180 or 120)))
+    end
+    nvgFill(vg_)
+    nvgFontFace(vg_, dailyActive and "bold" or "sans")
+    nvgFontSize(vg_, 10)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, dailyActive and 255 or 180))
+    nvgText(vg_, dailyTabX + tabW * 0.5, tabY + tabH * 0.5, "今日排行")
+
+    if cachedMousePress_ and dailyHover and not dailyActive then
+        menuLeaderboardTab_ = "daily"
+        menuScrollY_ = 0
+    end
+
+    -- 排行榜内容区
+    local contentY = tabY + tabH + 4
+    local panelH = lbBottomClamped - contentY
+    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or dailyLeaderboard_
+    local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or dailyLeaderboardLoading_
+
+    -- 面板背景
+    drawPanel(lbX - 2, contentY - 2, lbW + 4, panelH + 4, Theme.radiusMd, 140)
+
+    if isLoading then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 11)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        fillTheme(Theme.textSec, 180)
+        nvgText(vg_, lbCx, contentY + panelH * 0.5, "加载中...")
+        return
+    end
+
+    if not currentData or #currentData == 0 then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, 11)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        fillTheme(Theme.textSec, 180)
+        nvgText(vg_, lbCx, contentY + panelH * 0.5, clientCloud and "暂无数据" or "排行榜暂不可用")
+        return
+    end
+
+    -- 表头（固定不动）
+    local headerH = 14
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, 9)
+    fillTheme(Theme.accent, 180)
+    local lbCols = {
+        { x = lbX + 6,            label = "#",    align = NVG_ALIGN_LEFT },
+        { x = lbX + 20,           label = "昵称",  align = NVG_ALIGN_LEFT },
+        { x = lbX + lbW * 0.55,   label = "分数",  align = NVG_ALIGN_CENTER },
+        { x = lbX + lbW * 0.78,   label = "高度",  align = NVG_ALIGN_CENTER },
+        { x = lbX + lbW * 0.95,   label = "场",   align = NVG_ALIGN_CENTER },
+    }
+    for _, col in ipairs(lbCols) do
+        nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
+        nvgText(vg_, col.x, contentY + 2, col.label)
+    end
+
+    -- 可滚动行区域
+    local rowsY = contentY + headerH
+    local rowsH = panelH - headerH
+    local rowH = 16
+    local totalRowsH = #currentData * rowH
+    local maxScroll = math.max(0, totalRowsH - rowsH)
+
+    -- 触摸滚动处理
+    local numTouches = input.numTouches or 0
+    if numTouches > 0 then
+        local ts = input:GetTouch(0)
+        local ty = ts.position.y / dpr_
+        local tx = ts.position.x / dpr_
+        -- 检查触摸是否在排行榜区域内
+        if tx >= lbX and tx <= lbX + lbW and ty >= rowsY and ty <= rowsY + rowsH then
+            if menuScrollTouchId_ == nil then
+                -- 开始触摸
+                menuScrollTouchId_ = 0
+                menuScrollLastY_ = ty
+                menuScrollVel_ = 0
+            else
+                -- 拖动中
+                local deltaY = menuScrollLastY_ - ty
+                menuScrollY_ = menuScrollY_ + deltaY
+                menuScrollVel_ = deltaY
+                menuScrollLastY_ = ty
+            end
+        end
+    else
+        if menuScrollTouchId_ ~= nil then
+            menuScrollTouchId_ = nil
+        end
+        -- 惯性衰减
+        if math.abs(menuScrollVel_) > 0.5 then
+            menuScrollY_ = menuScrollY_ + menuScrollVel_
+            menuScrollVel_ = menuScrollVel_ * 0.9
+        else
+            menuScrollVel_ = 0
+        end
+    end
+
+    -- 鼠标滚轮支持（桌面端调试用）
+    local wheel = input:GetMouseMoveWheel()
+    if wheel ~= 0 then
+        menuScrollY_ = menuScrollY_ - wheel * 20
+    end
+
+    -- 限制滚动范围
+    menuScrollY_ = math.max(0, math.min(menuScrollY_, maxScroll))
+
+    -- 裁剪绘制区域
+    nvgSave(vg_)
+    nvgScissor(vg_, lbX, rowsY, lbW, rowsH)
+
+    for i, entry in ipairs(currentData) do
+        local y = rowsY + (i - 1) * rowH - menuScrollY_
+
+        -- 跳过不可见行
+        if y + rowH >= rowsY and y <= rowsY + rowsH then
+            if entry.isMe then
+                nvgBeginPath(vg_)
+                nvgRoundedRect(vg_, lbX, y, lbW, rowH, 3)
+                nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 25)))
+                nvgFill(vg_)
+            end
+
+            nvgFontFace(vg_, entry.isMe and "bold" or "sans")
+            nvgFontSize(vg_, 10)
+
+            local nameDisplay = entry.nickname or "玩家"
+            if entry.isMe then nameDisplay = nameDisplay .. "(我)" end
+            if #nameDisplay > 10 then nameDisplay = nameDisplay:sub(1, 9) .. "." end
+
+            local values = {
+                tostring(entry.rank),
+                nameDisplay,
+                tostring(entry.score),
+                tostring(entry.maxHeight),
+                tostring(entry.playCount),
+            }
+
+            local textColor
+            if entry.isMe then
+                textColor = nvgRGBA(Theme.rgba(Theme.primary, 255))
+            elseif entry.rank == 1 then
+                textColor = nvgRGBA(Theme.rgba(Theme.primary, 240))
+            elseif entry.rank <= 3 then
+                textColor = nvgRGBA(Theme.rgba(Theme.text, 220))
+            else
+                textColor = nvgRGBA(Theme.rgba(Theme.textSec, 180))
+            end
+
+            for ci, col in ipairs(lbCols) do
+                nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
+                nvgFillColor(vg_, textColor)
+                nvgText(vg_, col.x, y + 2, values[ci])
+            end
+        end
+    end
+
+    nvgRestore(vg_)
+
+    -- 滚动指示条（如果内容超出可见区域）
+    if maxScroll > 0 then
+        local scrollbarH = math.max(10, rowsH * (rowsH / totalRowsH))
+        local scrollbarY = rowsY + (menuScrollY_ / maxScroll) * (rowsH - scrollbarH)
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, lbX + lbW - 3, scrollbarY, 3, scrollbarH, 1.5)
+        nvgFillColor(vg_, nvgRGBA(255, 255, 255, 40))
+        nvgFill(vg_)
+    end
+end
+
+-- ============================================================================
+-- 桌面端主菜单：居中布局（原始设计）
+-- ============================================================================
+function HUD.DrawMenu_Desktop(t, mx, my)
     local cx = logW_ * 0.5
     local cy = logH_ * 0.38
 
     -- 标题图片
     local titleBottom = cy + 40
-
     if titleImage_ > 0 and titleImageW_ > 0 then
         local maxW = logW_ * 0.55
         local imgScale = maxW / titleImageW_
@@ -2213,11 +2576,10 @@ function HUD.DrawMenu()
         local drawH = titleImageH_ * imgScale
         local imgX = cx - drawW * 0.5
         local imgY = cy - drawH * 0.5
-
         local floatY = math.sin(t * 1.2) * 4
         imgY = imgY + floatY
 
-        -- 柔和光晕（金色）
+        -- 柔和光晕
         local glowCx = imgX + drawW * 0.5
         local glowCy = imgY + drawH * 0.5
         local glowR = math.max(drawW, drawH) * 0.7
@@ -2230,13 +2592,11 @@ function HUD.DrawMenu()
         nvgFillPaint(vg_, glowPaint)
         nvgFill(vg_)
 
-        -- 标题图片
         local imgPaint = nvgImagePattern(vg_, imgX, imgY, drawW, drawH, 0, titleImage_, 1.0)
         nvgBeginPath(vg_)
         nvgRect(vg_, imgX, imgY, drawW, drawH)
         nvgFillPaint(vg_, imgPaint)
         nvgFill(vg_)
-
         titleBottom = imgY + drawH
     else
         nvgFontFace(vg_, "bold")
@@ -2248,7 +2608,7 @@ function HUD.DrawMenu()
         nvgText(vg_, cx, cy, Config.Title)
     end
 
-    -- 装饰分隔线（金色渐变）
+    -- 装饰分隔线
     local lineY = titleBottom + 12
     local lineW = math.min(logW_ * 0.3, 200)
     local linePaint = nvgLinearGradient(vg_, cx - lineW * 0.5, lineY, cx, lineY,
@@ -2276,10 +2636,7 @@ function HUD.DrawMenu()
     fillTheme(Theme.textSec, 200)
     nvgText(vg_, cx, subtitleY, "大地图攀登挑战  2分钟限时赛")
 
-    -- 开始按钮（金色，居中大按钮）
-    local mx = input.mousePosition.x / dpr_
-    local my = input.mousePosition.y / dpr_
-
+    -- 开始按钮
     local btnW = 180
     local btnH = 50
     local btnY = subtitleY + 28
@@ -2292,19 +2649,10 @@ function HUD.DrawMenu()
         menuButtonClicked_ = "startGame"
     end
 
-    -- ====================================================================
-    -- 排行榜区域（历史 / 今日 Tab 切换）
-    -- ====================================================================
+    -- 排行榜区域
     local lbTop = btnY + btnH + 16
     local lbW = math.min(logW_ * 0.85, 460)
     local lbX = cx - lbW * 0.5
-
-    -- 首次进入菜单时自动加载
-    if not menuLeaderboardLoaded_ then
-        menuLeaderboardLoaded_ = true
-        HUD.LoadCloudLeaderboard()
-        HUD.LoadDailyLeaderboard()
-    end
 
     -- Tab 按钮
     local tabW = 80
@@ -2362,7 +2710,6 @@ function HUD.DrawMenu()
     local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or dailyLeaderboard_
     local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or dailyLeaderboardLoading_
 
-    -- 面板背景
     local panelH = 200
     drawPanel(lbX - 6, contentY - 4, lbW + 12, panelH + 8, Theme.radiusMd, 160)
 
@@ -2377,13 +2724,8 @@ function HUD.DrawMenu()
         nvgFontSize(vg_, 14)
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
         fillTheme(Theme.textSec, 180)
-        if not clientCloud then
-            nvgText(vg_, cx, contentY + panelH * 0.5, "排行榜暂不可用")
-        else
-            nvgText(vg_, cx, contentY + panelH * 0.5, "暂无数据")
-        end
+        nvgText(vg_, cx, contentY + panelH * 0.5, clientCloud and "暂无数据" or "排行榜暂不可用")
     else
-        -- 表头
         nvgFontFace(vg_, "bold")
         nvgFontSize(vg_, 11)
         fillTheme(Theme.accent, 180)
@@ -2444,22 +2786,6 @@ function HUD.DrawMenu()
             end
         end
     end
-
-    -- 底部操作说明（带渐变背景条）
-    local tipH = 34
-    local tipY = logH_ - tipH
-    local tipBg = nvgLinearGradient(vg_, 0, tipY, 0, logH_,
-        nvgRGBA(0, 0, 0, 0), nvgRGBA(Theme.bg[1], Theme.bg[2], Theme.bg[3], 120))
-    nvgBeginPath(vg_)
-    nvgRect(vg_, 0, tipY, logW_, tipH)
-    nvgFillPaint(vg_, tipBg)
-    nvgFill(vg_)
-
-    nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 13)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    fillTheme(Theme.textMuted, 140)
-    nvgText(vg_, cx, tipY + tipH * 0.5, "A/D:移动  空格:跳跃  Shift:冲刺  S:下砸  鼠标左键:蓄力爆炸")
 end
 
 return HUD

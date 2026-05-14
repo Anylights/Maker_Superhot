@@ -60,6 +60,19 @@ function Standalone.Start()
     local ok2, mod2 = pcall(require, "ExplosionTuningPanel")
     if ok2 then ExplosionTuningPanel = mod2 else print("[Standalone] ExplosionTuningPanel load skipped: " .. tostring(mod2)) end
 
+    -- 移动端检测（必须在 CreateScene 之前，因为场景光照依赖此判断）
+    local dpr = graphics:GetDPR()
+    local logH = graphics:GetHeight() / dpr
+    isMobileDevice_ = (logH < 500)
+
+    -- 移动端关闭 HDR（用手动光照，不需要 tone mapping）；PC 端开启 HDR（LightGroup 物理单位）
+    if isMobileDevice_ then
+        renderer.hdrRendering = false
+    else
+        renderer.hdrRendering = true
+    end
+    print("[Standalone] isMobile=" .. tostring(isMobileDevice_) .. " logH=" .. math.floor(logH) .. " HDR=" .. tostring(renderer.hdrRendering))
+
     -- 创建场景
     Standalone.CreateScene()
 
@@ -76,13 +89,6 @@ function Standalone.Start()
     -- 设置视口
     local viewport = Viewport:new(scene_, Camera.GetCamera())
     renderer:SetViewport(0, viewport)
-
-    -- HDR 在移动端 WebGL 上可能导致 NanoVG 字体不可见 + 画面泛白，仅 PC 启用
-    local dpr = graphics:GetDPR()
-    local logH = graphics:GetHeight() / dpr
-    local isMobileDevice = (logH < 500)
-    renderer.hdrRendering = not isMobileDevice
-    print("[Standalone] HDR=" .. tostring(not isMobileDevice) .. " (logH=" .. math.floor(logH) .. ")")
 
     renderer.defaultZone.fogColor = Color(0.12, 0.08, 0.28)
 
@@ -136,7 +142,7 @@ function Standalone.InitMobileControls()
     -- ========== 左侧：摇杆 ==========
     -- 缩小到之前的 0.7 倍直径
     joystick_ = VirtualControls.CreateJoystick({
-        position = Vector2(420, -280),
+        position = Vector2(266, -203),
         alignment = {HA_LEFT, VA_BOTTOM},
         baseRadius = 154,    -- 220 * 0.7
         knobRadius = 56,     -- 80 * 0.7
@@ -154,9 +160,9 @@ function Standalone.InitMobileControls()
     -- 轨道距离（中心间距）：390 的一半 = 195
     local orbitDist = 195
 
-    -- 跳跃按钮中心位置：在之前基础上往上移动 0.2 个跳按钮直径（98*2*0.2≈39）
-    local jumpRight = 340   -- 距右边距不变
-    local jumpBottom = 172 + 39  -- 往上移（bottom 值增大 = 离底边更远 = 更靠上）
+    -- 跳跃按钮中心位置：整体右移一个跳按钮直径(196px)
+    local jumpRight = 340 - 196   -- 144，更靠右
+    local jumpBottom = 172 + 39   -- 往上移（bottom 值增大 = 离底边更远 = 更靠上）
 
     -- 跳跃（中心，主按钮，最大）
     jumpButton_ = VirtualControls.CreateButton({
@@ -175,9 +181,10 @@ function Standalone.InitMobileControls()
         end,
     })
 
-    -- 冲刺（跳跃按钮的左边）
+    -- 冲刺（跳跃按钮的左偏下方）
+    -- X: 更负=更左, Y: 更正=更靠底边=更低
     dashButton_ = VirtualControls.CreateButton({
-        position = Vector2(-jumpRight - orbitDist, -jumpBottom),
+        position = Vector2(-jumpRight - 183, -jumpBottom + 67),
         alignment = {HA_RIGHT, VA_BOTTOM},
         radius = smallR,
         label = "冲",
@@ -192,10 +199,9 @@ function Standalone.InitMobileControls()
         end,
     })
 
-    -- 下砸（跳跃按钮的左上方，45° 方向）
-    local diagDist = math.floor(orbitDist * 0.707)  -- cos(45°) ≈ 276
+    -- 下砸（跳跃按钮的左上方）
     slamButton_ = VirtualControls.CreateButton({
-        position = Vector2(-jumpRight - diagDist, -jumpBottom - diagDist),
+        position = Vector2(-jumpRight - 160, -jumpBottom - 112),
         alignment = {HA_RIGHT, VA_BOTTOM},
         radius = smallR,
         label = "砸",
@@ -210,10 +216,10 @@ function Standalone.InitMobileControls()
         end,
     })
 
-    -- 蓄力/爆炸（跳跃按钮的上方）
+    -- 蓄力/爆炸（跳跃按钮的正上方）
     -- 注意：不设 mouseBinding，触摸只在按钮半径内生效；PC 鼠标左键在 HandlePlayerInput 中单独处理
     chargeButton_ = VirtualControls.CreateButton({
-        position = Vector2(-jumpRight, -jumpBottom - orbitDist),
+        position = Vector2(-jumpRight + 34, -jumpBottom - 192),
         alignment = {HA_RIGHT, VA_BOTTOM},
         radius = smallR,
         label = "爆",
@@ -263,24 +269,48 @@ function Standalone.CreateScene()
     local physicsWorld = scene_:CreateComponent("PhysicsWorld")
     physicsWorld:SetGravity(Vector3(0, -28.0, 0))
 
-    -- 光照
-    local lightGroupFile = cache:GetResource("XMLFile", "LightGroup/Daytime.xml")
-    if lightGroupFile then
-        local lightGroup = scene_:CreateChild("LightGroup")
-        lightGroup:LoadXML(lightGroupFile:GetRoot())
-        local zoneComp = lightGroup:GetComponent("Zone")
-        if not zoneComp then
-            for i = 0, lightGroup.numChildren - 1 do
-                local child = lightGroup:GetChild(i)
-                zoneComp = child:GetComponent("Zone")
-                if zoneComp then break end
-            end
-        end
-        if zoneComp then
-            zoneComp.fogColor = Color(0.95, 0.82, 0.68)
-        end
+    if isMobileDevice_ then
+        -- 移动端：不加载 LightGroup，直接创建手动光照（方向与 Daytime.xml 一致）
+        -- 这样避免运行时修改 Light 组件（WASM 上会崩溃）
+        Standalone.CreateMobileLighting()
     else
-        Standalone.CreateFallbackLighting()
+        -- PC端：使用 LightGroup/Daytime.xml + HDR
+        local lightGroupFile = cache:GetResource("XMLFile", "LightGroup/Daytime.xml")
+        if lightGroupFile then
+            local lightGroup = scene_:CreateChild("LightGroup")
+            lightGroup:LoadXML(lightGroupFile:GetRoot())
+            local zoneComp = lightGroup:GetComponent("Zone")
+            if not zoneComp then
+                local nz = lightGroup:GetNumChildren(false)
+                for i = 0, nz - 1 do
+                    local child = lightGroup:GetChild(i)
+                    if child then
+                        zoneComp = child:GetComponent("Zone")
+                        if zoneComp then break end
+                    end
+                end
+            end
+            if zoneComp then
+                zoneComp.fogColor = Color(0.95, 0.82, 0.68)
+            end
+            -- shadowIntensity 0.0 = 完全黑色阴影（原值 0.5 = 半透明）
+            pcall(function()
+                local allLights = lightGroup:GetChildrenWithComponent("Light", true)
+                if allLights then
+                    for _, child in ipairs(allLights) do
+                        pcall(function()
+                            local light = child:GetComponent("Light")
+                            if light then
+                                light:SetShadowIntensity(0.0)
+                            end
+                        end)
+                    end
+                end
+            end)
+            print("[Standalone] PC: LightGroup loaded, shadowIntensity=0.0")
+        else
+            Standalone.CreateFallbackLighting()
+        end
     end
 
     -- 死亡区域
@@ -297,12 +327,36 @@ function Standalone.CreateScene()
     print("[Standalone] Scene created")
 end
 
+--- 移动端专用光照：标准单位（无需 HDR），方向匹配 PC 阴影
+function Standalone.CreateMobileLighting()
+    local zoneNode = scene_:CreateChild("Zone")
+    local zone = zoneNode:CreateComponent("Zone")
+    zone.boundingBox = BoundingBox(-200.0, 200.0)
+    zone.ambientColor = Color(0.15, 0.15, 0.20)
+    zone.fogColor = Color(0.95, 0.82, 0.68)
+    zone.fogStart = 80.0
+    zone.fogEnd = 150.0
+
+    local lightNode = scene_:CreateChild("DirectionalLight")
+    lightNode.direction = Vector3(-0.6, -1.0, 0.8)
+    local light = lightNode:CreateComponent("Light")
+    light.lightType = LIGHT_DIRECTIONAL
+    light.color = Color(0.8, 0.7, 0.6)
+    light.brightness = 0.9
+    light.castShadows = true
+    light.shadowIntensity = 0.0
+    light.shadowBias = BiasParameters(0.00025, 0.5)
+    light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
+    print("[Standalone] MobileLighting created (reverted to confirmed-working values)")
+end
+
+--- 兜底光照（仅在 LightGroup 加载失败时使用）
 function Standalone.CreateFallbackLighting()
     local zoneNode = scene_:CreateChild("Zone")
     local zone = zoneNode:CreateComponent("Zone")
     zone.boundingBox = BoundingBox(-200.0, 200.0)
     zone.ambientColor = Color(0.35, 0.30, 0.45)
-    zone.fogColor = Color(0.12, 0.08, 0.28)
+    zone.fogColor = Color(0.95, 0.82, 0.68)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
 
@@ -314,6 +368,7 @@ function Standalone.CreateFallbackLighting()
     light.castShadows = true
     light.shadowBias = BiasParameters(0.00025, 0.5)
     light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
+    print("[Standalone] FallbackLighting created")
 end
 
 -- ============================================================================

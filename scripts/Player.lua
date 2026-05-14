@@ -1699,6 +1699,14 @@ function Player.Kill(p, reason, killerIndex)
     p.respawnTimer = Config.RespawnDelay
     p.deaths = (p.deaths or 0) + 1
 
+    -- 死亡时重置蓄力状态并恢复材质（防止蓄力高亮 emissive 残留）
+    if p.charging then
+        p.charging = false
+        p.chargeTimer = 0
+        p.chargeProgress = 0
+    end
+    Player.RestoreMaterial(p)
+
     -- 死亡惩罚
     if reason == "fall" then
         -- 坠落惩罚：扣除200分（20层平台高度）

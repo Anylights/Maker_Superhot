@@ -278,6 +278,88 @@ local function strokeTheme(token, alpha)
 end
 
 -- ============================================================================
+-- 字体 / 图片 DWP 延迟加载
+-- ============================================================================
+
+local fontDownloadRequested_ = false   -- 是否已发起字体异步下载
+local titleImgDownloadRequested_ = false
+
+local FONT_PATH = "Fonts/AlimamaFangYuanTi-Static.ttf"
+local TITLE_IMG_PATH = "image/image_20260422143231.png"
+
+--- 尝试同步加载字体，失败则发起异步下载
+function HUD.TryLoadFonts()
+    if fontNormal_ >= 0 then return true end  -- 已加载
+    if vg_ == nil then return false end
+
+    fontNormal_ = nvgCreateFont(vg_, "sans", FONT_PATH)
+    fontBold_ = nvgCreateFont(vg_, "bold", FONT_PATH)
+    fontCJK_ = fontNormal_
+
+    if fontNormal_ >= 0 then
+        print("[HUD] Font loaded OK: normal=" .. fontNormal_ .. " bold=" .. fontBold_)
+        return true
+    end
+
+    -- 字体文件未就绪（DWP 尚未下载），发起异步下载
+    if not fontDownloadRequested_ then
+        fontDownloadRequested_ = true
+        print("[HUD] Font not ready, requesting async download: " .. FONT_PATH)
+        local ok, err = pcall(function()
+            local c = GetCache()
+            c:DownloadResource(FONT_PATH, function(success, errMsg)
+                if success then
+                    print("[HUD] Font downloaded, will retry load next frame")
+                else
+                    print("[HUD] Font download FAILED: " .. tostring(errMsg))
+                end
+            end)
+        end)
+        if not ok then
+            print("[HUD] WARNING: Font download request failed: " .. tostring(err))
+        end
+    end
+    return false
+end
+
+--- 尝试加载标题图片
+function HUD.TryLoadTitleImage()
+    if titleImage_ and titleImage_ > 0 then return true end
+    if vg_ == nil then return false end
+
+    titleImage_ = nvgCreateImage(vg_, TITLE_IMG_PATH, 0)
+    if titleImage_ and titleImage_ > 0 then
+        titleImageW_, titleImageH_ = nvgImageSize(vg_, titleImage_)
+        if titleImageW_ <= 16 or titleImageH_ <= 16 then
+            titleImageW_ = 1024
+            titleImageH_ = 434
+        end
+        print("[HUD] Title image loaded: " .. titleImageW_ .. "x" .. titleImageH_)
+        return true
+    end
+
+    -- 图片未就绪，发起异步下载
+    if not titleImgDownloadRequested_ then
+        titleImgDownloadRequested_ = true
+        print("[HUD] Title image not ready, requesting async download: " .. TITLE_IMG_PATH)
+        local ok, err = pcall(function()
+            local c = GetCache()
+            c:DownloadResource(TITLE_IMG_PATH, function(success, errMsg)
+                if success then
+                    print("[HUD] Title image downloaded, will retry load next frame")
+                else
+                    print("[HUD] Title image download FAILED: " .. tostring(errMsg))
+                end
+            end)
+        end)
+        if not ok then
+            print("[HUD] WARNING: Title image download request failed: " .. tostring(err))
+        end
+    end
+    return false
+end
+
+-- ============================================================================
 -- 初始化
 -- ============================================================================
 
@@ -295,28 +377,12 @@ function HUD.Init(playerRef, gmRef, mapRef)
     -- 刷新分辨率
     HUD.RefreshResolution()
 
-    -- 创建字体（只调用一次）
-    -- 阿里妈妈方圆体（VF 已转换为静态字体，覆盖英文+中文）
-    fontNormal_ = nvgCreateFont(vg_, "sans", "Fonts/AlimamaFangYuanTi-Static.ttf")
-    fontBold_ = nvgCreateFont(vg_, "bold", "Fonts/AlimamaFangYuanTi-Static.ttf")
-    fontCJK_ = fontNormal_
-    print("[HUD] Font load: normal=" .. tostring(fontNormal_) .. " bold=" .. tostring(fontBold_))
-    if fontNormal_ == -1 then
-        print("[HUD] WARNING: Font load FAILED! Text will not render.")
-    end
+    -- 创建字体 —— 字体是 DWP 资源，移动端可能尚未下载
+    -- 先尝试同步加载，失败则发起异步下载后重试
+    HUD.TryLoadFonts()
 
-    -- 加载标题图片
-    titleImage_ = nvgCreateImage(vg_, "image/image_20260422143231.png", 0)
-    if titleImage_ > 0 then
-        titleImageW_, titleImageH_ = nvgImageSize(vg_, titleImage_)
-        if titleImageW_ <= 16 or titleImageH_ <= 16 then
-            titleImageW_ = 1024
-            titleImageH_ = 434
-        end
-        print("[HUD] Title image loaded: " .. titleImageW_ .. "x" .. titleImageH_)
-    else
-        print("[HUD] Warning: title image not found, fallback to text")
-    end
+    -- 加载标题图片（同样可能是 DWP 延迟加载）
+    HUD.TryLoadTitleImage()
 
     -- 分配玩家昵称
     assignNicknames()
@@ -433,6 +499,14 @@ function HandleNanoVGRender(eventType, eventData)
 
     -- 更新浮动文字计时
     HUD.UpdateKillFloats(renderDt)
+
+    -- DWP 延迟加载重试：字体/图片在移动端可能启动时未就绪
+    if fontNormal_ < 0 then
+        HUD.TryLoadFonts()
+    end
+    if not titleImage_ or titleImage_ <= 0 then
+        HUD.TryLoadTitleImage()
+    end
 
     nvgBeginFrame(vg_, logW_, logH_, dpr_)
 

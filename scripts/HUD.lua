@@ -13,6 +13,8 @@ local RandomEvent = require("RandomEvent")
 local ShopUI = require("ShopUI")
 local Economy = require("Economy")
 local CharacterClass = require("CharacterClass")
+local ControlLayout = require("ControlLayout")
+local PowerUp = require("PowerUp")
 
 local HUD = {}
 
@@ -44,6 +46,15 @@ local menuButtonClicked_ = nil  -- "startGame" | "shop" | nil
 
 -- 商店状态
 local shopOpen_ = false
+
+-- 键位编辑器状态
+local layoutEditorOpen_ = false
+local layoutEditorData_ = nil   -- 编辑中的布局副本
+local layoutDragging_ = nil     -- 当前正在拖拽的控件名 ("joystick"/"jump"/"dash"/"slam"/"charge")
+local layoutDragOffX_ = 0       -- 拖拽偏移
+local layoutDragOffY_ = 0
+local layoutSaving_ = false     -- 正在保存中
+local layoutTouchId_ = nil      -- 正在使用的触摸 ID（防止多指冲突）
 
 -- 结算画面按钮点击结果
 local resultButtonClicked_ = nil  -- "restart" | "menu" | nil
@@ -253,7 +264,11 @@ local cloudScoreSubmitted_ = false
 local dailyLeaderboard_ = nil
 local dailyLeaderboardLoading_ = false
 
--- 菜单排行榜 tab: "history" 或 "daily"
+-- 一命通天排行榜缓存
+local onelifeLeaderboard_ = nil
+local onelifeLeaderboardLoading_ = false
+
+-- 菜单排行榜 tab: "history" 或 "onelife"
 local menuLeaderboardTab_ = "history"
 -- 菜单是否已加载过排行榜
 local menuLeaderboardLoaded_ = false
@@ -514,9 +529,11 @@ function HandleNanoVGRender(eventType, eventData)
     local my = input.mousePosition.y / dpr_
     local state = gameManager_ and gameManager_.state or "playing"
 
-    -- 主菜单 / 商店
+    -- 主菜单 / 商店 / 键位编辑器
     if state == "menu" then
-        if shopOpen_ then
+        if layoutEditorOpen_ then
+            HUD.DrawLayoutEditor(mx, my)
+        elseif shopOpen_ then
             ShopUI.Draw(vg_, logW_, logH_, uiScale_, isMobileHUD_, cachedMousePress_, mx, my)
             local shopBtn = ShopUI.GetButtonClicked()
             if shopBtn == "back" then
@@ -550,6 +567,7 @@ function HandleNanoVGRender(eventType, eventData)
         HUD.DrawGameTimer()
         HUD.DrawHeightIndicator()
         RandomEvent.DrawAnnouncement(vg_, logW_, logH_)
+        PowerUp.DrawBuffHUD(vg_, logW_, logH_)
     end
 
     -- 消费击杀事件 + 绘制浮动文字
@@ -613,8 +631,9 @@ function HUD.DrawWorldIndicators()
             local pg = math.floor(pc.g * 255)
             local pb = math.floor(pc.b * 255)
 
-            -- ----- 玩家昵称（头顶上方） -----
-            local nameY = pos.y + 1.1
+            -- ----- 玩家昵称（头顶上方，跟随道具缩放） -----
+            local pScale = PowerUp.GetScale(p)
+            local nameY = pos.y + 1.1 * pScale
             local nsx, nsy = Camera.WorldToScreen(pos.x, nameY, logW_, logH_)
             local nickname = playerNicknames_[p.index] or ("P" .. p.index)
             local nameFontSize = Camera.WorldSizeToScreen(0.3, logH_)
@@ -675,7 +694,7 @@ function HUD.DrawWorldIndicators()
 
             -- ----- 冲刺冷却环 -----
             if p.dashCooldown > 0 then
-                local headY = pos.y + 0.8
+                local headY = pos.y + 0.8 * pScale
                 local sx, sy = Camera.WorldToScreen(pos.x, headY, logW_, logH_)
                 local ringRadius = Camera.WorldSizeToScreen(0.35, logH_)
                 if ringRadius < 4 then ringRadius = 4 end
@@ -1073,7 +1092,8 @@ function HUD.DrawEnergyBars()
         local g = math.floor(color.g * 255)
         local b = math.floor(color.b * 255)
 
-        local headY = pos.y + 0.75
+        local pScale = PowerUp.GetScale(p)
+        local headY = pos.y + 0.75 * pScale
         local sx, sy = Camera.WorldToScreen(pos.x, headY, logW_, logH_)
 
         local barWorldW = 1.1
@@ -1194,18 +1214,30 @@ end
 function HUD.DrawGameTimer()
     if gameManager_ == nil then return end
 
-    local remaining = gameManager_.GetGameTime()
-    local minutes = math.floor(remaining / 60)
-    local seconds = math.floor(remaining % 60)
-    local timeStr = string.format("%d:%02d", minutes, seconds)
+    local GameManager = require("GameManager")
+    local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
+
+    local timeStr
+    local isUrgent = false
+    if isOnelife then
+        -- 一命通天模式：显示存活时间（正计时）
+        local elapsed = GameManager.elapsedTime or 0
+        local minutes = math.floor(elapsed / 60)
+        local seconds = math.floor(elapsed % 60)
+        timeStr = string.format("%d:%02d", minutes, seconds)
+    else
+        local remaining = gameManager_.GetGameTime()
+        local minutes = math.floor(remaining / 60)
+        local seconds = math.floor(remaining % 60)
+        timeStr = string.format("%d:%02d", minutes, seconds)
+        isUrgent = remaining <= 10
+    end
 
     local s = uiScale_
-    local tw = math.max(60, math.floor(90 * s))
+    local tw = math.max(60, math.floor(isOnelife and (110 * s) or (90 * s)))
     local th = math.max(24, math.floor(34 * s))
     local tx = (logW_ - tw) * 0.5
     local ty = math.max(6, math.floor(10 * s))
-
-    local isUrgent = remaining <= 10
 
     -- 面板背景
     if isUrgent then
@@ -1239,12 +1271,17 @@ function HUD.DrawGameTimer()
     nvgFontSize(vg_, math.max(13, math.floor(20 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
-    if isUrgent then
+    if isOnelife then
+        -- 一命通天：紫色高亮，显示 "一命" 前缀
+        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 255))
+        nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, "一命 " .. timeStr)
+    elseif isUrgent then
         fillTheme(Theme.text, 255)
+        nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, timeStr)
     else
         fillTheme(Theme.text, 240)
+        nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, timeStr)
     end
-    nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, timeStr)
 end
 
 --- 绘制高度指示器（左下角）
@@ -1734,36 +1771,65 @@ function HUD.DrawResultScreen()
     end
     local p1Score = p1Entry and p1Entry.score or 0
 
-    local winner = gameManager_.GetWinner()
-    if winner == 1 then
-        local pulse = math.abs(math.sin(time.elapsedTime * 2)) * 30 + 225
+    local GameManager = require("GameManager")
+    local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
+
+    if isOnelife then
+        -- 一命通天模式标题
         nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
-        nvgText(vg_, cx + 2, titleY + 2, "你赢了!")
-        nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], math.floor(pulse)))
-        nvgText(vg_, cx, titleY, "你赢了!")
+        nvgText(vg_, cx + 2, titleY + 2, "一命通天")
+        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 255))
+        nvgText(vg_, cx, titleY, "一命通天")
     else
-        nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
-        nvgText(vg_, cx + 2, titleY + 2, "游戏结束")
-        fillTheme(Theme.primary, 255)
-        nvgText(vg_, cx, titleY, "游戏结束")
+        local winner = gameManager_.GetWinner()
+        if winner == 1 then
+            local pulse = math.abs(math.sin(time.elapsedTime * 2)) * 30 + 225
+            nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+            nvgText(vg_, cx + 2, titleY + 2, "你赢了!")
+            nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], math.floor(pulse)))
+            nvgText(vg_, cx, titleY, "你赢了!")
+        else
+            nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+            nvgText(vg_, cx + 2, titleY + 2, "游戏结束")
+            fillTheme(Theme.primary, 255)
+            nvgText(vg_, cx, titleY, "游戏结束")
+        end
     end
 
-    -- 大号分数显示（"5110 分" 在同一行）
+    -- 大号分数/高度显示
     local scoreFs = math.max(36, math.floor(64 * uiScale_))
     local scoreY = titleY + titleFs * 0.5 + math.floor(16 * uiScale_)
-    local scoreText = tostring(p1Score) .. " 分"
+    local scoreText
+    scoreText = tostring(p1Score) .. " 分"
     nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, scoreFs)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
     -- 阴影
     nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
     nvgText(vg_, cx + 2, scoreY + 2, scoreText)
-    -- 金色分数
-    nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 255))
+    if isOnelife then
+        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 255))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 255))
+    end
     nvgText(vg_, cx, scoreY, scoreText)
 
+    -- 一命通天附加信息：层数 + 存活时间
+    local extraInfoH = 0
+    if isOnelife and p1Entry then
+        local floors = math.floor((p1Entry.heightScore or 0) / Config.HeightScoreUnit)
+        local elapsed = p1Entry.elapsedTime or 0
+        local tStr = string.format("%d:%02d", math.floor(elapsed / 60), math.floor(elapsed % 60))
+        local infoY = scoreY + scoreFs + math.floor(4 * uiScale_)
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, math.max(12, math.floor(18 * uiScale_)))
+        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 180))
+        nvgText(vg_, cx, infoY, "第 " .. floors .. " 层  |  存活 " .. tStr)
+        extraInfoH = math.floor(24 * uiScale_)
+    end
+
     -- 金币奖励提示（分数下方留足间距）
-    local coinY = scoreY + scoreFs + math.floor(14 * uiScale_)
+    local coinY = scoreY + scoreFs + math.floor(14 * uiScale_) + extraInfoH
     local coinReward = Economy.RewardFromScore(p1Score)
     if coinReward > 0 then
         nvgFontFace(vg_, "sans")
@@ -1939,6 +2005,8 @@ function HUD.DrawResultScreen()
         cloudLeaderboardLoading_ = false
         dailyLeaderboard_ = nil
         dailyLeaderboardLoading_ = false
+        onelifeLeaderboard_ = nil
+        onelifeLeaderboardLoading_ = false
         menuLeaderboardLoaded_ = false
         -- 重置状态跟踪和浮字
         prevPlayerStates_ = {}
@@ -1958,6 +2026,8 @@ function HUD.DrawResultScreen()
         cloudLeaderboardLoading_ = false
         dailyLeaderboard_ = nil
         dailyLeaderboardLoading_ = false
+        onelifeLeaderboard_ = nil
+        onelifeLeaderboardLoading_ = false
         menuLeaderboardLoaded_ = false
         -- 重置状态跟踪和浮字
         prevPlayerStates_ = {}
@@ -1975,7 +2045,7 @@ local function getTodayKey()
     return "daily_" .. os.date("%Y%m%d")
 end
 
---- 提交玩家分数到云端（历史最高 + 今日最高）
+--- 提交玩家分数到云端（历史最高 + 今日最高 / 一命通天）
 function HUD.SubmitCloudScore(rankings)
     local p1Entry = nil
     for _, entry in ipairs(rankings) do
@@ -1983,13 +2053,61 @@ function HUD.SubmitCloudScore(rankings)
     end
     if not p1Entry then return end
 
-    local score = p1Entry.score
-    if score <= 0 then return end
-
     if not clientCloud then
         print("[HUD] clientCloud not available, skipping cloud submit")
         return
     end
+
+    local GameManager = require("GameManager")
+    local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
+
+    if isOnelife then
+        -- 一命通天模式：提交最高分数、高度和存活时间
+        local score = p1Entry.score or 0
+        local height = p1Entry.maxHeight or 0
+        local elapsed = math.floor(p1Entry.elapsedTime or 0)
+        if score <= 0 then return end
+
+        clientCloud:Get("onelife_best_score", {
+            ok = function(values, iscores)
+                local oldScore = iscores.onelife_best_score or 0
+                local batch = clientCloud:BatchSet()
+                if score > oldScore then
+                    batch:SetInt("onelife_best_score", score)
+                    batch:SetInt("onelife_best_height", height)
+                    batch:SetInt("onelife_best_time", elapsed)
+                end
+                batch:Add("onelife_play_count", 1)
+                batch:Save("onelife result", {
+                    ok = function()
+                        print("[HUD] Onelife score submitted: score=" .. score .. " height=" .. height .. " time=" .. elapsed)
+                        HUD.LoadOnelifeLeaderboard()
+                    end,
+                    error = function(code, reason)
+                        print("[HUD] Onelife submit error: " .. tostring(reason))
+                        HUD.LoadOnelifeLeaderboard()
+                    end
+                })
+            end,
+            error = function(code, reason)
+                print("[HUD] Onelife get error: " .. tostring(reason))
+                clientCloud:BatchSet()
+                    :SetInt("onelife_best_score", score)
+                    :SetInt("onelife_best_height", height)
+                    :SetInt("onelife_best_time", elapsed)
+                    :Add("onelife_play_count", 1)
+                    :Save("onelife result", {
+                        ok = function() HUD.LoadOnelifeLeaderboard() end,
+                        error = function() HUD.LoadOnelifeLeaderboard() end
+                    })
+            end
+        })
+        return
+    end
+
+    -- 普通模式：提交历史最高 + 今日最高
+    local score = p1Entry.score
+    if score <= 0 then return end
 
     local kills = p1Entry.killScore or 0
     local height = p1Entry.maxHeight or 0
@@ -2168,6 +2286,70 @@ function HUD.LoadDailyLeaderboard()
             dailyLeaderboardLoading_ = false
         end
     }, "max_height", "play_count")
+end
+
+--- 加载一命通天排行榜
+function HUD.LoadOnelifeLeaderboard()
+    if not clientCloud then return end
+    if onelifeLeaderboardLoading_ then return end
+
+    onelifeLeaderboardLoading_ = true
+    onelifeLeaderboard_ = nil
+
+    clientCloud:GetRankList("onelife_best_score", 0, 10, {
+        ok = function(rankList)
+            local leaderboard = {}
+            local userIds = {}
+            for i, item in ipairs(rankList) do
+                local bestScore = item.iscore.onelife_best_score or 0
+                if bestScore > 0 then
+                    table.insert(leaderboard, {
+                        rank = #leaderboard + 1,
+                        userId = item.userId,
+                        score = bestScore,
+                        maxHeight = item.iscore.onelife_best_height or 0,
+                        bestTime = item.iscore.onelife_best_time or 0,
+                        playCount = item.iscore.onelife_play_count or 0,
+                        isMe = item.userId == clientCloud.userId,
+                    })
+                    table.insert(userIds, item.userId)
+                end
+            end
+
+            if #userIds == 0 then
+                onelifeLeaderboard_ = leaderboard
+                onelifeLeaderboardLoading_ = false
+                return
+            end
+
+            GetUserNickname({
+                userIds = userIds,
+                onSuccess = function(nicknames)
+                    local map = {}
+                    for _, info in ipairs(nicknames) do
+                        map[info.userId] = info.nickname or ""
+                    end
+                    for _, entry in ipairs(leaderboard) do
+                        entry.nickname = map[entry.userId] or "未知"
+                    end
+                    onelifeLeaderboard_ = leaderboard
+                    onelifeLeaderboardLoading_ = false
+                    print("[HUD] Onelife leaderboard loaded: " .. #leaderboard .. " entries")
+                end,
+                onError = function(errorCode)
+                    for _, entry in ipairs(leaderboard) do
+                        entry.nickname = "玩家"
+                    end
+                    onelifeLeaderboard_ = leaderboard
+                    onelifeLeaderboardLoading_ = false
+                end
+            })
+        end,
+        error = function(code, reason)
+            print("[HUD] Onelife leaderboard load error: " .. tostring(reason))
+            onelifeLeaderboardLoading_ = false
+        end
+    }, "onelife_best_height", "onelife_best_time", "onelife_play_count")
 end
 
 --- 绘制云端排行榜（在结算画面中）
@@ -2372,6 +2554,7 @@ function HUD.DrawMenu()
         menuLeaderboardLoaded_ = true
         HUD.LoadCloudLeaderboard()
         HUD.LoadDailyLeaderboard()
+        HUD.LoadOnelifeLeaderboard()
     end
 
     if isMobileHUD_ then
@@ -2473,12 +2656,12 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     local classLabel = "职业: " .. (classDef and (classDef.icon .. " " .. classDef.name) or "街头小子")
     nvgText(vg_, cx, classLabelY, classLabel)
 
-    -- 按钮区域（开始 + 商店 横排）
-    local btnW = 100
+    -- 按钮区域（开始 + 一命通天 + 商店 + 键位 横排）
+    local btnW = 66
     local btnH = 34
-    local btnGap = 10
+    local btnGap = 6
     local btnY = classLabelY + 14
-    local totalBtnW = btnW * 2 + btnGap
+    local totalBtnW = btnW * 4 + btnGap * 3
     local btnStartX = cx - totalBtnW * 0.5
 
     -- 开始游戏按钮
@@ -2489,13 +2672,31 @@ function HUD.DrawMenu_Mobile(t, mx, my)
         menuButtonClicked_ = "startGame"
     end
 
+    -- 一命通天按钮
+    local onelifeX = btnStartX + btnW + btnGap
+    local onelifeHovered = mx >= onelifeX and mx <= onelifeX + btnW and my >= btnY and my <= btnY + btnH
+    local onelifeClicked = HUD.DrawRubberButton(onelifeX, btnY, btnW, btnH, "一命通天",
+        180, 100, 255, onelifeHovered)
+    if onelifeClicked then
+        menuButtonClicked_ = "onelife"
+    end
+
     -- 商店按钮
-    local shopX = btnStartX + btnW + btnGap
+    local shopX = onelifeX + btnW + btnGap
     local shopHovered = mx >= shopX and mx <= shopX + btnW and my >= btnY and my <= btnY + btnH
     local shopClicked = HUD.DrawRubberButton(shopX, btnY, btnW, btnH, "商店",
         Theme.accent[1], Theme.accent[2], Theme.accent[3], shopHovered)
     if shopClicked then
         menuButtonClicked_ = "shop"
+    end
+
+    -- 键位设置按钮
+    local keyX = shopX + btnW + btnGap
+    local keyHovered = mx >= keyX and mx <= keyX + btnW and my >= btnY and my <= btnY + btnH
+    local keyClicked = HUD.DrawRubberButton(keyX, btnY, btnW, btnH, "键位设置",
+        Theme.secondary[1], Theme.secondary[2], Theme.secondary[3], keyHovered)
+    if keyClicked then
+        menuButtonClicked_ = "layoutEditor"
     end
 
     -- ==================== 下方：排行榜（可滚动，居中，较窄）====================
@@ -2542,34 +2743,34 @@ function HUD.DrawMenu_Mobile(t, mx, my)
         menuScrollY_ = 0
     end
 
-    -- "今日排行" tab
-    local dailyTabX = tabX + tabW + tabGap
-    local dailyHover = mx >= dailyTabX and mx <= dailyTabX + tabW and my >= tabY and my <= tabY + tabH
-    local dailyActive = menuLeaderboardTab_ == "daily"
+    -- "一命通天" tab
+    local onelifeTabX = tabX + tabW + tabGap
+    local onelifeHover = mx >= onelifeTabX and mx <= onelifeTabX + tabW and my >= tabY and my <= tabY + tabH
+    local onelifeActive = menuLeaderboardTab_ == "onelife"
     nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, dailyTabX, tabY, tabW, tabH, Theme.radiusSm)
-    if dailyActive then
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
+    nvgRoundedRect(vg_, onelifeTabX, tabY, tabW, tabH, Theme.radiusSm)
+    if onelifeActive then
+        nvgFillColor(vg_, nvgRGBA(180, 100, 255, 200))
     else
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, dailyHover and 180 or 120)))
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, onelifeHover and 180 or 120)))
     end
     nvgFill(vg_)
-    nvgFontFace(vg_, dailyActive and "bold" or "sans")
+    nvgFontFace(vg_, onelifeActive and "bold" or "sans")
     nvgFontSize(vg_, 10)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, dailyActive and 255 or 180))
-    nvgText(vg_, dailyTabX + tabW * 0.5, tabY + tabH * 0.5, "今日排行")
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, onelifeActive and 255 or 180))
+    nvgText(vg_, onelifeTabX + tabW * 0.5, tabY + tabH * 0.5, "一命通天")
 
-    if cachedMousePress_ and dailyHover and not dailyActive then
-        menuLeaderboardTab_ = "daily"
+    if cachedMousePress_ and onelifeHover and not onelifeActive then
+        menuLeaderboardTab_ = "onelife"
         menuScrollY_ = 0
     end
 
     -- 排行榜内容区
     local contentY = tabY + tabH + 4
     local panelH = lbBottomClamped - contentY
-    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or dailyLeaderboard_
-    local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or dailyLeaderboardLoading_
+    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or onelifeLeaderboard_
+    local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or onelifeLeaderboardLoading_
 
     -- 面板背景
     drawPanel(lbX - 2, contentY - 2, lbW + 4, panelH + 4, Theme.radiusMd, 140)
@@ -2597,13 +2798,24 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, 9)
     fillTheme(Theme.accent, 180)
-    local lbCols = {
-        { x = lbX + 6,            label = "#",    align = NVG_ALIGN_LEFT },
-        { x = lbX + 20,           label = "昵称",  align = NVG_ALIGN_LEFT },
-        { x = lbX + lbW * 0.55,   label = "分数",  align = NVG_ALIGN_CENTER },
-        { x = lbX + lbW * 0.78,   label = "高度",  align = NVG_ALIGN_CENTER },
-        { x = lbX + lbW * 0.95,   label = "场",   align = NVG_ALIGN_CENTER },
-    }
+    local lbCols
+    if menuLeaderboardTab_ == "onelife" then
+        lbCols = {
+            { x = lbX + 6,            label = "#",      align = NVG_ALIGN_LEFT },
+            { x = lbX + 20,           label = "昵称",    align = NVG_ALIGN_LEFT },
+            { x = lbX + lbW * 0.55,   label = "最高分",  align = NVG_ALIGN_CENTER },
+            { x = lbX + lbW * 0.78,   label = "最高层",  align = NVG_ALIGN_CENTER },
+            { x = lbX + lbW * 0.95,   label = "场",     align = NVG_ALIGN_CENTER },
+        }
+    else
+        lbCols = {
+            { x = lbX + 6,            label = "#",    align = NVG_ALIGN_LEFT },
+            { x = lbX + 20,           label = "昵称",  align = NVG_ALIGN_LEFT },
+            { x = lbX + lbW * 0.55,   label = "分数",  align = NVG_ALIGN_CENTER },
+            { x = lbX + lbW * 0.78,   label = "高度",  align = NVG_ALIGN_CENTER },
+            { x = lbX + lbW * 0.95,   label = "场",   align = NVG_ALIGN_CENTER },
+        }
+    end
     for _, col in ipairs(lbCols) do
         nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
         nvgText(vg_, col.x, contentY + 2, col.label)
@@ -2682,13 +2894,25 @@ function HUD.DrawMenu_Mobile(t, mx, my)
             if entry.isMe then nameDisplay = nameDisplay .. "(我)" end
             if #nameDisplay > 10 then nameDisplay = nameDisplay:sub(1, 9) .. "." end
 
-            local values = {
-                tostring(entry.rank),
-                nameDisplay,
-                tostring(entry.score),
-                tostring(entry.maxHeight),
-                tostring(entry.playCount),
-            }
+            local values
+            if menuLeaderboardTab_ == "onelife" then
+                local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
+                values = {
+                    tostring(entry.rank),
+                    nameDisplay,
+                    tostring(entry.score),
+                    tostring(floors) .. "层",
+                    tostring(entry.playCount),
+                }
+            else
+                values = {
+                    tostring(entry.rank),
+                    nameDisplay,
+                    tostring(entry.score),
+                    tostring(entry.maxHeight),
+                    tostring(entry.playCount),
+                }
+            end
 
             local textColor
             if entry.isMe then
@@ -2809,12 +3033,12 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     local classLabel = "当前职业: " .. (classDef and (classDef.icon .. " " .. classDef.name) or "街头小子")
     nvgText(vg_, cx, classLabelY, classLabel)
 
-    -- 按钮区域（开始 + 商店 横排）
-    local btnW = 140
+    -- 按钮区域（开始 + 一命通天 + 商店 横排）
+    local btnW = 130
     local btnH = 50
-    local btnGap = 16
+    local btnGap = 14
     local btnY = classLabelY + 18
-    local totalBtnW = btnW * 2 + btnGap
+    local totalBtnW = btnW * 3 + btnGap * 2
     local btnStartX = cx - totalBtnW * 0.5
 
     -- 开始游戏按钮
@@ -2825,8 +3049,17 @@ function HUD.DrawMenu_Desktop(t, mx, my)
         menuButtonClicked_ = "startGame"
     end
 
+    -- 一命通天按钮（紫色）
+    local onelifeX = btnStartX + btnW + btnGap
+    local onelifeHovered = mx >= onelifeX and mx <= onelifeX + btnW and my >= btnY and my <= btnY + btnH
+    local onelifeClicked = HUD.DrawRubberButton(onelifeX, btnY, btnW, btnH, "一命通天",
+        180, 100, 255, onelifeHovered)
+    if onelifeClicked then
+        menuButtonClicked_ = "onelife"
+    end
+
     -- 商店按钮
-    local shopX = btnStartX + btnW + btnGap
+    local shopX = onelifeX + btnW + btnGap
     local shopHovered = mx >= shopX and mx <= shopX + btnW and my >= btnY and my <= btnY + btnH
     local shopClicked = HUD.DrawRubberButton(shopX, btnY, btnW, btnH, "商店",
         Theme.accent[1], Theme.accent[2], Theme.accent[3], shopHovered)
@@ -2868,32 +3101,32 @@ function HUD.DrawMenu_Desktop(t, mx, my)
         menuLeaderboardTab_ = "history"
     end
 
-    -- "今日排行" tab
-    local dailyTabX = tabX + tabW + tabGap
-    local dailyHover = mx >= dailyTabX and mx <= dailyTabX + tabW and my >= tabY and my <= tabY + tabH
-    local dailyActive = menuLeaderboardTab_ == "daily"
+    -- "一命通天" tab
+    local onelifeTabX = tabX + tabW + tabGap
+    local onelifeHover = mx >= onelifeTabX and mx <= onelifeTabX + tabW and my >= tabY and my <= tabY + tabH
+    local onelifeActive = menuLeaderboardTab_ == "onelife"
     nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, dailyTabX, tabY, tabW, tabH, Theme.radiusSm)
-    if dailyActive then
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
+    nvgRoundedRect(vg_, onelifeTabX, tabY, tabW, tabH, Theme.radiusSm)
+    if onelifeActive then
+        nvgFillColor(vg_, nvgRGBA(180, 100, 255, 200))
     else
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, dailyHover and 180 or 120)))
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, onelifeHover and 180 or 120)))
     end
     nvgFill(vg_)
-    nvgFontFace(vg_, dailyActive and "bold" or "sans")
+    nvgFontFace(vg_, onelifeActive and "bold" or "sans")
     nvgFontSize(vg_, 13)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, dailyActive and 255 or 180))
-    nvgText(vg_, dailyTabX + tabW * 0.5, tabY + tabH * 0.5, "今日排行")
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, onelifeActive and 255 or 180))
+    nvgText(vg_, onelifeTabX + tabW * 0.5, tabY + tabH * 0.5, "一命通天")
 
-    if cachedMousePress_ and dailyHover and not dailyActive then
-        menuLeaderboardTab_ = "daily"
+    if cachedMousePress_ and onelifeHover and not onelifeActive then
+        menuLeaderboardTab_ = "onelife"
     end
 
     -- 排行榜内容区
     local contentY = tabY + tabH + 8
-    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or dailyLeaderboard_
-    local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or dailyLeaderboardLoading_
+    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or onelifeLeaderboard_
+    local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or onelifeLeaderboardLoading_
 
     local panelH = 200
     drawPanel(lbX - 6, contentY - 4, lbW + 12, panelH + 8, Theme.radiusMd, 160)
@@ -2914,13 +3147,24 @@ function HUD.DrawMenu_Desktop(t, mx, my)
         nvgFontFace(vg_, "bold")
         nvgFontSize(vg_, 11)
         fillTheme(Theme.accent, 180)
-        local lbCols = {
-            { x = lbX + 10,          label = "#",    align = NVG_ALIGN_LEFT },
-            { x = lbX + 30,          label = "昵称",  align = NVG_ALIGN_LEFT },
-            { x = lbX + lbW * 0.55,  label = "最高分", align = NVG_ALIGN_CENTER },
-            { x = lbX + lbW * 0.75,  label = "最高高度", align = NVG_ALIGN_CENTER },
-            { x = lbX + lbW * 0.92,  label = "场次", align = NVG_ALIGN_CENTER },
-        }
+        local lbCols
+        if menuLeaderboardTab_ == "onelife" then
+            lbCols = {
+                { x = lbX + 10,          label = "#",      align = NVG_ALIGN_LEFT },
+                { x = lbX + 30,          label = "昵称",    align = NVG_ALIGN_LEFT },
+                { x = lbX + lbW * 0.55,  label = "最高分",  align = NVG_ALIGN_CENTER },
+                { x = lbX + lbW * 0.75,  label = "最高层",  align = NVG_ALIGN_CENTER },
+                { x = lbX + lbW * 0.92,  label = "场",     align = NVG_ALIGN_CENTER },
+            }
+        else
+            lbCols = {
+                { x = lbX + 10,          label = "#",    align = NVG_ALIGN_LEFT },
+                { x = lbX + 30,          label = "昵称",  align = NVG_ALIGN_LEFT },
+                { x = lbX + lbW * 0.55,  label = "最高分", align = NVG_ALIGN_CENTER },
+                { x = lbX + lbW * 0.75,  label = "最高高度", align = NVG_ALIGN_CENTER },
+                { x = lbX + lbW * 0.92,  label = "场次", align = NVG_ALIGN_CENTER },
+            }
+        end
         for _, col in ipairs(lbCols) do
             nvgTextAlign(vg_, col.align + NVG_ALIGN_TOP)
             nvgText(vg_, col.x, contentY, col.label)
@@ -2945,13 +3189,25 @@ function HUD.DrawMenu_Desktop(t, mx, my)
             if entry.isMe then nameDisplay = nameDisplay .. " (我)" end
             if #nameDisplay > 16 then nameDisplay = nameDisplay:sub(1, 14) .. ".." end
 
-            local values = {
-                tostring(entry.rank),
-                nameDisplay,
-                tostring(entry.score),
-                tostring(entry.maxHeight),
-                tostring(entry.playCount),
-            }
+            local values
+            if menuLeaderboardTab_ == "onelife" then
+                local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
+                values = {
+                    tostring(entry.rank),
+                    nameDisplay,
+                    tostring(entry.score),
+                    tostring(floors) .. "层",
+                    tostring(entry.playCount),
+                }
+            else
+                values = {
+                    tostring(entry.rank),
+                    nameDisplay,
+                    tostring(entry.score),
+                    tostring(entry.maxHeight),
+                    tostring(entry.playCount),
+                }
+            end
 
             local textColor
             if entry.isMe then
@@ -2970,6 +3226,484 @@ function HUD.DrawMenu_Desktop(t, mx, my)
                 nvgText(vg_, col.x, y, values[ci])
             end
         end
+    end
+end
+
+-- ============================================================================
+-- 键位编辑器（Layout Editor）
+-- 用户可拖拽摇杆和按钮位置、调整大小，保存到云端
+-- ============================================================================
+
+--- 打开键位编辑器
+function HUD.OpenLayoutEditor()
+    layoutEditorOpen_ = true
+    -- 深拷贝当前布局作为编辑副本
+    local src = ControlLayout.Get()
+    layoutEditorData_ = {}
+    for name, ctrl in pairs(src) do
+        layoutEditorData_[name] = {}
+        for k, v in pairs(ctrl) do
+            layoutEditorData_[name][k] = v
+        end
+    end
+    layoutDragging_ = nil
+    layoutSaving_ = false
+
+    layoutDiagPrinted_ = false  -- 下次DrawLayoutEditor时打印一次诊断
+    print("[HUD] Layout editor opened")
+end
+
+--- 关闭键位编辑器（不保存）
+function HUD.CloseLayoutEditor()
+    layoutEditorOpen_ = false
+    layoutEditorData_ = nil
+    layoutDragging_ = nil
+    layoutTouchId_ = nil
+    print("[HUD] Layout editor closed")
+end
+
+--- 键位编辑器是否打开
+function HUD.IsLayoutEditorOpen()
+    return layoutEditorOpen_
+end
+
+--- 获取安全区边距（与 VirtualControls 一致）
+local function getEditorSafeAreaInsets()
+    if GetSafeAreaInsets then
+        local rect = GetSafeAreaInsets(false)
+        return rect.min.x, rect.min.y, rect.max.x, rect.max.y
+    end
+    return 0, 0, 0, 0
+end
+
+--- 坐标转换：将控件的设计坐标 position 转为 HUD 逻辑坐标
+--- 复现 VirtualControls.calculateScreenPosition 的逻辑
+---@param posX number position.x（设计坐标偏移）
+---@param posY number position.y（设计坐标偏移）
+---@param alignH number HA_LEFT/HA_RIGHT
+---@param alignV number VA_TOP/VA_BOTTOM
+---@return number, number HUD 逻辑坐标 (lx, ly)
+local function designToLogical(posX, posY, alignH, alignV)
+    local dpr = dpr_ or 1
+    local physW = (logW_ or 960) * dpr
+    local physH = (logH_ or 540) * dpr
+
+    -- VirtualControls 使用 1920x1080 设计分辨率，短边缩放
+    local designW, designH = 1920, 1080
+    local designShort = math.min(designW, designH) -- 1080
+    local scaleFactor = math.min(physW, physH) / designShort
+    local scaledW = designW * scaleFactor
+    local scaledH = designH * scaleFactor
+    local offsetX = (physW - scaledW) / 2
+    local offsetY = (physH - scaledH) / 2
+
+    -- 安全区边距（物理像素），转换到设计坐标系
+    local safeL, safeT, safeR, safeB = getEditorSafeAreaInsets()
+    local safeLeftD = safeL / scaleFactor
+    local safeRightD = safeR / scaleFactor
+    local safeTopD = safeT / scaleFactor
+    local safeBottomD = safeB / scaleFactor
+
+    -- 设计坐标系下的屏幕边缘
+    local screenLeft = -offsetX / scaleFactor
+    local screenRight = (physW - offsetX) / scaleFactor
+    local screenTop = -offsetY / scaleFactor
+    local screenBottom = (physH - offsetY) / scaleFactor
+
+    local x, y = posX, posY
+
+    if alignH == HA_LEFT then
+        x = screenLeft + safeLeftD + x
+    elseif alignH == HA_RIGHT then
+        x = screenRight - safeRightD + x
+    else
+        x = designW / 2 + x
+    end
+
+    if alignV == VA_TOP then
+        y = screenTop + safeTopD + y
+    elseif alignV == VA_BOTTOM then
+        y = screenBottom - safeBottomD + y
+    else
+        y = designH / 2 + y
+    end
+
+    -- 设计坐标 → 物理像素 → 逻辑坐标
+    local physPx = x * scaleFactor + offsetX
+    local physPy = y * scaleFactor + offsetY
+    return physPx / dpr, physPy / dpr
+end
+
+--- 逆向转换：HUD 逻辑坐标 → 设计坐标 position
+local function logicalToDesign(lx, ly, alignH, alignV)
+    local dpr = dpr_ or 1
+    local physW = (logW_ or 960) * dpr
+    local physH = (logH_ or 540) * dpr
+
+    local designW, designH = 1920, 1080
+    local designShort = math.min(designW, designH)
+    local scaleFactor = math.min(physW, physH) / designShort
+    local scaledW = designW * scaleFactor
+    local scaledH = designH * scaleFactor
+    local offsetX = (physW - scaledW) / 2
+    local offsetY = (physH - scaledH) / 2
+
+    -- 安全区边距
+    local safeL, safeT, safeR, safeB = getEditorSafeAreaInsets()
+    local safeLeftD = safeL / scaleFactor
+    local safeRightD = safeR / scaleFactor
+    local safeTopD = safeT / scaleFactor
+    local safeBottomD = safeB / scaleFactor
+
+    -- 逻辑坐标 → 物理像素 → 设计坐标
+    local physPx = lx * dpr
+    local physPy = ly * dpr
+    local dx = (physPx - offsetX) / scaleFactor
+    local dy = (physPy - offsetY) / scaleFactor
+
+    local screenLeft = -offsetX / scaleFactor
+    local screenRight = (physW - offsetX) / scaleFactor
+    local screenTop = -offsetY / scaleFactor
+    local screenBottom = (physH - offsetY) / scaleFactor
+
+    local posX, posY = dx, dy
+    if alignH == HA_LEFT then
+        posX = dx - screenLeft - safeLeftD
+    elseif alignH == HA_RIGHT then
+        posX = dx - screenRight + safeRightD
+    else
+        posX = dx - designW / 2
+    end
+
+    if alignV == VA_TOP then
+        posY = dy - screenTop - safeTopD
+    elseif alignV == VA_BOTTOM then
+        posY = dy - screenBottom + safeBottomD
+    else
+        posY = dy - designH / 2
+    end
+
+    return posX, posY
+end
+
+--- 设计分辨率下的半径转为 HUD 逻辑坐标下的像素半径
+local function designRadiusToLogical(r)
+    local dpr = dpr_ or 1
+    local physH = (logH_ or 540) * dpr
+    local scaleFactor = math.min((logW_ or 960) * dpr, physH) / 1080
+    return r * scaleFactor / dpr
+end
+
+--- 控件定义列表（用于编辑器绘制和碰撞检测）
+local LAYOUT_CONTROLS = {
+    { name = "joystick", label = "摇杆", alignH = HA_LEFT, alignV = VA_BOTTOM,
+      color = {255, 255, 255}, radiusKey = "baseRadius" },
+    { name = "jump", label = "跳", alignH = HA_RIGHT, alignV = VA_BOTTOM,
+      color = {100, 200, 255}, radiusKey = "radius" },
+    { name = "dash", label = "冲", alignH = HA_RIGHT, alignV = VA_BOTTOM,
+      color = {255, 180, 80}, radiusKey = "radius" },
+    { name = "slam", label = "砸", alignH = HA_RIGHT, alignV = VA_BOTTOM,
+      color = {255, 100, 100}, radiusKey = "radius" },
+    { name = "charge", label = "爆", alignH = HA_RIGHT, alignV = VA_BOTTOM,
+      color = {255, 200, 50}, radiusKey = "radius" },
+}
+
+--- 绘制键位编辑器全屏界面
+function HUD.DrawLayoutEditor(mx, my)
+    if not layoutEditorData_ then return end
+
+    -- ====== 一次性诊断日志 ======
+    if not layoutDiagPrinted_ then
+        layoutDiagPrinted_ = true
+        local dpr = dpr_ or 1
+        local physW = (logW_ or 960) * dpr
+        local physH = (logH_ or 540) * dpr
+        local vcScreenW, vcScreenH = VirtualControls.GetScreenSize()
+        local vcSF = VirtualControls.GetScaleFactor()
+        local vcDesignW, vcDesignH = VirtualControls.GetDesignSize()
+        local hudSF = math.min(physW, physH) / 1080
+        local hudOX = (physW - 1920 * hudSF) / 2
+        local hudOY = (physH - 1080 * hudSF) / 2
+
+        print(string.format("[DIAG] HUD: logW=%.1f logH=%.1f dpr=%.2f physW=%.1f physH=%.1f", logW_, logH_, dpr, physW, physH))
+        print(string.format("[DIAG] VC:  screenW=%d screenH=%d sf=%.4f dW=%d dH=%d", vcScreenW, vcScreenH, vcSF, vcDesignW, vcDesignH))
+        print(string.format("[DIAG] HUD: sf=%.4f oX=%.2f oY=%.2f", hudSF, hudOX, hudOY))
+        print(string.format("[DIAG] MATCH? physW=%s physH=%s sf=%s",
+            tostring(math.abs(physW - vcScreenW) < 1), tostring(math.abs(physH - vcScreenH) < 1),
+            tostring(math.abs(hudSF - vcSF) < 0.001)))
+
+        -- 跳跃按钮默认位置测试
+        local tx, ty = -144, -211
+        local lx, ly = designToLogical(tx, ty, HA_RIGHT, VA_BOTTOM)
+        local bx, by = logicalToDesign(lx, ly, HA_RIGHT, VA_BOTTOM)
+        print(string.format("[DIAG] Jump: design(%d,%d)->logical(%.1f,%.1f)->back(%.1f,%.1f)", tx, ty, lx, ly, bx, by))
+
+        -- 用 VC 参数手动算
+        local vcOX = (vcScreenW - vcDesignW * vcSF) / 2
+        local vcOY = (vcScreenH - vcDesignH * vcSF) / 2
+        local sR = (vcScreenW - vcOX) / vcSF
+        local sB = (vcScreenH - vcOY) / vcSF
+        local dxVC = sR + tx  -- HA_RIGHT, no safe area
+        local dyVC = sB + ty  -- VA_BOTTOM
+        local pxVC = dxVC * vcSF + vcOX
+        local pyVC = dyVC * vcSF + vcOY
+        print(string.format("[DIAG] VC:  design(%.1f,%.1f)->phys(%.1f,%.1f)->log(%.1f,%.1f)",
+            dxVC, dyVC, pxVC, pyVC, pxVC/dpr, pyVC/dpr))
+        print(string.format("[DIAG] DIFF: x=%.2f y=%.2f", lx - pxVC/dpr, ly - pyVC/dpr))
+    end
+
+    local vg = vg_
+    local w, h = logW_, logH_
+    local pressed = cachedMousePress_
+
+    -- 半透明背景
+    nvgBeginPath(vg)
+    nvgRect(vg, 0, 0, w, h)
+    nvgFillColor(vg, nvgRGBA(10, 8, 20, 220))
+    nvgFill(vg)
+
+    -- 标题
+    nvgFontFace(vg, "bold")
+    nvgFontSize(vg, isMobileHUD_ and 16 or 22)
+    nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
+    nvgText(vg, w * 0.5, isMobileHUD_ and 10 or 16, "自定义键位 - 拖拽移动控件位置")
+
+    -- 提示文字
+    nvgFontFace(vg, "sans")
+    nvgFontSize(vg, isMobileHUD_ and 10 or 13)
+    nvgFillColor(vg, nvgRGBA(200, 200, 200, 160))
+    nvgText(vg, w * 0.5, isMobileHUD_ and 26 or 38, "使用底部 +/- 按钮调整选中控件大小")
+
+    -- 绘制所有控件的圆形表示
+    local hitCtrl = nil   -- 鼠标悬停的控件
+    local hitDist = math.huge
+
+    for _, def in ipairs(LAYOUT_CONTROLS) do
+        local data = layoutEditorData_[def.name]
+        if data then
+            local cx, cy = designToLogical(data.x, data.y, def.alignH, def.alignV)
+            local r = designRadiusToLogical(data[def.radiusKey] or 80)
+
+            -- 检测碰撞
+            local dx = mx - cx
+            local dy = my - cy
+            local dist = math.sqrt(dx * dx + dy * dy)
+            local isHover = dist <= r
+            local isDragging = (layoutDragging_ == def.name)
+
+            if isHover and dist < hitDist and not layoutDragging_ then
+                hitCtrl = def.name
+                hitDist = dist
+            end
+
+            -- 绘制圆形背景
+            nvgBeginPath(vg)
+            nvgCircle(vg, cx, cy, r)
+            local alpha = (isDragging or isHover) and 160 or 100
+            nvgFillColor(vg, nvgRGBA(def.color[1], def.color[2], def.color[3], alpha))
+            nvgFill(vg)
+
+            -- 边框
+            nvgBeginPath(vg)
+            nvgCircle(vg, cx, cy, r)
+            local borderAlpha = isDragging and 255 or (isHover and 220 or 120)
+            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, borderAlpha))
+            nvgStrokeWidth(vg, isDragging and 3 or 1.5)
+            nvgStroke(vg)
+
+            -- 标签
+            nvgFontFace(vg, "bold")
+            nvgFontSize(vg, isMobileHUD_ and 14 or 18)
+            nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 230))
+            nvgText(vg, cx, cy, def.label)
+
+            -- 被选中的控件显示缩放提示
+            if isDragging then
+                nvgFontSize(vg, isMobileHUD_ and 8 or 10)
+                nvgFontFace(vg, "sans")
+                nvgFillColor(vg, nvgRGBA(255, 255, 200, 180))
+                nvgText(vg, cx, cy + r + (isMobileHUD_ and 8 or 12),
+                    string.format("大小: %d", math.floor(data[def.radiusKey] or 80)))
+            end
+        end
+    end
+
+    -- ========== 拖拽逻辑 ==========
+    if pressed and not layoutDragging_ and hitCtrl then
+        -- 开始拖拽
+        layoutDragging_ = hitCtrl
+        local data = layoutEditorData_[hitCtrl]
+        local def = nil
+        for _, d in ipairs(LAYOUT_CONTROLS) do
+            if d.name == hitCtrl then def = d; break end
+        end
+        if def and data then
+            local cx, cy = designToLogical(data.x, data.y, def.alignH, def.alignV)
+            layoutDragOffX_ = mx - cx
+            layoutDragOffY_ = my - cy
+        end
+    end
+
+    if layoutDragging_ then
+        -- 正在拖拽：更新位置
+        local def = nil
+        for _, d in ipairs(LAYOUT_CONTROLS) do
+            if d.name == layoutDragging_ then def = d; break end
+        end
+        if def then
+            local newLx = mx - layoutDragOffX_
+            local newLy = my - layoutDragOffY_
+            local newDx, newDy = logicalToDesign(newLx, newLy, def.alignH, def.alignV)
+            layoutEditorData_[def.name].x = math.floor(newDx + 0.5)
+            layoutEditorData_[def.name].y = math.floor(newDy + 0.5)
+        end
+
+        -- 检测松开（没有触摸且没有鼠标按下）
+        if input.numTouches == 0 and not input:GetMouseButtonDown(MOUSEB_LEFT) then
+            layoutDragging_ = nil
+        end
+    end
+
+    -- ========== 底部按钮栏 ==========
+    local barH = isMobileHUD_ and 44 or 56
+    local barY = h - barH
+    nvgBeginPath(vg)
+    nvgRect(vg, 0, barY, w, barH)
+    nvgFillColor(vg, nvgRGBA(20, 16, 35, 230))
+    nvgFill(vg)
+
+    -- 按钮布局
+    local btnH = isMobileHUD_ and 28 or 36
+    local btnW = isMobileHUD_ and 60 or 80
+    local smallBtnW = isMobileHUD_ and 32 or 40
+    local btnGap = isMobileHUD_ and 6 or 10
+    local btnY2 = barY + (barH - btnH) / 2
+
+    -- 从左到右：[- 缩小] [+ 放大] ... [重置] [保存] [返回]
+    local leftX = isMobileHUD_ and 10 or 20
+
+    -- 缩小按钮
+    local shrinkX = leftX
+    local shrinkHov = mx >= shrinkX and mx <= shrinkX + smallBtnW and my >= btnY2 and my <= btnY2 + btnH
+    HUD.DrawRubberButton(shrinkX, btnY2, smallBtnW, btnH, "-",
+        120, 120, 140, shrinkHov)
+    if pressed and shrinkHov and layoutDragging_ then
+        local data = layoutEditorData_[layoutDragging_]
+        local def = nil
+        for _, d in ipairs(LAYOUT_CONTROLS) do
+            if d.name == layoutDragging_ then def = d; break end
+        end
+        if def and data then
+            local key = def.radiusKey
+            data[key] = math.max(30, (data[key] or 80) - 8)
+            if def.name == "joystick" then
+                -- 同步缩放摇杆的 knob 和 move 半径
+                local ratio = data[key] / 154  -- 与默认 baseRadius 的比
+                data.knobRadius = math.max(20, math.floor(56 * ratio + 0.5))
+                data.moveRadius = math.max(30, math.floor(84 * ratio + 0.5))
+            end
+        end
+    end
+
+    -- 放大按钮
+    local growX = shrinkX + smallBtnW + btnGap
+    local growHov = mx >= growX and mx <= growX + smallBtnW and my >= btnY2 and my <= btnY2 + btnH
+    HUD.DrawRubberButton(growX, btnY2, smallBtnW, btnH, "+",
+        120, 120, 140, growHov)
+    if pressed and growHov and layoutDragging_ then
+        local data = layoutEditorData_[layoutDragging_]
+        local def = nil
+        for _, d in ipairs(LAYOUT_CONTROLS) do
+            if d.name == layoutDragging_ then def = d; break end
+        end
+        if def and data then
+            local key = def.radiusKey
+            data[key] = math.min(300, (data[key] or 80) + 8)
+            if def.name == "joystick" then
+                local ratio = data[key] / 154
+                data.knobRadius = math.floor(56 * ratio + 0.5)
+                data.moveRadius = math.floor(84 * ratio + 0.5)
+            end
+        end
+    end
+
+    -- 当前选中提示
+    if layoutDragging_ then
+        nvgFontFace(vg, "sans")
+        nvgFontSize(vg, isMobileHUD_ and 10 or 12)
+        nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(255, 255, 200, 200))
+        local selLabel = "选中: "
+        for _, d in ipairs(LAYOUT_CONTROLS) do
+            if d.name == layoutDragging_ then selLabel = selLabel .. d.label; break end
+        end
+        nvgText(vg, growX + smallBtnW + btnGap, btnY2 + btnH * 0.5, selLabel)
+    end
+
+    -- 右侧按钮
+    local rightX = w - (isMobileHUD_ and 10 or 20)
+
+    -- 返回按钮
+    local backW = btnW
+    local backX = rightX - backW
+    local backHov = mx >= backX and mx <= backX + backW and my >= btnY2 and my <= btnY2 + btnH
+    HUD.DrawRubberButton(backX, btnY2, backW, btnH, "返回",
+        150, 80, 80, backHov)
+    if pressed and backHov then
+        HUD.CloseLayoutEditor()
+        return
+    end
+
+    -- 保存按钮
+    local saveW = btnW
+    local saveX = backX - saveW - btnGap
+    local saveHov = mx >= saveX and mx <= saveX + saveW and my >= btnY2 and my <= btnY2 + btnH
+    local saveLabel = layoutSaving_ and "保存中..." or "保存"
+    HUD.DrawRubberButton(saveX, btnY2, saveW, btnH, saveLabel,
+        80, 180, 120, saveHov)
+    if pressed and saveHov and not layoutSaving_ then
+        layoutSaving_ = true
+        -- 先深拷贝一份数据，立即应用到控件，不依赖异步回调
+        local savedCopy = {}
+        for name, ctrl in pairs(layoutEditorData_) do
+            savedCopy[name] = {}
+            for k, v in pairs(ctrl) do savedCopy[name][k] = v end
+        end
+        -- 立即应用到运行时控件
+        local Standalone = require("Standalone")
+        Standalone.ApplyLayout(savedCopy)
+        print("[HUD] Layout applied to controls immediately")
+        -- 异步保存到云端
+        ControlLayout.SaveToCloud(savedCopy, function(success)
+            layoutSaving_ = false
+            if success then
+                print("[HUD] Layout saved to cloud")
+            else
+                print("[HUD] Layout cloud save failed (changes still applied locally)")
+            end
+        end)
+        HUD.CloseLayoutEditor()
+    end
+
+    -- 重置按钮
+    local resetW = btnW
+    local resetX = saveX - resetW - btnGap
+    local resetHov = mx >= resetX and mx <= resetX + resetW and my >= btnY2 and my <= btnY2 + btnH
+    HUD.DrawRubberButton(resetX, btnY2, resetW, btnH, "重置",
+        180, 160, 80, resetHov)
+    if pressed and resetHov then
+        -- 恢复默认布局
+        local defaults = ControlLayout.GetDefaults()
+        layoutEditorData_ = {}
+        for name, ctrl in pairs(defaults) do
+            layoutEditorData_[name] = {}
+            for k, v in pairs(ctrl) do
+                layoutEditorData_[name][k] = v
+            end
+        end
+        layoutDragging_ = nil
     end
 end
 

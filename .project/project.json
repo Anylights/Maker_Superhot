@@ -5,10 +5,10 @@
     "id": "540864398"
   },
   "entry": "main.lua",
-  "version": "1.0.96",
+  "version": "1.0.102",
   "taptap_publish": {
-    "title": "超级红温！",
-    "description": "25人实时竞技爬塔对战游戏，使用冲刺、下砸、蓄力爆炸等技能击飞对手，攀登到最高点获胜！",
+    "title": "超级红温",
+    "description": "你红温了吗？超Q弹的多人竞技爬塔对战游戏，使用冲刺、下砸、蓄力爆炸等技能击飞对手，攀登到最高点！",
     "category": "action",
     "screen_orientation": "landscape",
     "collection_type": "sce",
@@ -19,15 +19,30 @@
     "miniapp_id": "tapmcipflmjbzqrgqc"
   },
   "assets": {
-    "icon": "",
-    "screenshots": [],
-    "promotional_image": ""
+    "icon": "./game_material/ICON_2026-05-18T05-17-58_01.png",
+    "screenshots": [
+      "./game_material/SCREENSHOT_2026-05-14T11-52-11_01.png",
+      "./game_material/SCREENSHOT_2026-05-14T11-52-11_02.png",
+      "./game_material/SCREENSHOT_2026-05-14T11-52-11_03.png"
+    ],
+    "promotional_image": "./game_material/PROMO_2026-05-14T11-52-11_01.jpg",
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/ICON_2026-05-18T05-17-58_01.png",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/SCREENSHOT_2026-05-14T11-52-11_01.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/SCREENSHOT_2026-05-14T11-52-11_02.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/SCREENSHOT_2026-05-14T11-52-11_03.png"
+    ],
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/PROMO_2026-05-14T11-52-11_01.jpg",
+    "cover_horizontal": "./game_material/COVER_HORIZONTAL_2026-05-14T11-55-23_01.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_HORIZONTAL_2026-05-14T11-55-23_01.png",
+    "cover_vertical": "./game_material/COVER_VERTICAL_2026-05-14T11-55-23_01.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_VERTICAL_2026-05-14T11-55-23_01.png"
   },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_agbd_1778744764754.png",
-    "generated_at": "2026-05-14T07:46:04.884Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_agbd_1779075990787.png",
+    "generated_at": "2026-05-18T03:46:30.910Z"
   },
   "metadata": {
-    "updated_at": "2026-05-14T07:46:04.884Z"
+    "updated_at": "2026-05-18T05:17:59.713Z"
   }
 }

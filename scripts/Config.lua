@@ -148,6 +148,10 @@ Config.RespawnDelay       = 1.5    -- 复活等待（秒）
 Config.InvincibleDuration = 1.0    -- 出生保护（秒）
 Config.DeathY             = -10.0  -- 死亡区域 Y 坐标
 
+-- 游戏模式
+Config.GAMEMODE_NORMAL   = "normal"   -- 普通模式（2分钟限时赛）
+Config.GAMEMODE_ONELIFE  = "onelife"  -- 一命通天（无限时间，一条命）
+
 -- 游戏时间
 Config.GameDuration      = 120.0   -- 单局总时长（秒）= 2 分钟
 Config.CountdownTime     = 3.0     -- 开局倒计时（秒）
@@ -181,6 +185,42 @@ Config.KillStreakTexts    = {       -- 连杀文字（按连续不死击杀数�
 -- 拾取物积分
 Config.PickupSmallScore  = 10      -- 小能量块得分
 Config.PickupLargeScore  = 30      -- 大能量块得分
+
+-- ============================================================================
+-- 特殊道具系统
+-- ============================================================================
+Config.PowerUpDuration      = 8.0    -- 道具持续时间（秒）
+Config.PowerUpSpawnRatio    = 0.30   -- 道具刷新概率（30%）
+
+-- 超级变大
+Config.SuperBigScale        = 2.0    -- 放大倍率（视觉 + 碰撞体）
+Config.SuperBigSlamShake    = 0.45   -- 变大后下砸震屏强度（默认 0.10）
+
+-- 超级变小
+Config.SuperSmallScale      = 0.4    -- 缩小倍率
+Config.SuperSmallJumpMul    = 1.4    -- 变小后跳跃力增强
+Config.SuperSmallDashMul    = 1.3    -- 变小后冲刺速度增强
+
+-- 缩放过渡
+Config.ScaleLerpSpeed       = 3.0    -- scale lerp 速率
+
+-- 道具颜色（用于外观 + 角色发光）
+Config.PowerUpColors = {
+    superBig     = Color(1.00, 0.60, 0.10, 1.0),  -- 橙色
+    superSmall   = Color(0.20, 0.90, 0.30, 1.0),  -- 绿色
+    infiniteDash = Color(0.20, 0.50, 1.00, 1.0),  -- 蓝色
+    unstoppable  = Color(0.70, 0.20, 0.90, 1.0),  -- 紫色
+    instantHot   = Color(1.00, 0.20, 0.15, 1.0),  -- 红色
+}
+
+-- 道具名称（HUD 显示）
+Config.PowerUpNames = {
+    superBig     = "超级变大",
+    superSmall   = "超级变小",
+    infiniteDash = "无限冲刺",
+    unstoppable  = "势如破竹",
+    instantHot   = "直接红温",
+}
 
 -- 检查点
 Config.CheckpointInterval = 20     -- 每隔多少格放一个检查点（~5层）

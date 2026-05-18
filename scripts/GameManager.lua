@@ -7,6 +7,7 @@ local Config = require("Config")
 local MapData = require("MapData")
 local SFX = require("SFX")
 local RandomEvent = require("RandomEvent")
+local PowerUp = require("PowerUp")
 
 local GameManager = {}
 
@@ -20,8 +21,14 @@ GameManager.STATE_RESULT    = "result"
 GameManager.state = GameManager.STATE_MENU
 GameManager.stateTimer = 0
 
+-- 游戏模式
+GameManager.gameMode = Config.GAMEMODE_NORMAL
+
 -- 游戏计时（倒计时，秒）
 GameManager.gameTimer = 0
+
+-- 一命通天模式：累计存活时间
+GameManager.elapsedTime = 0
 
 -- 击杀事件队列（供 HUD 消费）
 GameManager.killEvents = {}
@@ -102,7 +109,13 @@ end
 --- 玩家加入游戏（点击"开始"或"再来一局"）
 --- 只重置分数和人类玩家位置，AI 保持当前位置继续攀爬
 function GameManager.JoinGame()
-    GameManager.gameTimer = Config.GameDuration
+    -- 一命通天模式：无限时间
+    if GameManager.gameMode == Config.GAMEMODE_ONELIFE then
+        GameManager.gameTimer = 99999
+        GameManager.elapsedTime = 0
+    else
+        GameManager.gameTimer = Config.GameDuration
+    end
     GameManager.killEvents = {}
 
     -- 解冻所有玩家（上一局结束时冻结了物理）
@@ -122,6 +135,8 @@ function GameManager.JoinGame()
     -- 重置道具（公平分布）
     if pickupModule_ then pickupModule_.Reset() end
     if randomPickupModule_ then randomPickupModule_.Reset() end
+    -- 重置道具 buff
+    PowerUp.ClearAll()
     -- 重置随机事件
     RandomEvent.Init()
 
@@ -206,13 +221,17 @@ function GameManager.UpdateCountdown(dt)
 end
 
 function GameManager.UpdatePlaying(dt)
-    -- 倒计时
-    GameManager.gameTimer = GameManager.gameTimer - dt
-
-    -- 时间到 → 结算
-    if GameManager.gameTimer <= 0 then
-        GameManager.gameTimer = 0
-        GameManager.EndGame()
+    if GameManager.gameMode == Config.GAMEMODE_ONELIFE then
+        -- 一命通天：累计存活时间，不做倒计时结束
+        GameManager.elapsedTime = GameManager.elapsedTime + dt
+    else
+        -- 普通模式：倒计时
+        GameManager.gameTimer = GameManager.gameTimer - dt
+        -- 时间到 → 结算
+        if GameManager.gameTimer <= 0 then
+            GameManager.gameTimer = 0
+            GameManager.EndGame()
+        end
     end
 end
 
@@ -234,6 +253,16 @@ function GameManager.OnPlayerKill(killerIndex, victimIndex, multiKillCount, kill
 
     print("[GameManager] Kill event: P" .. killerIndex .. " killed P" .. victimIndex
         .. " (multi=" .. multiKillCount .. ", streak=" .. killStreak .. ")")
+end
+
+--- 一命通天模式：玩家死亡/掉落回调
+---@param p table 死亡的玩家
+function GameManager.OnPlayerDeath(p)
+    if GameManager.gameMode ~= Config.GAMEMODE_ONELIFE then return end
+    if not p.isHuman then return end
+    if GameManager.state ~= GameManager.STATE_PLAYING then return end
+    print("[GameManager] Onelife mode: human player died → ending game")
+    GameManager.EndGame()
 end
 
 --- 结束游戏，进入结算
@@ -277,6 +306,7 @@ function GameManager.GetRankings()
                 slamHits = p.slamHits or 0,
                 gotSlammed = p.gotSlammed or 0,
                 gotKilled = p.gotKilled or 0,
+                elapsedTime = GameManager.elapsedTime or 0,
             })
         end
         table.sort(rankings, function(a, b) return a.score > b.score end)

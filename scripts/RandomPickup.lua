@@ -5,6 +5,7 @@
 -- ============================================================================
 
 local Config = require("Config")
+local PowerUp = require("PowerUp")
 
 local RandomPickup = {}
 
@@ -185,10 +186,30 @@ function RandomPickup.GetRandomPositions(count)
 
         if not tooClose then
             used[pickedIdx] = true
+            -- 决定道具类型：概率随层数变化
+            -- 底部8层不刷道具，8~40层线性增长至满概率（15%），40层以上封顶
+            local gridY = picked.gy or 0
+            local powerUpChance = 0
+            if gridY > 8 then
+                local t = math.min((gridY - 8) / 32, 1.0)  -- 8层以下=0%, 40层=满概率, 往上封顶
+                powerUpChance = Config.PowerUpSpawnRatio * t
+            end
+
+            local sizeRoll = math.random()
+            local itemSize, itemEffect
+            if powerUpChance > 0 and sizeRoll < powerUpChance then
+                itemSize = "powerup"
+                itemEffect = PowerUp.GetRandomType()
+            elseif sizeRoll < powerUpChance + 0.64 then
+                itemSize = "small"
+            else
+                itemSize = "large"
+            end
             table.insert(result, {
                 x = picked.x,
                 y = picked.y,
-                size = (math.random() < RandomPickup.SmallRatio) and "small" or "large"
+                size = itemSize,
+                effectType = itemEffect,
             })
         else
             used[pickedIdx] = true  -- 太近的也标记为已用，避免反复选到
@@ -234,7 +255,7 @@ function RandomPickup.Update(dt)
     for _, pos in ipairs(positions) do
         -- 检查附近是否已有拾取物
         if not pickupModule_.HasPickupNear(pos.x, pos.y, RandomPickup.MinDistance) then
-            pickupModule_.Spawn(pos.x, pos.y, pos.size)
+            pickupModule_.Spawn(pos.x, pos.y, pos.size, pos.effectType)
             spawned = spawned + 1
         end
     end
@@ -260,7 +281,7 @@ function RandomPickup.Reset()
         local positions = RandomPickup.GetRandomPositions(initialCount)
 
         for _, pos in ipairs(positions) do
-            pickupModule_.Spawn(pos.x, pos.y, pos.size)
+            pickupModule_.Spawn(pos.x, pos.y, pos.size, pos.effectType)
         end
 
         print("[RandomPickup] Reset with " .. #positions .. " initial pickups")

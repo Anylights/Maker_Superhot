@@ -10,6 +10,7 @@ local Camera = require("Camera")
 local RandomEvent = require("RandomEvent")
 local CharacterClass = require("CharacterClass")
 local Economy = require("Economy")
+local PowerUp = require("PowerUp")
 
 local Player = {}
 
@@ -208,6 +209,22 @@ function Player.CreateVisuals(node, index, classId)
     stunMat:SetShaderParameter("Metallic", Variant(0.0))
     stunMat:SetShaderParameter("Roughness", Variant(1.0))
     stunGeom:SetMaterial(stunMat)
+
+    -- 道具光晕节点（半透明发光圆环，默认隐藏，由 PowerUp 模块控制）
+    local glowHalo = visualNode:CreateChild("GlowHalo")
+    glowHalo.position = Vector3(0, 0, 0.3)  -- 角色背后
+    glowHalo.scale = Vector3(2.0, 2.0, 0.05)  -- 比角色大一圈，扁平
+    glowHalo.enabled = false
+    local glowModel = glowHalo:CreateComponent("StaticModel")
+    glowModel.model = sphereModel
+    glowModel.castShadows = false
+    local glowMat = Material:new()
+    glowMat:SetTechnique(0, cache:GetResource("Technique", "Techniques/PBR/PBRNoTextureAlpha.xml"))
+    glowMat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 0.0)))
+    glowMat:SetShaderParameter("MatEmissiveColor", Variant(Color(0, 0, 0)))
+    glowMat:SetShaderParameter("Metallic", Variant(0.0))
+    glowMat:SetShaderParameter("Roughness", Variant(1.0))
+    glowModel:SetMaterial(glowMat)
 
     return visualNode, mat, outlineMat
 end
@@ -863,8 +880,9 @@ function Player.DoSlamLanding(p)
     p.squashVelY = 0
     p.squashVelX = 0
 
-    -- 屏幕震动（仅在视野内，幅度适中）
-    Camera.Shake(0.10, 0.15, pos)
+    -- 屏幕震动（仅在视野内，幅度适中；超级变大时加强）
+    local shakeAmp = PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) and Config.SuperBigSlamShake or 0.10
+    Camera.Shake(shakeAmp, 0.15, pos)
     SFX.Play("explosion", 0.6, pos.x, pos.y)
 
     -- 下砸落地粒子爆发（水平扩散的小圆粒子，高饱和鲜艳）
@@ -925,6 +943,13 @@ function Player.DoSlamLanding(p)
                 hitAnyPlayer = true
                 p.slamHits = (p.slamHits or 0) + 1
                 other.gotSlammed = (other.gotSlammed or 0) + 1
+
+                -- 超级变大：下砸直接击杀
+                if PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) then
+                    Player.Kill(other, "slam", p.index)
+                    goto continueSL
+                end
+
                 -- 击飞方向：从砸地点水平朝外
                 local kbDir = (diff.x >= 0) and 1 or -1
                 other.body.linearVelocity = Vector3(
@@ -968,6 +993,9 @@ function Player.DoJump(p)
     if p.body then
         local vel = p.body.linearVelocity
         local jumpSpeed = p.jumpSpeed * RandomEvent.GetJumpSpeedMul()
+        if PowerUp.HasEffect(p.index, PowerUp.SUPER_SMALL) then
+            jumpSpeed = jumpSpeed * Config.SuperSmallJumpMul
+        end
         p.body.linearVelocity = Vector3(vel.x, jumpSpeed, 0)
     end
 
@@ -987,7 +1015,11 @@ function Player.UpdateMovement(p, dt)
     -- 冲刺中（不受重力影响，Y 速度锁定为 0）
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
-        p.body.linearVelocity = Vector3(p.dashDir * p.dashSpeed, 0, 0)
+        local dSpeed = p.dashSpeed
+        if PowerUp.HasEffect(p.index, PowerUp.SUPER_SMALL) then
+            dSpeed = dSpeed * Config.SuperSmallDashMul
+        end
+        p.body.linearVelocity = Vector3(p.dashDir * dSpeed, 0, 0)
         -- 冲刺击退：检测附近其他玩家并击飞
         Player.DoDashKnockback(p)
         return
@@ -1259,7 +1291,7 @@ function Player.UpdateVisualEffects(p, dt)
     -- =====================
     -- 应用到 visualNode
     -- =====================
-    local baseScale = 0.9  -- 原始缩放
+    local baseScale = 0.9 * PowerUp.GetScale(p)  -- 原始缩放 × 道具缩放
     p.visualNode.scale = Vector3(
         baseScale * p.squashScaleX,
         baseScale * p.squashScaleY,
@@ -1822,6 +1854,13 @@ function Player.Kill(p, reason, killerIndex)
     end
 
     print("[Player] Player " .. p.index .. " died (" .. reason .. ")")
+
+    -- 一命通天模式：人类玩家死亡后立即结束游戏（不允许重生）
+    local GameManager = require("GameManager")
+    if GameManager.gameMode == Config.GAMEMODE_ONELIFE and p.isHuman then
+        p.respawnTimer = 99999  -- 阻止自动重生
+        GameManager.OnPlayerDeath(p)
+    end
 end
 
 --- 生成玩家被炸死的喷溅特效（夸张版）

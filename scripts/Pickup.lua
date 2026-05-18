@@ -5,6 +5,7 @@
 local Config = require("Config")
 local SFX = require("SFX")
 local HUD = require("HUD")
+local PowerUp = require("PowerUp")
 
 local Pickup = {}
 
@@ -22,6 +23,9 @@ local smallOutlineMat_ = nil
 local largeOutlineMat_ = nil
 local unlitTechnique_ = nil
 local sphereModel_ = nil
+
+-- 道具材质缓存 { [effectType] = { main, outline } }
+local powerUpMats_ = {}
 
 -- ============================================================================
 -- 初始化
@@ -56,6 +60,27 @@ function Pickup.Init(scene, playerRef)
     largeOutlineMat_ = Material:new()
     largeOutlineMat_:SetTechnique(0, unlitTechnique_)
     largeOutlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.PickupLargeOutline))
+
+    -- 特殊道具材质（按效果类型，带发光）
+    local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
+    for _, effectType in ipairs(PowerUp.ALL_TYPES) do
+        local color = Config.PowerUpColors[effectType]
+        if color then
+            local mainMat = Material:new()
+            mainMat:SetTechnique(0, pbrTech)
+            mainMat:SetShaderParameter("MatDiffColor", Variant(color))
+            mainMat:SetShaderParameter("MatEmissiveColor", Variant(Color(color.r * 0.4, color.g * 0.4, color.b * 0.4)))
+            mainMat:SetShaderParameter("Metallic", Variant(0.1))
+            mainMat:SetShaderParameter("Roughness", Variant(0.4))
+
+            local outColor = Color(color.r * 0.4, color.g * 0.4, color.b * 0.4, 1.0)
+            local outMat = Material:new()
+            outMat:SetTechnique(0, unlitTechnique_)
+            outMat:SetShaderParameter("MatDiffColor", Variant(outColor))
+
+            powerUpMats_[effectType] = { main = mainMat, outline = outMat }
+        end
+    end
 
     print("[Pickup] Initialized")
 end
@@ -113,55 +138,162 @@ local function buildDiamond(geom, w, h, d)
     geom:Commit()
 end
 
+--- 构建八角星造型 CustomGeometry（特殊道具外观）
+--- 基于八面体但每个顶点外扩形成尖刺星形
+---@param geom CustomGeometry
+---@param r number 外径半径
+local function buildOctaStar(geom, r)
+    geom:BeginGeometry(0, TRIANGLE_LIST)
+
+    -- 八角星：8 个外尖 + 8 个内凹顶点交替排列在 XY 平面上
+    -- 然后前后各一个中心点形成 3D 外观
+    local innerR = r * 0.45
+    local outerR = r
+    local depthR = r * 0.4
+
+    local frontZ = -depthR
+    local backZ = depthR
+    local centerFront = Vector3(0, 0, frontZ)
+    local centerBack = Vector3(0, 0, backZ)
+
+    -- 生成 16 个环形顶点（8 外 + 8 内，交替）
+    local ringVerts = {}
+    for i = 0, 15 do
+        local angle = (i / 16) * math.pi * 2 - math.pi / 2
+        local radius = (i % 2 == 0) and outerR or innerR
+        local vx = math.cos(angle) * radius
+        local vy = math.sin(angle) * radius
+        table.insert(ringVerts, Vector3(vx, vy, 0))
+    end
+
+    -- 前面三角扇（16 个三角形）
+    for i = 1, 16 do
+        local v1 = ringVerts[i]
+        local v2 = ringVerts[(i % 16) + 1]
+        local e1 = v1 - centerFront
+        local e2 = v2 - centerFront
+        local n = e1:CrossProduct(e2):Normalized()
+
+        geom:DefineVertex(centerFront)
+        geom:DefineNormal(n)
+        geom:DefineTexCoord(Vector2(0.5, 0.5))
+
+        geom:DefineVertex(v1)
+        geom:DefineNormal(n)
+        geom:DefineTexCoord(Vector2(0, 0))
+
+        geom:DefineVertex(v2)
+        geom:DefineNormal(n)
+        geom:DefineTexCoord(Vector2(1, 0))
+    end
+
+    -- 后面三角扇（反向绕序）
+    for i = 1, 16 do
+        local v1 = ringVerts[i]
+        local v2 = ringVerts[(i % 16) + 1]
+        local e1 = v2 - centerBack
+        local e2 = v1 - centerBack
+        local n = e1:CrossProduct(e2):Normalized()
+
+        geom:DefineVertex(centerBack)
+        geom:DefineNormal(n)
+        geom:DefineTexCoord(Vector2(0.5, 0.5))
+
+        geom:DefineVertex(v2)
+        geom:DefineNormal(n)
+        geom:DefineTexCoord(Vector2(0, 0))
+
+        geom:DefineVertex(v1)
+        geom:DefineNormal(n)
+        geom:DefineTexCoord(Vector2(1, 0))
+    end
+
+    geom:Commit()
+end
+
 --- 生成单个拾取物
 ---@param x number 世界 X
 ---@param y number 世界 Y
----@param size string "small"|"large"
-function Pickup.Spawn(x, y, size)
+---@param size string "small"|"large"|"powerup"
+---@param effectType string|nil 道具效果类型（仅 size=="powerup" 时有效）
+function Pickup.Spawn(x, y, size, effectType)
+    local isPowerUp = (size == "powerup")
+    local isLarge = (size == "large")
+
     local node = scene_:CreateChild("Pickup_" .. size, LOCAL)
     node.position = Vector3(x, y, 0)
 
-    local isLarge = (size == "large")
-    local scale = isLarge and 0.6 or 0.4
+    if isPowerUp then
+        -- 特殊道具：八角星造型，更大
+        local starR = 0.5
+        local geom = node:CreateComponent("CustomGeometry")
+        buildOctaStar(geom, starR)
+        geom.castShadows = true
 
-    -- 钻石造型尺寸（世界坐标）
-    local dw = scale * 0.5   -- X 半径
-    local dh = scale * 0.7   -- Y 半径（略高，更像钻石）
-    local dd = scale * 0.35  -- Z 半径
+        local mats = powerUpMats_[effectType]
+        if mats then
+            geom:SetMaterial(mats.main)
+        end
 
-    -- 主体钻石
-    local geom = node:CreateComponent("CustomGeometry")
-    buildDiamond(geom, dw, dh, dd)
-    geom.castShadows = true
-    geom:SetMaterial(isLarge and largeMat_ or smallMat_)
+        -- 描边子节点
+        local outlineNode = node:CreateChild("Outline")
+        outlineNode.position = Vector3(0, 0, 0.08)
+        outlineNode.scale = Vector3(1.18, 1.18, 1.0)
+        local outGeom = outlineNode:CreateComponent("CustomGeometry")
+        buildOctaStar(outGeom, starR)
+        outGeom.castShadows = false
+        if mats then
+            outGeom:SetMaterial(mats.outline)
+        end
 
-    -- 描边子节点（略大，Z 偏后）
-    local outlineNode = node:CreateChild("Outline")
-    outlineNode.position = Vector3(0, 0, 0.08)
-    outlineNode.scale = Vector3(1.18, 1.18, 1.0)
-    local outGeom = outlineNode:CreateComponent("CustomGeometry")
-    buildDiamond(outGeom, dw, dh, dd)
-    outGeom.castShadows = false
-    outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
+        -- 触发器刚体
+        local body = node:CreateComponent("RigidBody")
+        body.trigger = true
+        body.collisionLayer = 4
+        body.collisionMask = 2
 
-    -- 触发器刚体
-    local body = node:CreateComponent("RigidBody")
-    body.trigger = true
-    body.collisionLayer = 4
-    body.collisionMask = 2  -- 只检测玩家
+        local shape = node:CreateComponent("CollisionShape")
+        shape:SetSphere(starR * 2.0)
+    else
+        -- 普通能量道具：钻石造型
+        local scale = isLarge and 0.6 or 0.4
 
-    local shape = node:CreateComponent("CollisionShape")
-    shape:SetSphere(scale * 1.2)
+        local dw = scale * 0.5
+        local dh = scale * 0.7
+        local dd = scale * 0.35
+
+        local geom = node:CreateComponent("CustomGeometry")
+        buildDiamond(geom, dw, dh, dd)
+        geom.castShadows = true
+        geom:SetMaterial(isLarge and largeMat_ or smallMat_)
+
+        local outlineNode = node:CreateChild("Outline")
+        outlineNode.position = Vector3(0, 0, 0.08)
+        outlineNode.scale = Vector3(1.18, 1.18, 1.0)
+        local outGeom = outlineNode:CreateComponent("CustomGeometry")
+        buildDiamond(outGeom, dw, dh, dd)
+        outGeom.castShadows = false
+        outGeom:SetMaterial(isLarge and largeOutlineMat_ or smallOutlineMat_)
+
+        local body = node:CreateComponent("RigidBody")
+        body.trigger = true
+        body.collisionLayer = 4
+        body.collisionMask = 2
+
+        local shape = node:CreateComponent("CollisionShape")
+        shape:SetSphere(scale * 1.2)
+    end
 
     local pickup = {
         node = node,
         size = size,
-        amount = isLarge and Config.LargeEnergyAmount or Config.SmallEnergyAmount,
+        effectType = effectType,  -- 道具效果类型（仅 powerup）
+        amount = isPowerUp and 0 or (isLarge and Config.LargeEnergyAmount or Config.SmallEnergyAmount),
         active = true,
         respawnTimer = 0,
         spawnX = x,
         spawnY = y,
-        bobPhase = math.random() * math.pi * 2,  -- 随机初始浮动相位
+        bobPhase = math.random() * math.pi * 2,
     }
 
     table.insert(pickups_, pickup)
@@ -197,23 +329,41 @@ function Pickup.Update(dt)
                         local dy = pPos.y - pkY
                         local dist = math.sqrt(dx * dx + dy * dy)
                         if dist < PICKUP_DISTANCE then
-                            -- 拾取：添加能量 + 计分
-                            playerModule_.AddEnergy(p, pk.amount)
-                            local scorePoints = (pk.size == "large") and Config.PickupLargeScore or Config.PickupSmallScore
-                            if playerModule_.AddPickupScore then
-                                playerModule_.AddPickupScore(p, scorePoints)
-                            end
                             pk.collected = true
-                            -- 只给人类玩家(P1)显示浮动加分数字
-                            if p.index == 1 and HUD.AddScorePopup then
-                                local popColor = (pk.size == "large")
-                                    and {r = 255, g = 220, b = 50}
-                                    or  {r = 100, g = 255, b = 220}
-                                local popSize = (pk.size == "large") and 22 or 16
-                                HUD.AddScorePopup(pkX, pkY, "+" .. scorePoints, popColor.r, popColor.g, popColor.b, popSize)
+
+                            if pk.size == "powerup" and pk.effectType then
+                                -- 特殊道具：应用 buff 效果
+                                PowerUp.Apply(p.index, pk.effectType)
+                                -- 显示道具名称浮动文字
+                                if p.index == 1 and HUD.AddScorePopup then
+                                    local color = Config.PowerUpColors[pk.effectType]
+                                    if color then
+                                        local name = Config.PowerUpNames[pk.effectType] or "???"
+                                        HUD.AddScorePopup(pkX, pkY, name,
+                                            math.floor(color.r * 255),
+                                            math.floor(color.g * 255),
+                                            math.floor(color.b * 255), 24)
+                                    end
+                                end
+                                SFX.Play("pickup_large", 0.8, pkX, pkY)
+                                print("[Pickup] Player " .. p.index .. " picked up powerup: " .. pk.effectType)
+                            else
+                                -- 普通能量道具
+                                playerModule_.AddEnergy(p, pk.amount)
+                                local scorePoints = (pk.size == "large") and Config.PickupLargeScore or Config.PickupSmallScore
+                                if playerModule_.AddPickupScore then
+                                    playerModule_.AddPickupScore(p, scorePoints)
+                                end
+                                if p.index == 1 and HUD.AddScorePopup then
+                                    local popColor = (pk.size == "large")
+                                        and {r = 255, g = 220, b = 50}
+                                        or  {r = 100, g = 255, b = 220}
+                                    local popSize = (pk.size == "large") and 22 or 16
+                                    HUD.AddScorePopup(pkX, pkY, "+" .. scorePoints, popColor.r, popColor.g, popColor.b, popSize)
+                                end
+                                SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6, pkX, pkY)
+                                print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " (+" .. scorePoints .. " score)")
                             end
-                            SFX.Play(pk.size == "large" and "pickup_large" or "pickup_small", 0.6, pkX, pkY)
-                            print("[Pickup] Player " .. p.index .. " picked up " .. pk.size .. " (+" .. scorePoints .. " score)")
                             break
                         end
                     end

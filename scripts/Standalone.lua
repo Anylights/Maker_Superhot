@@ -18,6 +18,8 @@ local SFX = require("SFX")
 local RandomPickup = require("RandomPickup")
 local RandomEvent = require("RandomEvent")
 local Economy = require("Economy")
+local ControlLayout = require("ControlLayout")
+local PowerUp = require("PowerUp")
 local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local Standalone = {}
@@ -80,6 +82,7 @@ function Standalone.Start()
     Map.Init(scene_)
     Player.Init(scene_, Map)
     Pickup.Init(scene_, Player)
+    PowerUp.Init(Player)
     AIController.Init(Player, Map)
     SFX.Init(scene_)
     GameManager.Init(Player, Map, Pickup, AIController, RandomPickup, Camera)
@@ -231,8 +234,167 @@ function Standalone.InitMobileControls()
 
     print("[Standalone] Mobile controls initialized (landscape), isMobile=" .. tostring(isMobile_))
 
+    -- 从云端加载自定义布局并应用
+    ControlLayout.LoadFromCloud(function(layout)
+        Standalone.ApplyLayout(layout)
+        print("[Standalone] Custom layout applied")
+    end)
+
+    -- 覆盖按钮渲染：使用自定义图片替代程序化圆形
+    OverrideButtonRendering()
+
     -- 初始状态：菜单中不显示虚拟控件
     Standalone.SetVirtualControlsVisible(false)
+end
+
+-- ============================================================================
+-- 自定义按钮图片渲染
+-- ============================================================================
+
+-- 按钮图片 NanoVG 句柄缓存（按 ctx 地址分开缓存，避免重建）
+local btnImageHandles_ = {}
+
+--- 计算按钮在设计坐标系中的位置（复刻 VirtualControls 内部的 calculateScreenPosition）
+local function calcDesignPos(position, alignment)
+    local hAlign = alignment[1] or HA_LEFT
+    local vAlign = alignment[2] or VA_TOP
+    local x, y = position.x, position.y
+
+    local screenW, screenH = VirtualControls.GetScreenSize()
+    local designW, designH = VirtualControls.GetDesignSize()
+    local scaleFactor = VirtualControls.GetScaleFactor()
+
+    local offsetX = (screenW - designW * scaleFactor) / 2
+    local offsetY = (screenH - designH * scaleFactor) / 2
+
+    -- 安全区边距
+    local safeLeft, safeTop, safeRight, safeBottom = 0, 0, 0, 0
+    if GetSafeAreaInsets then
+        local rect = GetSafeAreaInsets(false)
+        if rect then
+            safeLeft = rect.min.x
+            safeTop = rect.min.y
+            safeRight = rect.max.x
+            safeBottom = rect.max.y
+        end
+    end
+
+    -- 屏幕边缘在设计坐标系中的位置
+    local screenLeftInDesign = -offsetX / scaleFactor
+    local screenRightInDesign = (screenW - offsetX) / scaleFactor
+    local screenTopInDesign = -offsetY / scaleFactor
+    local screenBottomInDesign = (screenH - offsetY) / scaleFactor
+
+    -- 安全区转设计坐标
+    local sL = safeLeft / scaleFactor
+    local sR = safeRight / scaleFactor
+    local sT = safeTop / scaleFactor
+    local sB = safeBottom / scaleFactor
+
+    if hAlign == HA_LEFT then
+        x = screenLeftInDesign + sL + x
+    elseif hAlign == HA_CENTER then
+        x = designW / 2 + x
+    elseif hAlign == HA_RIGHT then
+        x = screenRightInDesign - sR + x
+    end
+
+    if vAlign == VA_TOP then
+        y = screenTopInDesign + sT + y
+    elseif vAlign == VA_CENTER then
+        y = designH / 2 + y
+    elseif vAlign == VA_BOTTOM then
+        y = screenBottomInDesign - sB + y
+    end
+
+    return x, y
+end
+
+--- 获取或创建按钮图片的 NanoVG 句柄
+local function getButtonImage(ctx, imagePath)
+    if not btnImageHandles_[imagePath] then
+        local handle = nvgCreateImage(ctx, imagePath, 0)
+        if handle and handle >= 0 then
+            btnImageHandles_[imagePath] = handle
+        else
+            print("[Standalone] WARNING: Failed to load button image: " .. imagePath)
+            return nil
+        end
+    end
+    return btnImageHandles_[imagePath]
+end
+
+--- 创建自定义图片渲染函数
+local function makeImageRender(originalBtn, imagePath)
+    -- 保存原始 render 的引用（备用）
+    local origRender = originalBtn.render
+
+    return function(self, ctx)
+        if not self._shouldShow then return end
+
+        local centerX, centerY = calcDesignPos(self.position, self.alignment)
+        local alpha = math.floor(self.currentOpacity * 255)
+        local radius = self.radius * self.currentScale
+
+        -- 获取图片句柄（懒加载）
+        local imgHandle = getButtonImage(ctx, imagePath)
+
+        if imgHandle then
+            -- 按下时略微缩小以示反馈
+            local drawRadius = radius
+            if self.isPressed then
+                drawRadius = radius * 0.92
+            end
+
+            -- 绘制按钮图片（50% 透明度 × 当前 opacity）
+            local imgAlpha = self.currentOpacity * 0.65
+            local drawSize = drawRadius * 2
+            local drawX = centerX - drawRadius
+            local drawY = centerY - drawRadius
+
+            local paint = nvgImagePattern(ctx, drawX, drawY, drawSize, drawSize, 0, imgHandle, imgAlpha)
+            nvgBeginPath(ctx)
+            nvgCircle(ctx, centerX, centerY, drawRadius)
+            nvgFillPaint(ctx, paint)
+            nvgFill(ctx)
+        else
+            -- 图片加载失败时回退到原始渲染
+            origRender(self, ctx)
+            return
+        end
+
+        -- 冷却遮罩（保留原始逻辑）
+        if self.cooldownRemaining > 0 and self.cooldown > 0 then
+            local progress = self.cooldownRemaining / self.cooldown
+            local startAngle = -math.pi / 2
+            local endAngle = startAngle + progress * math.pi * 2
+
+            nvgBeginPath(ctx)
+            nvgMoveTo(ctx, centerX, centerY)
+            nvgArc(ctx, centerX, centerY, radius, startAngle, endAngle, NVG_CW)
+            nvgClosePath(ctx)
+            nvgFillColor(ctx, nvgRGBA(0, 0, 0, 150))
+            nvgFill(ctx)
+        end
+    end
+end
+
+--- 覆盖所有按钮的渲染方法
+function OverrideButtonRendering()
+    local btnImageMap = {
+        { btn = jumpButton_,   image = "image/btn_jump.png" },
+        { btn = dashButton_,   image = "image/btn_dash.png" },
+        { btn = slamButton_,   image = "image/btn_slam.png" },
+        { btn = chargeButton_, image = "image/btn_charge.png" },
+    }
+
+    for _, entry in ipairs(btnImageMap) do
+        if entry.btn then
+            entry.btn.render = makeImageRender(entry.btn, entry.image)
+        end
+    end
+
+    print("[Standalone] Button rendering overridden with custom images")
 end
 
 --- 显示/隐藏虚拟控件（菜单和结算时隐藏，游戏中显示）
@@ -255,6 +417,17 @@ function Standalone.SetVirtualControlsVisible(show)
             end
         end
     end
+end
+
+--- 获取虚拟控件引用（供键位编辑器保存后应用布局）
+function Standalone.GetVirtualControls()
+    return joystick_, jumpButton_, dashButton_, slamButton_, chargeButton_
+end
+
+--- 将布局应用到当前虚拟控件
+function Standalone.ApplyLayout(layout)
+    ControlLayout.ApplyToControls(layout,
+        joystick_, jumpButton_, dashButton_, slamButton_, chargeButton_)
 end
 
 -- ============================================================================
@@ -332,7 +505,7 @@ function Standalone.CreateMobileLighting()
     local zoneNode = scene_:CreateChild("Zone")
     local zone = zoneNode:CreateComponent("Zone")
     zone.boundingBox = BoundingBox(-200.0, 200.0)
-    zone.ambientColor = Color(0.15, 0.15, 0.20)
+    zone.ambientColor = Color(0.08, 0.08, 0.12)
     zone.fogColor = Color(0.95, 0.82, 0.68)
     zone.fogStart = 80.0
     zone.fogEnd = 150.0
@@ -342,12 +515,12 @@ function Standalone.CreateMobileLighting()
     local light = lightNode:CreateComponent("Light")
     light.lightType = LIGHT_DIRECTIONAL
     light.color = Color(0.8, 0.7, 0.6)
-    light.brightness = 0.9
+    light.brightness = 1.0
     light.castShadows = true
     light.shadowIntensity = 0.0
     light.shadowBias = BiasParameters(0.00025, 0.5)
     light.shadowCascade = CascadeParameters(10.0, 50.0, 200.0, 0.0, 0.8)
-    print("[Standalone] MobileLighting created (reverted to confirmed-working values)")
+    print("[Standalone] MobileLighting created (deeper shadows: ambient=0.08, brightness=1.0)")
 end
 
 --- 兜底光照（仅在 LightGroup 加载失败时使用）
@@ -496,10 +669,22 @@ function Standalone.HandleUpdate(dt)
             Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
+            GameManager.gameMode = Config.GAMEMODE_NORMAL
+            GameManager.StartGame()
+            Standalone.UpdateDeathZone()
+        elseif btn == "onelife" then
+            coinRewarded_ = false
+            Camera.spectateMode = false
+            Standalone.SetVirtualControlsVisible(true)
+            SFX.PlayGameBGM()
+            SFX.EnableSFX()
+            GameManager.gameMode = Config.GAMEMODE_ONELIFE
             GameManager.StartGame()
             Standalone.UpdateDeathZone()
         elseif btn == "shop" then
             HUD.SetShopOpen(true)
+        elseif btn == "layoutEditor" then
+            HUD.OpenLayoutEditor()
         end
     end
 
@@ -526,11 +711,13 @@ function Standalone.HandleUpdate(dt)
             Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
+            -- gameMode 保持不变，再来一局沿用当前模式
             GameManager.Restart()
             Standalone.UpdateDeathZone()
         elseif btn == "menu" then
             SFX.PlayMenuBGM()
             SFX.DisableSFX()
+            GameManager.gameMode = Config.GAMEMODE_NORMAL  -- 返回菜单重置为普通模式
             GameManager.EnterMenu()
         end
     end
@@ -575,6 +762,7 @@ function Standalone.HandleUpdate(dt)
     Player.UpdateAll(dt)
     Pickup.Update(dt)
     RandomPickup.Update(dt)
+    PowerUp.Update(dt)
     SFX.UpdateBGM()
 
     if input:GetKeyPress(KEY_TAB) then

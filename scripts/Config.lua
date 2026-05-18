@@ -250,7 +250,7 @@ Config.NumPlayers = 25
 
 -- 默认地图尺寸（30 宽 × 200 高，大地图攀登模式）
 Config.DefaultMapWidth  = 30
-Config.DefaultMapHeight = 200
+Config.DefaultMapHeight = 600
 
 -- 出生点方块类型列表（按玩家编号索引）
 Config.SpawnBlockTypes = {

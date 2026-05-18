@@ -11,6 +11,7 @@
 
 local Config = require("Config")
 local MapData = require("MapData")
+local GameManager = require("GameManager")
 
 local AIController = {}
 
@@ -81,6 +82,31 @@ local PICKUP_DETOUR_MAX_DX   = 4.0    -- 道具与主路径横向偏离上限（
 local VERBOSE_JUMP_LOG       = true
 local PICKUP_DETOUR_MAX_DY   = 2.0    -- 道具与当前高度的垂直差上限
 local PICKUP_TARGET_TIMEOUT  = 4.0    -- 单次道具目标追踪上限
+
+-- ============================================================================
+-- 一命通天模式 AI 攻击性增强参数
+-- ============================================================================
+local function isOnelife()
+    return GameManager.gameMode == Config.GAMEMODE_ONELIFE
+end
+
+-- 动态获取炸弹杀伤判定范围
+local function getBombKillRange()
+    return isOnelife() and 7.0 or BOMB_KILL_RANGE       -- 5.0 → 7.0
+end
+local function getBombKillVertical()
+    return isOnelife() and 5.0 or BOMB_KILL_VERTICAL     -- 3.0 → 5.0
+end
+local function getBombChargeTime()
+    return isOnelife() and 1.0 or BOMB_CHARGE_TIME       -- 1.4 → 1.0（更快释放）
+end
+-- 一命通天下砸判定范围更大
+local function getSlamDxLimit()
+    return isOnelife() and 2.0 or (Config.SlamRadius or 3.0) * 0.6
+end
+local function getSlamDyMax()
+    return isOnelife() and 12.0 or 8.0
+end
 
 -- ============================================================================
 -- 平台扫描
@@ -881,13 +907,19 @@ local function findBombTarget(p)
     if not playerModule_ or not p.node then return nil, math.huge end
     local px, py = p.node.position.x, p.node.position.y
     local best, bestD2 = nil, math.huge
+    local killRange = getBombKillRange()
+    local killVert = getBombKillVertical()
     for _, q in ipairs(playerModule_.list) do
         if q.index ~= p.index and q.alive and q.node then
             local qpos = q.node.position
             local dx = qpos.x - px
             local dy = qpos.y - py
-            if math.abs(dx) <= BOMB_KILL_RANGE and math.abs(dy) <= BOMB_KILL_VERTICAL then
+            if math.abs(dx) <= killRange and math.abs(dy) <= killVert then
                 local d2 = dx * dx + dy * dy
+                -- 一命通天：优先炸人类玩家
+                if isOnelife() and q.isHuman then
+                    d2 = d2 * 0.3  -- 人类玩家权重更高
+                end
                 if d2 < bestD2 then
                     bestD2 = d2
                     best = q
@@ -934,7 +966,7 @@ function AIController.UpdateBomb(p, state, dt)
         end
 
         -- 蓄力达到目标时长 → 释放
-        if state.chargeTimer >= BOMB_CHARGE_TIME then
+        if state.chargeTimer >= getBombChargeTime() then
             state.wantCharging = false
             state.wantExplodeRelease = true
             state.chargeTimer = 0
@@ -959,9 +991,12 @@ function AIController.UpdateBomb(p, state, dt)
     end
 
     -- 未蓄力：满能量 + 找到目标 + 自身安全 → 开始蓄力
-    if p.energy >= 1.0 and p.onGround then
+    -- 一命通天模式：80% 能量就开炸，更激进
+    local energyThreshold = isOnelife() and 0.8 or 1.0
+    if p.energy >= energyThreshold and p.onGround then
         local target, _ = findBombTarget(p)
-        if target and isBombSelfSafe(p, math.floor(Config.ExplosionRadius * (BOMB_CHARGE_TIME / Config.ExplosionChargeTime))) then
+        local chargeT = getBombChargeTime()
+        if target and isBombSelfSafe(p, math.floor(Config.ExplosionRadius * (chargeT / Config.ExplosionChargeTime))) then
             state.wantCharging = true
             state.chargeTimer = 0
             state.bombRecheck = BOMB_RECHECK_INTERVAL
@@ -1120,14 +1155,15 @@ function AIController.ThinkInAir(p, state, px, py, vx, vy)
 
     -- 下砸战术：空中正下方有其他玩家且距离合适时使用下砸
     if not p.slamming and vy < 0 and playerModule_ then
-        local slamRadius = Config.SlamRadius or 3.0
+        local slamDxLimit = getSlamDxLimit()
+        local slamDyMax = getSlamDyMax()
         for _, other in ipairs(playerModule_.list) do
             if other.index ~= p.index and other.alive and other.node then
                 local opos = other.node.position
                 local dx = math.abs(opos.x - px)
                 local dy = py - opos.y  -- 正值表示 AI 在上方
-                -- 正下方（水平距离小）且高度差适中（2~8米）
-                if dx < slamRadius * 0.6 and dy > 2.0 and dy < 8.0 then
+                -- 正下方（水平距离小）且高度差适中
+                if dx < slamDxLimit and dy > 2.0 and dy < slamDyMax then
                     state.wantSlam = true
                     if VERBOSE_JUMP_LOG then
                         print(string.format("[AI#%d] SLAM dx=%.2f dy=%.2f target=#%d",
@@ -1291,7 +1327,32 @@ end
 -- ============================================================================
 
 function AIController.ThinkSprintDash(p, state, px, py, curPlat, targetPlat)
-    if p.dashCooldown > 0 or not p.onGround or not curPlat or not targetPlat then return end
+    if p.dashCooldown > 0 or not p.onGround or not curPlat then return end
+
+    -- 一命通天模式：优先冲刺撞击附近敌人
+    if isOnelife() and playerModule_ then
+        for _, other in ipairs(playerModule_.list) do
+            if other.index ~= p.index and other.alive and other.node then
+                local opos = other.node.position
+                local odx = opos.x - px
+                local ody = math.abs(opos.y - py)
+                local absOdx = math.abs(odx)
+                -- 同层（垂直差<1.5m）且水平距离在冲刺范围内（2~6m）
+                if ody < 1.5 and absOdx >= 2.0 and absOdx <= DASH_DISTANCE + 1.0 then
+                    local dashDir = odx > 0 and 1 or -1
+                    -- 确保不冲出平台
+                    local dashEnd = px + dashDir * DASH_DISTANCE
+                    if dashEnd >= curPlat.x1 - 0.5 and dashEnd <= curPlat.x2 + 0.5 then
+                        state.wantDash = true
+                        state.moveDir = dashDir
+                        return
+                    end
+                end
+            end
+        end
+    end
+
+    if not targetPlat then return end
 
     -- 平台够长 + 同层/接近同层 + 距离够远才冲
     if curPlat.width <= 3.0 then return end

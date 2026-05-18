@@ -551,10 +551,12 @@ end
 function Standalone.CreateBackgroundPlane()
     local topColor = Config.BgColorTop
     local botColor = Config.BgColorBot
-    local size = 200
+    -- 覆盖整个地图高度 + 上下余量（背景中心在地图纵向中点）
+    local mapH = MapData.Height * Config.BlockSize
+    local size = math.max(200, math.ceil(mapH * 0.5 + 50))
     local strips = 8
     local bgNode = scene_:CreateChild("BackgroundGradient")
-    bgNode.position = Vector3(0, 0, 5)
+    bgNode.position = Vector3(0, mapH * 0.5, 5)
 
     local pbrTech = cache:GetResource("Technique", "Techniques/PBR/PBRNoTexture.xml")
 

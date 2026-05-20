@@ -398,6 +398,15 @@ function Player.Create(index, isHuman)
         local _, outlineColor = CharacterClass.GetColors(classId)
         -- 应用 3D 配件
         FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
+        -- 记录配件原始位置（用于跟随眼睛偏移）
+        p.skinAccOrigPos = {}
+        local numCh = visualNode:GetNumChildren(false)
+        for i = 0, numCh - 1 do
+            local ch = visualNode:GetChild(i)
+            if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
+                p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+            end
+        end
         -- 存储独立左右眼参数
         local ov = FaceSkin.GetEyeOverrides(skinId, eyeBaseX, eyeBaseY, eyeRadius)
         p.eyeBaseX_L   = ov.eyeBaseX_L
@@ -1543,6 +1552,18 @@ function Player.UpdateEyes(p, dt)
             eyeR.rotation = Quaternion.IDENTITY
         end
     end
+
+    -- =====================
+    -- 7) 皮肤配件跟随眼睛偏移
+    -- =====================
+    if p.skinAccOrigPos then
+        for name, orig in pairs(p.skinAccOrigPos) do
+            local accNode = p.visualNode:GetChild(name)
+            if accNode then
+                accNode.position = Vector3(orig.x + p.eyeOffsetX, orig.y + p.eyeOffsetY, orig.z)
+            end
+        end
+    end
 end
 
 --- 更新能量
@@ -2336,6 +2357,14 @@ function Player.ResetAll()
             p.skinId = skinId
             FaceSkin.RemoveAccessories(p.visualNode)
             FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+            p.skinAccOrigPos = {}
+            local numCh2 = p.visualNode:GetNumChildren(false)
+            for i = 0, numCh2 - 1 do
+                local ch = p.visualNode:GetChild(i)
+                if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
+                    p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                end
+            end
             local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
             p.eyeBaseX_L = ov.eyeBaseX_L; p.eyeBaseY_L = ov.eyeBaseY_L; p.eyeRadius_L = ov.eyeRadius_L
             p.eyeFlattenY_L = ov.eyeFlattenY_L; p.eyeRotZ_L = ov.eyeRotZ_L; p.eyeVisible_L = ov.eyeVisible_L
@@ -2494,6 +2523,14 @@ function Player.ResetScoresOnly()
                 local skinId = p.skinId or "default"
                 FaceSkin.RemoveAccessories(p.visualNode)
                 FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+                p.skinAccOrigPos = {}
+                local numCh3 = p.visualNode:GetNumChildren(false)
+                for ii = 0, numCh3 - 1 do
+                    local ch = p.visualNode:GetChild(ii)
+                    if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
+                        p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                    end
+                end
                 local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
                 p.eyeBaseX_L = ov.eyeBaseX_L; p.eyeBaseY_L = ov.eyeBaseY_L; p.eyeRadius_L = ov.eyeRadius_L
                 p.eyeFlattenY_L = ov.eyeFlattenY_L; p.eyeRotZ_L = ov.eyeRotZ_L; p.eyeVisible_L = ov.eyeVisible_L
@@ -2622,6 +2659,14 @@ function Player.ResetHumanToSpawn()
                 p.skinId = skinId
                 FaceSkin.RemoveAccessories(p.visualNode)
                 FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+                p.skinAccOrigPos = {}
+                local numCh4 = p.visualNode:GetNumChildren(false)
+                for ii = 0, numCh4 - 1 do
+                    local ch = p.visualNode:GetChild(ii)
+                    if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
+                        p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                    end
+                end
                 local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
                 p.eyeBaseX_L = ov.eyeBaseX_L; p.eyeBaseY_L = ov.eyeBaseY_L; p.eyeRadius_L = ov.eyeRadius_L
                 p.eyeFlattenY_L = ov.eyeFlattenY_L; p.eyeRotZ_L = ov.eyeRotZ_L; p.eyeVisible_L = ov.eyeVisible_L

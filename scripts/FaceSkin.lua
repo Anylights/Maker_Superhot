@@ -296,7 +296,7 @@ function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
     local boxModel = cache:GetResource("Model", "Models/Box.mdl")
     local planeModel = cache:GetResource("Model", "Models/Plane.mdl")
     local unlitTech = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
-    local unlitAlphaTech = cache:GetResource("Technique", "Techniques/DiffUnlit.xml")
+    local unlitAlphaTech = cache:GetResource("Technique", "Techniques/DiffAlpha.xml")
 
     for _, acc in ipairs(def.accessories) do
         local accNode = visualNode:CreateChild(acc.name)
@@ -316,11 +316,12 @@ function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
         if acc.texture then
             -- 贴图配件：用 Plane 模型 + 透明贴图
             model.model = planeModel
-            -- Plane 默认朝上(Y+)，需旋转到朝前(Z-)面对相机
+            -- Plane 默认朝上(Y+)，旋转-90°使法线朝Z-（面对相机）
             local baseRot = accNode.rotation or Quaternion.IDENTITY
-            accNode.rotation = baseRot * Quaternion(90, Vector3.RIGHT)
+            accNode.rotation = baseRot * Quaternion(-90, Vector3.RIGHT)
             local mat = Material:new()
             mat:SetTechnique(0, unlitAlphaTech)
+            mat.cullMode = CULL_NONE  -- 双面渲染，确保可见
             local tex = cache:GetResource("Texture2D", acc.texture)
             if tex then
                 mat:SetTexture(TU_DIFFUSE, tex)

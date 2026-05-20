@@ -269,7 +269,7 @@ local onelifeLeaderboard_ = nil
 local onelifeLeaderboardLoading_ = false
 
 -- 菜单排行榜 tab: "history" 或 "onelife"
-local menuLeaderboardTab_ = "history"
+local menuLeaderboardTab_ = "onelife"
 -- 菜单是否已加载过排行榜
 local menuLeaderboardLoaded_ = false
 -- 菜单排行榜滚动偏移（手机端）
@@ -1256,7 +1256,7 @@ function HUD.DrawGameTimer()
     local iconY = ty + th * 0.5
     nvgBeginPath(vg_)
     nvgCircle(vg_, iconX, iconY, iconR)
-    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(isUrgent and Theme.text or Theme.accent, 200)))
+    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.text, 200)))
     nvgStrokeWidth(vg_, math.max(1, 1.5 * s))
     nvgStroke(vg_)
     nvgBeginPath(vg_)
@@ -1272,9 +1272,9 @@ function HUD.DrawGameTimer()
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
     if isOnelife then
-        -- 一命通天：紫色高亮，显示 "一命" 前缀
-        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 255))
-        nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, "一命 " .. timeStr)
+        -- 一命通天：白色，不显示前缀
+        fillTheme(Theme.text, 255)
+        nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, timeStr)
     elseif isUrgent then
         fillTheme(Theme.text, 255)
         nvgText(vg_, tx + tw * 0.5 + math.floor(6 * s), ty + th * 0.5, timeStr)
@@ -1775,11 +1775,11 @@ function HUD.DrawResultScreen()
     local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
 
     if isOnelife then
-        -- 一命通天模式标题
+        -- 一命通天模式标题（青蓝色）
         nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
-        nvgText(vg_, cx + 2, titleY + 2, "一命通天")
-        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 255))
-        nvgText(vg_, cx, titleY, "一命通天")
+        nvgText(vg_, cx + 2, titleY + 2, "游戏结束")
+        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 255))
+        nvgText(vg_, cx, titleY, "游戏结束")
     else
         local winner = gameManager_.GetWinner()
         if winner == 1 then
@@ -1808,9 +1808,9 @@ function HUD.DrawResultScreen()
     nvgFillColor(vg_, nvgRGBA(0, 0, 0, 120))
     nvgText(vg_, cx + 2, scoreY + 2, scoreText)
     if isOnelife then
-        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 255))
-    else
         nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 255))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], 255))
     end
     nvgText(vg_, cx, scoreY, scoreText)
 
@@ -1823,7 +1823,7 @@ function HUD.DrawResultScreen()
         local infoY = scoreY + scoreFs + math.floor(4 * uiScale_)
         nvgFontFace(vg_, "sans")
         nvgFontSize(vg_, math.max(12, math.floor(18 * uiScale_)))
-        nvgFillColor(vg_, nvgRGBA(200, 120, 255, 180))
+        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 200))
         nvgText(vg_, cx, infoY, "第 " .. floors .. " 层  |  存活 " .. tStr)
         extraInfoH = math.floor(24 * uiScale_)
     end
@@ -1835,7 +1835,7 @@ function HUD.DrawResultScreen()
         nvgFontFace(vg_, "sans")
         nvgFontSize(vg_, math.max(11, math.floor(15 * uiScale_)))
         nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
-        nvgFillColor(vg_, nvgRGBA(Theme.accent[1], Theme.accent[2], Theme.accent[3], 200))
+        nvgFillColor(vg_, nvgRGBA(Theme.primary[1], Theme.primary[2], Theme.primary[3], 200))
         nvgText(vg_, cx, coinY, "+" .. coinReward .. " 金币")
     end
     local scoreLabelY = coinY
@@ -2643,7 +2643,7 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     nvgFontSize(vg_, 11)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     fillTheme(Theme.textSec, 200)
-    nvgText(vg_, cx, subtitleY, "大地图攀登挑战 2分钟限时赛")
+    nvgText(vg_, cx, subtitleY, "一命通天攀登挑战  无尽攀爬")
 
     -- 当前职业显示
     local classId = Economy.GetSelectedClassId()
@@ -2672,10 +2672,10 @@ function HUD.DrawMenu_Mobile(t, mx, my)
         menuButtonClicked_ = "startGame"
     end
 
-    -- 一命通天按钮
+    -- 限时挑战按钮（原一命通天位置，现为副模式）
     local onelifeX = btnStartX + btnW + btnGap
     local onelifeHovered = mx >= onelifeX and mx <= onelifeX + btnW and my >= btnY and my <= btnY + btnH
-    local onelifeClicked = HUD.DrawRubberButton(onelifeX, btnY, btnW, btnH, "一命通天",
+    local onelifeClicked = HUD.DrawRubberButton(onelifeX, btnY, btnW, btnH, "限时挑战",
         180, 100, 255, onelifeHovered)
     if onelifeClicked then
         menuButtonClicked_ = "onelife"
@@ -2721,36 +2721,13 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     local tabX = lbCx - tabTotalW * 0.5
     local tabY = lbTopY
 
-    -- "历史排行" tab
-    local histHover = mx >= tabX and mx <= tabX + tabW and my >= tabY and my <= tabY + tabH
-    local histActive = menuLeaderboardTab_ == "history"
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, tabX, tabY, tabW, tabH, Theme.radiusSm)
-    if histActive then
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
-    else
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, histHover and 180 or 120)))
-    end
-    nvgFill(vg_)
-    nvgFontFace(vg_, histActive and "bold" or "sans")
-    nvgFontSize(vg_, 10)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, histActive and 255 or 180))
-    nvgText(vg_, tabX + tabW * 0.5, tabY + tabH * 0.5, "历史排行")
-
-    if cachedMousePress_ and histHover and not histActive then
-        menuLeaderboardTab_ = "history"
-        menuScrollY_ = 0
-    end
-
-    -- "一命通天" tab
-    local onelifeTabX = tabX + tabW + tabGap
-    local onelifeHover = mx >= onelifeTabX and mx <= onelifeTabX + tabW and my >= tabY and my <= tabY + tabH
+    -- "一命通天" tab（主模式，放第一个）
+    local onelifeHover = mx >= tabX and mx <= tabX + tabW and my >= tabY and my <= tabY + tabH
     local onelifeActive = menuLeaderboardTab_ == "onelife"
     nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, onelifeTabX, tabY, tabW, tabH, Theme.radiusSm)
+    nvgRoundedRect(vg_, tabX, tabY, tabW, tabH, Theme.radiusSm)
     if onelifeActive then
-        nvgFillColor(vg_, nvgRGBA(180, 100, 255, 200))
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
     else
         nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, onelifeHover and 180 or 120)))
     end
@@ -2759,10 +2736,33 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     nvgFontSize(vg_, 10)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg_, nvgRGBA(255, 255, 255, onelifeActive and 255 or 180))
-    nvgText(vg_, onelifeTabX + tabW * 0.5, tabY + tabH * 0.5, "一命通天")
+    nvgText(vg_, tabX + tabW * 0.5, tabY + tabH * 0.5, "一命通天")
 
     if cachedMousePress_ and onelifeHover and not onelifeActive then
         menuLeaderboardTab_ = "onelife"
+        menuScrollY_ = 0
+    end
+
+    -- "限时挑战" tab（副模式，放第二个）
+    local histTabX = tabX + tabW + tabGap
+    local histHover = mx >= histTabX and mx <= histTabX + tabW and my >= tabY and my <= tabY + tabH
+    local histActive = menuLeaderboardTab_ == "history"
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, histTabX, tabY, tabW, tabH, Theme.radiusSm)
+    if histActive then
+        nvgFillColor(vg_, nvgRGBA(180, 100, 255, 200))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, histHover and 180 or 120)))
+    end
+    nvgFill(vg_)
+    nvgFontFace(vg_, histActive and "bold" or "sans")
+    nvgFontSize(vg_, 10)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, histActive and 255 or 180))
+    nvgText(vg_, histTabX + tabW * 0.5, tabY + tabH * 0.5, "限时挑战")
+
+    if cachedMousePress_ and histHover and not histActive then
+        menuLeaderboardTab_ = "history"
         menuScrollY_ = 0
     end
 
@@ -3020,7 +3020,7 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     nvgFontSize(vg_, 16)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     fillTheme(Theme.textSec, 200)
-    nvgText(vg_, cx, subtitleY, "大地图攀登挑战  2分钟限时赛")
+    nvgText(vg_, cx, subtitleY, "一命通天攀登挑战  无尽攀爬")
 
     -- 当前职业显示
     local classId = Economy.GetSelectedClassId()
@@ -3049,10 +3049,10 @@ function HUD.DrawMenu_Desktop(t, mx, my)
         menuButtonClicked_ = "startGame"
     end
 
-    -- 一命通天按钮（紫色）
+    -- 限时挑战按钮（副模式）
     local onelifeX = btnStartX + btnW + btnGap
     local onelifeHovered = mx >= onelifeX and mx <= onelifeX + btnW and my >= btnY and my <= btnY + btnH
-    local onelifeClicked = HUD.DrawRubberButton(onelifeX, btnY, btnW, btnH, "一命通天",
+    local onelifeClicked = HUD.DrawRubberButton(onelifeX, btnY, btnW, btnH, "限时挑战",
         180, 100, 255, onelifeHovered)
     if onelifeClicked then
         menuButtonClicked_ = "onelife"
@@ -3080,35 +3080,13 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     local tabX = cx - tabTotalW * 0.5
     local tabY = lbTop
 
-    -- "历史排行" tab
-    local histHover = mx >= tabX and mx <= tabX + tabW and my >= tabY and my <= tabY + tabH
-    local histActive = menuLeaderboardTab_ == "history"
-    nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, tabX, tabY, tabW, tabH, Theme.radiusSm)
-    if histActive then
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
-    else
-        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, histHover and 180 or 120)))
-    end
-    nvgFill(vg_)
-    nvgFontFace(vg_, histActive and "bold" or "sans")
-    nvgFontSize(vg_, 13)
-    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg_, nvgRGBA(255, 255, 255, histActive and 255 or 180))
-    nvgText(vg_, tabX + tabW * 0.5, tabY + tabH * 0.5, "历史排行")
-
-    if cachedMousePress_ and histHover and not histActive then
-        menuLeaderboardTab_ = "history"
-    end
-
-    -- "一命通天" tab
-    local onelifeTabX = tabX + tabW + tabGap
-    local onelifeHover = mx >= onelifeTabX and mx <= onelifeTabX + tabW and my >= tabY and my <= tabY + tabH
+    -- "一命通天" tab（主模式，放第一个）
+    local onelifeHover = mx >= tabX and mx <= tabX + tabW and my >= tabY and my <= tabY + tabH
     local onelifeActive = menuLeaderboardTab_ == "onelife"
     nvgBeginPath(vg_)
-    nvgRoundedRect(vg_, onelifeTabX, tabY, tabW, tabH, Theme.radiusSm)
+    nvgRoundedRect(vg_, tabX, tabY, tabW, tabH, Theme.radiusSm)
     if onelifeActive then
-        nvgFillColor(vg_, nvgRGBA(180, 100, 255, 200))
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 200)))
     else
         nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, onelifeHover and 180 or 120)))
     end
@@ -3117,10 +3095,32 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     nvgFontSize(vg_, 13)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg_, nvgRGBA(255, 255, 255, onelifeActive and 255 or 180))
-    nvgText(vg_, onelifeTabX + tabW * 0.5, tabY + tabH * 0.5, "一命通天")
+    nvgText(vg_, tabX + tabW * 0.5, tabY + tabH * 0.5, "一命通天")
 
     if cachedMousePress_ and onelifeHover and not onelifeActive then
         menuLeaderboardTab_ = "onelife"
+    end
+
+    -- "限时挑战" tab（副模式，放第二个）
+    local histTabX = tabX + tabW + tabGap
+    local histHover = mx >= histTabX and mx <= histTabX + tabW and my >= tabY and my <= tabY + tabH
+    local histActive = menuLeaderboardTab_ == "history"
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, histTabX, tabY, tabW, tabH, Theme.radiusSm)
+    if histActive then
+        nvgFillColor(vg_, nvgRGBA(180, 100, 255, 200))
+    else
+        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bgMid, histHover and 180 or 120)))
+    end
+    nvgFill(vg_)
+    nvgFontFace(vg_, histActive and "bold" or "sans")
+    nvgFontSize(vg_, 13)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, histActive and 255 or 180))
+    nvgText(vg_, histTabX + tabW * 0.5, tabY + tabH * 0.5, "限时挑战")
+
+    if cachedMousePress_ and histHover and not histActive then
+        menuLeaderboardTab_ = "history"
     end
 
     -- 排行榜内容区

@@ -491,6 +491,7 @@ function PlayerCollision:HandleCollision(eventType, eventData)
     local contacts = eventData["Contacts"]:GetBuffer()
     local foundGround = false
     local hitCeiling = false
+    local hitCeilingPos = nil
     local hitWallX = 0
 
     while not contacts.eof do
@@ -506,6 +507,7 @@ function PlayerCollision:HandleCollision(eventType, eventData)
         -- 天花板检测：法线向下 < -0.75
         if contactNormal.y < -0.75 then
             hitCeiling = true
+            hitCeilingPos = contactPosition
         end
         -- 墙壁检测：法线水平分量大，垂直分量小
         if math.abs(contactNormal.y) < 0.3 then
@@ -522,6 +524,7 @@ function PlayerCollision:HandleCollision(eventType, eventData)
     end
     if hitCeiling then
         self.playerData.hitCeiling = true
+        self.playerData.hitCeilingPos = hitCeilingPos
     end
     if hitWallX ~= 0 then
         self.playerData.hitWallX = hitWallX
@@ -834,6 +837,7 @@ function Player.UpdateOne(p, dt)
     -- 重置帧碰撞状态
     p.onGround = false    -- 每帧重置，碰撞回调会重新设置
     p.hitCeiling = false   -- 每帧重置天花板碰撞
+    p.hitCeilingPos = nil  -- 每帧重置天花板碰撞点
     p.hitWallX = 0         -- 每帧重置墙壁碰撞
 end
 
@@ -1074,8 +1078,22 @@ function Player.UpdateMovement(p, dt)
     -- 天花板碰撞处理
     -- =====================
     if p.hitCeiling and vel.y > 0 then
-        -- 撞到天花板且正在上升 → 立刻清零向上速度
-        vel = Vector3(vel.x, 0, 0)
+        if PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) and mapModule_ and p.hitCeilingPos then
+            -- 超级变大：撞碎头顶普通平台，速度衰减50%
+            local cx = p.hitCeilingPos.x
+            local cy = p.hitCeilingPos.y + Config.BlockSize * 0.3  -- 略向上偏移找到被撞方块
+            local gx, gy = mapModule_.WorldToGrid(cx, cy)
+            local destroyed = mapModule_.DestroyBlock(gx, gy, cx, cy)
+            if destroyed then
+                vel = Vector3(vel.x, vel.y * 0.5, 0)  -- 保留50%上升速度
+                SFX.Play("explode", 0.4, cx, cy)
+            else
+                vel = Vector3(vel.x, 0, 0)  -- 不可破坏方块：完全停止
+            end
+        else
+            -- 普通状态：撞到天花板立刻清零向上速度
+            vel = Vector3(vel.x, 0, 0)
+        end
     end
 
     -- =====================

@@ -671,7 +671,7 @@ function Standalone.HandleUpdate(dt)
             Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
-            GameManager.gameMode = Config.GAMEMODE_NORMAL
+            GameManager.gameMode = Config.GAMEMODE_ONELIFE
             GameManager.StartGame()
             Standalone.UpdateDeathZone()
         elseif btn == "onelife" then
@@ -680,7 +680,7 @@ function Standalone.HandleUpdate(dt)
             Standalone.SetVirtualControlsVisible(true)
             SFX.PlayGameBGM()
             SFX.EnableSFX()
-            GameManager.gameMode = Config.GAMEMODE_ONELIFE
+            GameManager.gameMode = Config.GAMEMODE_NORMAL
             GameManager.StartGame()
             Standalone.UpdateDeathZone()
         elseif btn == "shop" then
@@ -719,7 +719,7 @@ function Standalone.HandleUpdate(dt)
         elseif btn == "menu" then
             SFX.PlayMenuBGM()
             SFX.DisableSFX()
-            GameManager.gameMode = Config.GAMEMODE_NORMAL  -- 返回菜单重置为普通模式
+            GameManager.gameMode = Config.GAMEMODE_ONELIFE  -- 返回菜单重置为一命通天（主模式）
             GameManager.EnterMenu()
         end
     end

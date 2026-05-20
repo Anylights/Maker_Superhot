@@ -156,6 +156,14 @@ function GameManager.JoinGame()
     lastCountdownNum_ = math.ceil(Config.CountdownTime) + 1
 
     GameManager.SetState(GameManager.STATE_COUNTDOWN, Config.CountdownTime)
+
+    -- 倒计时阶段全员幽灵无敌（防止开局前被攻击）
+    if playerModule_ then
+        for _, p in ipairs(playerModule_.list) do
+            p.invincibleTimer = Config.CountdownTime + 1
+        end
+    end
+
     print("[GameManager] Player joining game (countdown)")
 end
 
@@ -215,6 +223,12 @@ function GameManager.UpdateCountdown(dt)
     end
 
     if GameManager.stateTimer <= 0 then
+        -- 清除倒计时幽灵无敌
+        if playerModule_ then
+            for _, p in ipairs(playerModule_.list) do
+                p.invincibleTimer = 0
+            end
+        end
         SFX.Play("go", 0.8)
         GameManager.SetState(GameManager.STATE_PLAYING)
     end

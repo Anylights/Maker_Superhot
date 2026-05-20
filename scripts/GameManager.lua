@@ -157,10 +157,15 @@ function GameManager.JoinGame()
 
     GameManager.SetState(GameManager.STATE_COUNTDOWN, Config.CountdownTime)
 
-    -- 倒计时阶段全员幽灵无敌（防止开局前被攻击）
+    -- 倒计时阶段全员幽灵无敌 + 禁止玩家间碰撞（防止开局前被推下去）
     if playerModule_ then
         for _, p in ipairs(playerModule_.list) do
-            p.invincibleTimer = Config.CountdownTime + 1
+            p.invincibleTimer = Config.CountdownTime + 3  -- 倒计时 + 开始后3秒
+            p.countdownProtected = true  -- 倒计时保护（不闪烁）
+            -- 修改碰撞掩码：去掉 Layer 2（玩家层），防止被其他玩家物理推动
+            if p.body then
+                p.body.collisionMask = 0xFFFD  -- 0xFFFF & ~2
+            end
         end
     end
 
@@ -223,10 +228,18 @@ function GameManager.UpdateCountdown(dt)
     end
 
     if GameManager.stateTimer <= 0 then
-        -- 清除倒计时幽灵无敌
+        -- 倒计时结束：解除倒计时保护，保留3秒无敌闪烁，恢复碰撞
         if playerModule_ then
             for _, p in ipairs(playerModule_.list) do
-                p.invincibleTimer = 0
+                p.countdownProtected = false  -- 解除保护，开始闪烁
+                -- invincibleTimer 还剩约3秒，继续无敌+闪烁
+                if p.invincibleTimer <= 0 then
+                    p.invincibleTimer = 3.0
+                end
+                -- 恢复碰撞掩码（默认与所有层碰撞）
+                if p.body then
+                    p.body.collisionMask = 0xFFFF
+                end
             end
         end
         SFX.Play("go", 0.8)

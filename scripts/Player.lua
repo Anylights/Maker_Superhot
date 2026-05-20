@@ -321,6 +321,7 @@ function Player.Create(index, isHuman)
         alive = true,
         respawnTimer = 0,
         invincibleTimer = 0,
+        countdownProtected = false,  -- 倒计时保护（不闪烁，不被碰撞推动）
 
         -- 计分系统
         score = 0,             -- 总分
@@ -689,10 +690,12 @@ function Player.UpdateOne(p, dt)
     -- 无敌计时
     if p.invincibleTimer > 0 then
         p.invincibleTimer = p.invincibleTimer - dt
-        -- 闪烁效果（控制视觉子节点）
-        local blink = (math.floor(p.invincibleTimer * 10) % 2 == 0)
-        if p.visualNode then
-            p.visualNode.enabled = blink
+        -- 倒计时保护期间不闪烁，开始后的无敌才闪烁
+        if not p.countdownProtected then
+            local blink = (math.floor(p.invincibleTimer * 10) % 2 == 0)
+            if p.visualNode then
+                p.visualNode.enabled = blink
+            end
         end
         if p.invincibleTimer <= 0 then
             if p.visualNode then p.visualNode.enabled = true end
@@ -2156,6 +2159,8 @@ function Player.Respawn(p)
     Player.RemoveDeathFace(p)
     p.alive = true
     p.invincibleTimer = Config.InvincibleDuration
+    p.countdownProtected = false
+    if p.body then p.body.collisionMask = 0xFFFF end
     p.energy = 0
     p.charging = false
     p.chargeTimer = 0
@@ -2236,6 +2241,8 @@ function Player.ResetAll()
         p.explodeRecovery = 0
         Player.RestoreMaterial(p)
         p.invincibleTimer = 0
+        p.countdownProtected = false
+        if p.body then p.body.collisionMask = 0xFFFF end
         p.respawnTimer = 0
         p.jumpCount = 0
         p.wasOnGround = false
@@ -2529,6 +2536,8 @@ function Player.ResetHumanToSpawn()
             p.explodeRecovery = 0
             Player.RestoreMaterial(p)
             p.invincibleTimer = 0
+            p.countdownProtected = false
+            if p.body then p.body.collisionMask = 0xFFFF end
             p.respawnTimer = 0
             p.jumpCount = 0
             p.wasOnGround = false

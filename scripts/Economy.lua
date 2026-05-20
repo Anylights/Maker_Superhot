@@ -110,43 +110,50 @@ function Economy.Load()
     if loading_ then return end
     loading_ = true
 
-    clientCloud:Get("coins", {
-        ok = function(values, iscores)
-            coins_ = iscores.coins or 0
-            -- owned_classes 和 selected_class 存在 values 里
-            if values.owned_classes then
-                ownedIds_ = deserializeOwned(tostring(values.owned_classes))
-            end
-            if values.selected_class then
-                local sel = tonumber(values.selected_class)
-                if sel and CharacterClass.GetById(sel) and hasClass(sel) then
-                    selectedId_ = sel
-                else
-                    selectedId_ = 1
+    -- 使用 BatchGet 同时读取所有 key
+    clientCloud:BatchGet()
+        :Key("coins")
+        :Key("owned_classes")
+        :Key("selected_class")
+        :Key("owned_skins")
+        :Key("selected_skin")
+        :Fetch({
+            ok = function(values, iscores)
+                coins_ = iscores.coins or 0
+                -- owned_classes 和 selected_class 存在 values 里
+                if values.owned_classes then
+                    ownedIds_ = deserializeOwned(tostring(values.owned_classes))
                 end
-            end
-            -- 皮肤数据
-            if values.owned_skins then
-                ownedSkinIds_ = deserializeOwnedSkins(tostring(values.owned_skins))
-            end
-            if values.selected_skin then
-                local skinStr = tostring(values.selected_skin)
-                if FaceSkin.GetById(skinStr) and hasSkin(skinStr) then
-                    selectedSkinId_ = skinStr
-                else
-                    selectedSkinId_ = "default"
+                if values.selected_class then
+                    local sel = tonumber(values.selected_class)
+                    if sel and CharacterClass.GetById(sel) and hasClass(sel) then
+                        selectedId_ = sel
+                    else
+                        selectedId_ = 1
+                    end
                 end
-            end
-            loaded_ = true
-            loading_ = false
-            print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
-        end,
-        error = function(code, reason)
-            print("[Economy] Load error: " .. tostring(reason) .. " (code=" .. tostring(code) .. ")")
-            loaded_ = true
-            loading_ = false
-        end,
-    })
+                -- 皮肤数据
+                if values.owned_skins then
+                    ownedSkinIds_ = deserializeOwnedSkins(tostring(values.owned_skins))
+                end
+                if values.selected_skin then
+                    local skinStr = tostring(values.selected_skin)
+                    if FaceSkin.GetById(skinStr) and hasSkin(skinStr) then
+                        selectedSkinId_ = skinStr
+                    else
+                        selectedSkinId_ = "default"
+                    end
+                end
+                loaded_ = true
+                loading_ = false
+                print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
+            end,
+            error = function(code, reason)
+                print("[Economy] Load error: " .. tostring(reason) .. " (code=" .. tostring(code) .. ")")
+                loaded_ = true
+                loading_ = false
+            end,
+        })
 end
 
 --- 保存当前经济数据到云端

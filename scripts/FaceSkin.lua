@@ -142,39 +142,7 @@ local skins = {
         },
     },
 
-    -- 5. 海盗眼罩（1大黑球眼罩 + 1黑色斜矩形带 + 1小白球露出的眼睛）
-    --    参考图：大黑圆覆盖左眼区域 + 一条斜向深色矩形带穿过 + 右上方一个小白点
-    {
-        id    = "eyepatch",
-        name  = "独眼海盗",
-        desc  = "一只眼睛就够用了",
-        price = 350,
-        icon  = "🏴‍☠️",
-        eyeL  = { visible = false },
-        eyeR  = { visible = false },
-        accessories = {
-            -- 斜带矩形（穿过眼罩大球，黑色）- 不跟随
-            {
-                name = "SkinAcc_Strip", modelType = "box",
-                pos = { -0.14, 0.06, -0.51 }, scale = { 1.0, 0.10, 0.02 },
-                rot = { 45, "FORWARD" }, colorFromOutline = false, followEyes = false,
-            },
-            -- 大球（眼罩主体，偏左，更大）- 不跟随
-            {
-                name = "SkinAcc_PatchBall", modelType = "sphere",
-                pos = { -0.14, 0.06, -0.52 }, scale = { 0.40, 0.40, 0.06 },
-                rot = nil, colorFromOutline = false, followEyes = false,
-            },
-            -- 小球（露出的右眼）- 描边色，和默认眼睛一样大
-            {
-                name = "SkinAcc_SmallEye", modelType = "sphere",
-                pos = { 0.22, 0.06, -0.53 }, scale = { 0.14, 0.14, 0.04 },
-                rot = nil, colorFromOutline = true, followEyes = true,
-            },
-        },
-    },
-
-    -- 6. 星星眼（2大黑球 + 2个五角星，用CustomGeometry）
+    -- 5. 星星眼（2大黑球 + 2个五角星，用CustomGeometry）
     --    参考图：两个大圆黑底 + 每个里面一个五角星
     {
         id    = "stareyes",

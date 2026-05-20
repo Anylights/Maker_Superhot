@@ -1,6 +1,7 @@
 -- ============================================================================
 -- ShopUI.lua - 商店界面（NanoVG 绘制，Astroon 主题）
 -- 由 HUD.DrawShop() 调用，展示职业/皮肤列表、购买/选中、金币余额
+-- 合并瀑布流布局 + 触摸/鼠标滚轮滚动
 -- ============================================================================
 
 local CharacterClass = require("CharacterClass")
@@ -11,11 +12,17 @@ local Theme = require("Theme")
 local ShopUI = {}
 
 -- 内部状态
-local scrollY_ = 0           -- 滚动偏移（手机端）
-local selectedPreview_ = nil  -- 正在预览的职业 ID（点击卡片高亮）
+local scrollY_ = 0           -- 滚动偏移
+local scrollVel_ = 0         -- 滚动惯性速度
+local maxScrollY_ = 0        -- 最大滚动范围
 local buyResult_ = nil        -- 购买结果提示 { text, color, timer }
 local buttonClicked_ = nil    -- "back" | nil
-local currentTab_ = "class"   -- "class" | "skin"
+
+-- 触摸拖拽状态
+local touchActive_ = false
+local touchStartY_ = 0
+local touchLastY_ = 0
+local touchStartScrollY_ = 0
 
 -- ============================================================================
 -- 公共 API
@@ -32,10 +39,11 @@ end
 --- 重置商店状态（进入商店时调用）
 function ShopUI.Reset()
     scrollY_ = 0
-    selectedPreview_ = Economy.GetSelectedClassId()
+    scrollVel_ = 0
+    maxScrollY_ = 0
     buyResult_ = nil
     buttonClicked_ = nil
-    currentTab_ = "class"
+    touchActive_ = false
 end
 
 --- 绘制商店界面
@@ -48,6 +56,11 @@ end
 ---@param mx number 鼠标逻辑 X
 ---@param my number 鼠标逻辑 Y
 function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
+    -- =====================
+    -- 处理滚动输入
+    -- =====================
+    handleScrollInput(vg, logW, logH, isMobile, mx, my, mousePress)
+
     -- =====================
     -- 全屏深紫背景
     -- =====================
@@ -80,18 +93,46 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     -- =====================
     -- 顶部标题栏
     -- =====================
-    local headerH = isMobile and 36 or 52
-    local titleSize = isMobile and 18 or 28
+    local headerH = isMobile and 44 or 52
+    local titleSize = isMobile and 20 or 28
     local coinSize = isMobile and 13 or 16
+    local backBtnSize = isMobile and 32 or 40
 
-    -- 标题
+    -- 返回按钮（左上角，大按钮）
+    local backPad = isMobile and 8 or 12
+    local backX = backPad
+    local backY = (headerH - backBtnSize) * 0.5
+    local backHover = mx >= backX and mx <= backX + backBtnSize and my >= backY and my <= backY + backBtnSize
+
+    nvgBeginPath(vg)
+    nvgRoundedRect(vg, backX, backY, backBtnSize, backBtnSize, Theme.radiusSm)
+    nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.surface, backHover and 230 or 170)))
+    nvgFill(vg)
+    if backHover then
+        nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 60))
+        nvgStrokeWidth(vg, 1)
+        nvgBeginPath(vg)
+        nvgRoundedRect(vg, backX, backY, backBtnSize, backBtnSize, Theme.radiusSm)
+        nvgStroke(vg)
+    end
+    nvgFontFace(vg, "bold")
+    nvgFontSize(vg, isMobile and 18 or 22)
+    nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, backHover and 255 or 210))
+    nvgText(vg, backX + backBtnSize * 0.5, backY + backBtnSize * 0.5, "←")
+
+    if mousePress and backHover and not touchActive_ then
+        buttonClicked_ = "back"
+    end
+
+    -- 标题（居中）
     nvgFontFace(vg, "bold")
     nvgFontSize(vg, titleSize)
-    nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+    nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg, nvgRGBA(0, 0, 0, 120))
-    nvgText(vg, 17, headerH * 0.5 + 1, "商店")
+    nvgText(vg, logW * 0.5 + 1, headerH * 0.5 + 1, "商店")
     nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 255)))
-    nvgText(vg, 16, headerH * 0.5, "商店")
+    nvgText(vg, logW * 0.5, headerH * 0.5, "商店")
 
     -- 金币显示（右上角）
     local coins = Economy.GetCoins()
@@ -102,89 +143,10 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 240)))
     nvgText(vg, logW - 16, headerH * 0.5, coinText)
 
-    -- 返回按钮（金币左边）
-    local backW = isMobile and 48 or 64
-    local backH = isMobile and 22 or 30
-    local coinTextWidth = 80
-    local backX = logW - coinTextWidth - backW - 24
-    local backY = headerH * 0.5 - backH * 0.5
-
-    local backHover = mx >= backX and mx <= backX + backW and my >= backY and my <= backY + backH
-    nvgBeginPath(vg)
-    nvgRoundedRect(vg, backX, backY, backW, backH, Theme.radiusSm)
-    nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.surface, backHover and 220 or 160)))
-    nvgFill(vg)
-    nvgStrokeColor(vg, nvgRGBA(255, 255, 255, backHover and 60 or 25))
-    nvgStrokeWidth(vg, 1)
-    nvgStroke(vg)
-    nvgFontFace(vg, "sans")
-    nvgFontSize(vg, isMobile and 11 or 14)
-    nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, backHover and 255 or 200))
-    nvgText(vg, backX + backW * 0.5, backY + backH * 0.5, "← 返回")
-
-    if mousePress and backHover then
-        buttonClicked_ = "back"
-    end
-
-    -- =====================
-    -- Tab 切换栏
-    -- =====================
-    local tabH = isMobile and 26 or 32
-    local tabY = headerH + 2
-    local tabW = isMobile and 60 or 80
-    local tabGap = isMobile and 6 or 8
-    local tabTotalW = tabW * 2 + tabGap
-    local tabStartX = 16
-
-    local tabs = {
-        { key = "class", label = "职业" },
-        { key = "skin",  label = "表情" },
-    }
-
-    for i, tab in ipairs(tabs) do
-        local tx = tabStartX + (i - 1) * (tabW + tabGap)
-        local isActive = (currentTab_ == tab.key)
-        local tabHover = mx >= tx and mx <= tx + tabW and my >= tabY and my <= tabY + tabH
-
-        nvgBeginPath(vg)
-        nvgRoundedRect(vg, tx, tabY, tabW, tabH, Theme.radiusSm)
-        if isActive then
-            nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 200)))
-        else
-            nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.surface, tabHover and 200 or 130)))
-        end
-        nvgFill(vg)
-
-        if not isActive and tabHover then
-            nvgBeginPath(vg)
-            nvgRoundedRect(vg, tx, tabY, tabW, tabH, Theme.radiusSm)
-            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 30))
-            nvgStrokeWidth(vg, 1)
-            nvgStroke(vg)
-        end
-
-        nvgFontFace(vg, "bold")
-        nvgFontSize(vg, isMobile and 11 or 14)
-        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        if isActive then
-            nvgFillColor(vg, nvgRGBA(30, 15, 0, 255))
-        else
-            nvgFillColor(vg, nvgRGBA(255, 255, 255, tabHover and 240 or 180))
-        end
-        nvgText(vg, tx + tabW * 0.5, tabY + tabH * 0.5, tab.label)
-
-        if mousePress and tabHover and not isActive then
-            currentTab_ = tab.key
-            scrollY_ = 0
-            buyResult_ = nil
-        end
-    end
-
     -- =====================
     -- 购买结果提示（淡出）
     -- =====================
-    local contentTop = tabY + tabH + (isMobile and 8 or 12)
+    local contentTop = headerH + (isMobile and 4 or 8)
 
     if buyResult_ then
         buyResult_.timer = buyResult_.timer - 0.016
@@ -201,32 +163,162 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     end
 
     -- =====================
-    -- 分页内容
+    -- 瀑布流内容（职业 + 皮肤合并）
     -- =====================
-    if currentTab_ == "class" then
-        local classes = CharacterClass.GetAll()
-        local selectedId = Economy.GetSelectedClassId()
-        if isMobile then
-            drawCardList(vg, logW, logH, contentTop, classes, selectedId, mousePress, mx, my, true)
-        else
-            drawCardGrid(vg, logW, logH, contentTop, classes, selectedId, mousePress, mx, my)
-        end
+    local classes = CharacterClass.GetAll()
+    local allSkins = FaceSkin.GetAll()
+    local selectedClassId = Economy.GetSelectedClassId()
+    local selectedSkinId = Economy.GetSelectedSkinId()
+
+    -- 裁剪区域（不让内容画到 header 上方）
+    nvgSave(vg)
+    nvgScissor(vg, 0, contentTop, logW, logH - contentTop)
+
+    if isMobile then
+        drawWaterfallList(vg, logW, logH, contentTop, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my, true)
     else
-        local allSkins = FaceSkin.GetAll()
-        local selectedSkinId = Economy.GetSelectedSkinId()
-        if isMobile then
-            drawSkinList(vg, logW, logH, contentTop, allSkins, selectedSkinId, mousePress, mx, my)
-        else
-            drawSkinGrid(vg, logW, logH, contentTop, allSkins, selectedSkinId, mousePress, mx, my)
-        end
+        drawWaterfallGrid(vg, logW, logH, contentTop, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my)
+    end
+
+    nvgRestore(vg)
+
+    -- 滚动条指示器
+    if maxScrollY_ > 0 then
+        drawScrollbar(vg, logW, logH, contentTop)
     end
 end
 
 -- ============================================================================
--- 内部：桌面端网格布局（2 行 3 列）——职业
+-- 滚动输入处理
 -- ============================================================================
 
-function drawCardGrid(vg, logW, logH, topY, classes, selectedId, mousePress, mx, my)
+function handleScrollInput(vg, logW, logH, isMobile, mx, my, mousePress)
+    -- 鼠标滚轮（桌面端）
+    local wheel = input:GetMouseMoveWheel()
+    if wheel ~= 0 then
+        scrollY_ = scrollY_ - wheel * 30
+        scrollVel_ = 0
+    end
+
+    -- 触摸拖拽（移动端 + 桌面端鼠标拖拽）
+    local mouseDown = input:GetMouseButtonDown(MOUSEB_LEFT)
+    if mousePress and not touchActive_ then
+        -- 开始拖拽
+        touchActive_ = true
+        touchStartY_ = my
+        touchLastY_ = my
+        touchStartScrollY_ = scrollY_
+        scrollVel_ = 0
+    elseif touchActive_ and mouseDown then
+        -- 拖拽中
+        local deltaY = touchLastY_ - my
+        scrollVel_ = deltaY  -- 记录速度用于惯性
+        touchLastY_ = my
+        scrollY_ = touchStartScrollY_ + (touchStartY_ - my)
+    elseif touchActive_ and not mouseDown then
+        -- 结束拖拽，应用惯性
+        touchActive_ = false
+    end
+
+    -- 惯性滚动
+    if not touchActive_ and math.abs(scrollVel_) > 0.5 then
+        scrollY_ = scrollY_ + scrollVel_
+        scrollVel_ = scrollVel_ * 0.92  -- 摩擦减速
+    else
+        scrollVel_ = 0
+    end
+
+    -- 限制范围
+    scrollY_ = math.max(0, math.min(scrollY_, maxScrollY_))
+end
+
+-- ============================================================================
+-- 滚动条绘制
+-- ============================================================================
+
+function drawScrollbar(vg, logW, logH, contentTop)
+    local viewH = logH - contentTop
+    local totalH = viewH + maxScrollY_
+    if totalH <= 0 then return end
+
+    local barTrackH = viewH - 8
+    local barH = math.max(20, (viewH / totalH) * barTrackH)
+    local barY = contentTop + 4 + (scrollY_ / maxScrollY_) * (barTrackH - barH)
+    local barX = logW - 5
+
+    nvgBeginPath(vg)
+    nvgRoundedRect(vg, barX, barY, 3, barH, 1.5)
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 40))
+    nvgFill(vg)
+end
+
+-- ============================================================================
+-- 瀑布流布局：手机端（单列列表）
+-- ============================================================================
+
+function drawWaterfallList(vg, logW, logH, topY, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my, isMobile)
+    local cardW = math.min(logW - 24, 320)
+    local cardH = 70
+    local gap = 8
+    local startX = math.floor((logW - cardW) * 0.5)
+    local sectionGap = 16
+    local sectionLabelH = 28
+
+    local curY = 0  -- 虚拟Y（相对于 contentTop）
+
+    -- --- 职业区块 ---
+    curY = curY + 4
+    -- 区块标题
+    local labelY = topY + curY - scrollY_
+    if labelY + sectionLabelH > topY - 10 and labelY < logH + 10 then
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, 14)
+        nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
+        nvgText(vg, startX, labelY + sectionLabelH * 0.5, "— 职业 —")
+    end
+    curY = curY + sectionLabelH
+
+    for i, cls in ipairs(classes) do
+        local cy = topY + curY - scrollY_
+        if cy + cardH > topY - 10 and cy < logH + 10 then
+            drawClassCard(vg, startX, cy, cardW, cardH, cls, selectedClassId, mousePress, mx, my, true)
+        end
+        curY = curY + cardH + gap
+    end
+
+    -- --- 皮肤区块 ---
+    curY = curY + sectionGap
+    labelY = topY + curY - scrollY_
+    if labelY + sectionLabelH > topY - 10 and labelY < logH + 10 then
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, 14)
+        nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
+        nvgText(vg, startX, labelY + sectionLabelH * 0.5, "— 表情 —")
+    end
+    curY = curY + sectionLabelH
+
+    for i, skin in ipairs(allSkins) do
+        local cy = topY + curY - scrollY_
+        if cy + cardH > topY - 10 and cy < logH + 10 then
+            drawSkinCard(vg, startX, cy, cardW, cardH, skin, selectedSkinId, mousePress, mx, my, true)
+        end
+        curY = curY + cardH + gap
+    end
+
+    -- 底部留空
+    curY = curY + 20
+    -- 更新最大滚动范围
+    local viewH = logH - topY
+    maxScrollY_ = math.max(0, curY - viewH)
+end
+
+-- ============================================================================
+-- 瀑布流布局：桌面端（网格）
+-- ============================================================================
+
+function drawWaterfallGrid(vg, logW, logH, topY, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my)
     local cols = 3
     local gap = 12
     local maxCardW = 180
@@ -236,78 +328,76 @@ function drawCardGrid(vg, logW, logH, topY, classes, selectedId, mousePress, mx,
         totalW = cols * maxCardW + (cols - 1) * gap
     end
     local startX = math.floor((logW - totalW) * 0.5)
-    local cardH = math.min(160, math.floor((logH - topY - 20) * 0.5 - gap * 0.5))
+    local cardH = 160
+    local sectionGap = 16
+    local sectionLabelH = 30
+
+    local curY = 0
+
+    -- --- 职业区块 ---
+    curY = curY + 4
+    local labelY = topY + curY - scrollY_
+    if labelY + sectionLabelH > topY - 10 and labelY < logH + 10 then
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, 16)
+        nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
+        nvgText(vg, startX, labelY + sectionLabelH * 0.5, "— 职业 —")
+    end
+    curY = curY + sectionLabelH
 
     for i, cls in ipairs(classes) do
         local col = (i - 1) % cols
         local row = math.floor((i - 1) / cols)
         local cx = startX + col * (maxCardW + gap)
-        local cy = topY + row * (cardH + gap)
+        local cy = topY + curY + row * (cardH + gap) - scrollY_
 
-        drawClassCard(vg, cx, cy, maxCardW, cardH, cls, selectedId, mousePress, mx, my, false)
-    end
-end
-
--- ============================================================================
--- 内部：手机端竖向列表——职业
--- ============================================================================
-
-function drawCardList(vg, logW, logH, topY, classes, selectedId, mousePress, mx, my, isMobile)
-    local cardW = math.min(logW - 24, 280)
-    local cardH = 70
-    local gap = 8
-    local startX = math.floor((logW - cardW) * 0.5)
-
-    for i, cls in ipairs(classes) do
-        local cy = topY + (i - 1) * (cardH + gap) - scrollY_
         if cy + cardH > topY - 10 and cy < logH + 10 then
-            drawClassCard(vg, startX, cy, cardW, cardH, cls, selectedId, mousePress, mx, my, true)
+            drawClassCard(vg, cx, cy, maxCardW, cardH, cls, selectedClassId, mousePress, mx, my, false)
         end
     end
-end
+    local classRows = math.ceil(#classes / cols)
+    curY = curY + classRows * (cardH + gap)
 
--- ============================================================================
--- 内部：桌面端网格布局——皮肤
--- ============================================================================
-
-function drawSkinGrid(vg, logW, logH, topY, allSkins, selectedSkinId, mousePress, mx, my)
-    local cols = 4
-    local gap = 10
-    local maxCardW = 150
-    local totalW = cols * maxCardW + (cols - 1) * gap
-    if totalW > logW * 0.92 then
-        maxCardW = math.floor((logW * 0.92 - (cols - 1) * gap) / cols)
-        totalW = cols * maxCardW + (cols - 1) * gap
+    -- --- 皮肤区块 ---
+    curY = curY + sectionGap
+    local skinCols = 4
+    local skinCardW = maxCardW
+    local skinTotalW = skinCols * skinCardW + (skinCols - 1) * gap
+    if skinTotalW > logW * 0.92 then
+        skinCardW = math.floor((logW * 0.92 - (skinCols - 1) * gap) / skinCols)
+        skinTotalW = skinCols * skinCardW + (skinCols - 1) * gap
     end
-    local startX = math.floor((logW - totalW) * 0.5)
-    local cardH = math.min(140, math.floor((logH - topY - 20) * 0.5 - gap * 0.5))
+    local skinStartX = math.floor((logW - skinTotalW) * 0.5)
+    local skinCardH = 140
+
+    labelY = topY + curY - scrollY_
+    if labelY + sectionLabelH > topY - 10 and labelY < logH + 10 then
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, 16)
+        nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
+        nvgText(vg, skinStartX, labelY + sectionLabelH * 0.5, "— 表情 —")
+    end
+    curY = curY + sectionLabelH
 
     for i, skin in ipairs(allSkins) do
-        local col = (i - 1) % cols
-        local row = math.floor((i - 1) / cols)
-        local cx = startX + col * (maxCardW + gap)
-        local cy = topY + row * (cardH + gap)
+        local col = (i - 1) % skinCols
+        local row = math.floor((i - 1) / skinCols)
+        local cx = skinStartX + col * (skinCardW + gap)
+        local cy = topY + curY + row * (skinCardH + gap) - scrollY_
 
-        drawSkinCard(vg, cx, cy, maxCardW, cardH, skin, selectedSkinId, mousePress, mx, my, false)
-    end
-end
-
--- ============================================================================
--- 内部：手机端竖向列表——皮肤
--- ============================================================================
-
-function drawSkinList(vg, logW, logH, topY, allSkins, selectedSkinId, mousePress, mx, my)
-    local cardW = math.min(logW - 24, 280)
-    local cardH = 70
-    local gap = 8
-    local startX = math.floor((logW - cardW) * 0.5)
-
-    for i, skin in ipairs(allSkins) do
-        local cy = topY + (i - 1) * (cardH + gap) - scrollY_
-        if cy + cardH > topY - 10 and cy < logH + 10 then
-            drawSkinCard(vg, startX, cy, cardW, cardH, skin, selectedSkinId, mousePress, mx, my, true)
+        if cy + skinCardH > topY - 10 and cy < logH + 10 then
+            drawSkinCard(vg, cx, cy, skinCardW, skinCardH, skin, selectedSkinId, mousePress, mx, my, false)
         end
     end
+    local skinRows = math.ceil(#allSkins / skinCols)
+    curY = curY + skinRows * (skinCardH + gap)
+
+    -- 底部留空
+    curY = curY + 20
+    local viewH = logH - topY
+    maxScrollY_ = math.max(0, curY - viewH)
 end
 
 -- ============================================================================
@@ -351,7 +441,7 @@ function drawClassCard(vg, x, y, w, h, cls, selectedId, mousePress, mx, my, comp
         nvgStroke(vg)
     end
 
-    -- 职业角色形象（圆角方块 + 描边 + 眼睛）
+    -- 职业角色形象
     local blockSize = compact and 24 or 32
     local blockX = x + (compact and (20 - blockSize * 0.5) or (w * 0.5 - blockSize * 0.5))
     local blockY = compact and (y + h * 0.35 - blockSize * 0.5) or (y + 28 - blockSize * 0.5)
@@ -484,13 +574,11 @@ function drawSkinCard(vg, x, y, w, h, skin, selectedSkinId, mousePress, mx, my, 
         nvgStroke(vg)
     end
 
-    -- 使用 FaceSkin.DrawPreview 绘制角色预览
-    -- 用默认玩家颜色（蓝色系）
+    -- FaceSkin 预览
     local previewBodyColor = Color(0.24, 0.60, 1.0, 1.0)
     local previewOutlineColor = Color(0.08, 0.20, 0.45, 1.0)
 
     if compact then
-        -- 紧凑布局：左边预览，右边文字
         local blockSize = 28
         local prevCX = x + 22
         local prevCY = y + h * 0.40
@@ -516,7 +604,6 @@ function drawSkinCard(vg, x, y, w, h, skin, selectedSkinId, mousePress, mx, my, 
         local btnY = y + h * 0.5 - btnH * 0.5
         drawSkinActionButton(vg, btnX, btnY, btnW, btnH, skin, isOwned, isSelected, mousePress, mx, my)
     else
-        -- 标准布局：上方预览，下方文字
         local blockSize = 36
         local prevCX = x + w * 0.5
         local prevCY = y + 30
@@ -544,7 +631,7 @@ function drawSkinCard(vg, x, y, w, h, skin, selectedSkinId, mousePress, mx, my, 
 end
 
 -- ============================================================================
--- 内部：职业操作按钮（购买/选中/已装备）
+-- 内部：职业操作按钮
 -- ============================================================================
 
 function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, mx, my)
@@ -579,7 +666,7 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
         nvgFillColor(vg, nvgRGBA(255, 255, 255, 255))
         nvgText(vg, x + w * 0.5, y + h * 0.5, "选择")
 
-        if mousePress and hovered then
+        if mousePress and hovered and not touchActive_ then
             Economy.SelectClass(cls.id)
             buyResult_ = { text = "已选择 " .. cls.name .. "!", color = Theme.success, timer = 1.5 }
         end
@@ -618,7 +705,7 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
         end
         nvgText(vg, x + w * 0.5, y + h * 0.5, "🪙 " .. cls.price)
 
-        if mousePress and hovered and canAfford then
+        if mousePress and hovered and canAfford and not touchActive_ then
             local ok, err = Economy.BuyClass(cls.id)
             if ok then
                 buyResult_ = { text = "购买成功！已装备 " .. cls.name, color = Theme.success, timer = 2.0 }
@@ -632,7 +719,7 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
 end
 
 -- ============================================================================
--- 内部：皮肤操作按钮（购买/选中/已装备）
+-- 内部：皮肤操作按钮
 -- ============================================================================
 
 function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePress, mx, my)
@@ -667,7 +754,7 @@ function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePr
         nvgFillColor(vg, nvgRGBA(255, 255, 255, 255))
         nvgText(vg, x + w * 0.5, y + h * 0.5, "选择")
 
-        if mousePress and hovered then
+        if mousePress and hovered and not touchActive_ then
             Economy.SelectSkin(skin.id)
             buyResult_ = { text = "已选择 " .. skin.name .. "!", color = Theme.success, timer = 1.5 }
         end
@@ -706,7 +793,7 @@ function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePr
         end
         nvgText(vg, x + w * 0.5, y + h * 0.5, "🪙 " .. skin.price)
 
-        if mousePress and hovered and canAfford then
+        if mousePress and hovered and canAfford and not touchActive_ then
             local ok, err = Economy.BuySkin(skin.id)
             if ok then
                 buyResult_ = { text = "购买成功！已装备 " .. skin.name, color = Theme.success, timer = 2.0 }

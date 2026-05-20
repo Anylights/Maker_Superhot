@@ -1830,7 +1830,7 @@ function HUD.DrawResultScreen()
 
     -- 金币奖励提示（分数下方留足间距）
     local coinY = scoreY + scoreFs + math.floor(14 * uiScale_) + extraInfoH
-    local coinReward = Economy.RewardFromScore(p1Score)
+    local coinReward = math.max(5, math.floor(p1Score / 10))  -- 仅显示，不重复发奖
     if coinReward > 0 then
         nvgFontFace(vg_, "sans")
         nvgFontSize(vg_, math.max(11, math.floor(15 * uiScale_)))

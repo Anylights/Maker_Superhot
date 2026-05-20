@@ -222,6 +222,13 @@ Config.PowerUpNames = {
     instantHot   = "直接红温",
 }
 
+-- 尖刺系统
+Config.SpikeStartFloor   = 10     -- 尖刺开始出现的层数
+Config.SpikeMaxProb       = 0.80   -- 尖刺最大概率（80%）
+Config.SpikeDecayParam    = 200    -- 反函数衰减参数（越大越缓，600层时趋近上限）
+Config.SpikeColor         = Color(0.95, 0.15, 0.10, 1.0)   -- 尖刺红色
+Config.SpikeOutlineColor  = Color(0.50, 0.06, 0.04, 1.0)   -- 尖刺暗红描边
+
 -- 检查点
 Config.CheckpointInterval = 20     -- 每隔多少格放一个检查点（~5层）
 

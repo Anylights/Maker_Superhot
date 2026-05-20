@@ -32,6 +32,9 @@ MapData.SpawnY = 4
 -- 能量拾取点（由 RandomPickup 管理，此表保留为空）
 MapData.EnergyPickups = {}
 
+-- 尖刺表：spikeMap[y][x] = true 表示该位置的平台方块上有尖刺
+MapData.SpikeMap = {}
+
 -- 终点方块列表（大地图模式不使用，保留兼容接口）
 MapData.FinishBlocks = {}
 
@@ -87,6 +90,7 @@ function MapData.Generate(seed)
     MapData.SpawnPositions = {}
     MapData.CheckpointYList = {}
     MapData.FinishBlocks = {}
+    MapData.SpikeMap = {}
 
     local W = MapData.Width
     local H = MapData.Height
@@ -212,6 +216,28 @@ function MapData.Generate(seed)
                     grid[nextY][midX] = EP
                 end
             end
+
+            -- ============================================================
+            -- 尖刺生成：仅在普通方块(N)上按概率放置
+            -- P(layer) = MaxProb * (1 - e^(-(layer - StartFloor) / DecayParam))
+            -- ============================================================
+            if layerIndex >= Config.SpikeStartFloor then
+                local spikeProb = Config.SpikeMaxProb *
+                    (1.0 - math.exp(-(layerIndex - Config.SpikeStartFloor) / Config.SpikeDecayParam))
+                if not MapData.SpikeMap[nextY] then
+                    MapData.SpikeMap[nextY] = {}
+                end
+                for _, seg2 in ipairs(segments) do
+                    for x = seg2.start, math.min(seg2.start + seg2.len - 1, W) do
+                        -- 只在普通方块上放尖刺（安全、能量托台、检查点、出生点不放）
+                        if grid[nextY][x] == N then
+                            if rngRange(1, 10000) <= math.floor(spikeProb * 10000) then
+                                MapData.SpikeMap[nextY][x] = true
+                            end
+                        end
+                    end
+                end
+            end
         end
 
         currentY = nextY
@@ -283,6 +309,14 @@ function MapData.GetCheckpointRespawnPos(activatedCheckpoints, grid)
 
     -- 没有激活的检查点
     return nil
+end
+
+--- 检查指定网格位置是否有尖刺
+---@param gx number 网格 X（1-based）
+---@param gy number 网格 Y（1-based）
+---@return boolean
+function MapData.HasSpike(gx, gy)
+    return MapData.SpikeMap[gy] ~= nil and MapData.SpikeMap[gy][gx] == true
 end
 
 --- 检查某个世界 Y 是否在某个检查点附近

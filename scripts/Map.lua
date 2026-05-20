@@ -37,6 +37,10 @@ local respawnAnims_ = {}
 -- 描边材质缓存
 local outlineMat_ = nil
 
+-- 尖刺材质缓存
+local spikeMat_ = nil
+local spikeOutlineMat_ = nil
+
 -- ============================================================================
 -- 圆角矩形生成（CustomGeometry）
 -- ============================================================================
@@ -163,6 +167,81 @@ function Map.BuildRoundedBox(geom, size, r)
 end
 
 -- ============================================================================
+-- 尖刺三角形生成（CustomGeometry）
+-- ============================================================================
+
+--- 在 CustomGeometry 上生成 3 个并列朝上三角形（尖刺组）
+--- 三角形底边在方块顶面，尖端朝上，均匀排列
+---@param geom userdata CustomGeometry 组件
+---@param bs number 方块边长
+local function buildSpikeTriangles(geom, bs)
+    local spikeCount = 3
+    local spikeH = bs * 0.38        -- 每个三角形高度
+    local baseY = bs * 0.5          -- 底边 Y（方块顶面）
+    local halfD = bs * 0.48         -- 深度半值
+    local totalW = bs * 0.88        -- 3 个尖刺占据的总宽度
+    local spikeW = totalW / spikeCount  -- 每个尖刺宽度
+    local halfSW = spikeW * 0.5
+
+    -- 斜面法线
+    local slopeLen = math.sqrt(spikeH * spikeH + halfSW * halfSW)
+    local lnx, lny = -spikeH / slopeLen, halfSW / slopeLen
+    local rnx, rny =  spikeH / slopeLen, halfSW / slopeLen
+
+    geom:SetNumGeometries(1)
+    geom:BeginGeometry(0, TRIANGLE_LIST)
+
+    local function v(x, y, z, nx, ny, nz)
+        geom:DefineVertex(Vector3(x, y, z))
+        geom:DefineNormal(Vector3(nx, ny, nz))
+    end
+
+    local startX = -totalW * 0.5 + halfSW  -- 第 1 个尖刺中心 X
+
+    for i = 0, spikeCount - 1 do
+        local cx = startX + i * spikeW  -- 当前尖刺中心 X
+        local left  = cx - halfSW
+        local right = cx + halfSW
+
+        -- 正面（Z+）
+        v(left,  baseY, halfD,  0, 0, 1)
+        v(right, baseY, halfD,  0, 0, 1)
+        v(cx, baseY + spikeH, halfD,  0, 0, 1)
+
+        -- 背面（Z-）
+        v(right, baseY, -halfD,  0, 0, -1)
+        v(left,  baseY, -halfD,  0, 0, -1)
+        v(cx, baseY + spikeH, -halfD,  0, 0, -1)
+
+        -- 左斜面
+        v(left, baseY, halfD,          lnx, lny, 0)
+        v(cx, baseY + spikeH, halfD,   lnx, lny, 0)
+        v(cx, baseY + spikeH, -halfD,  lnx, lny, 0)
+        v(left, baseY, halfD,          lnx, lny, 0)
+        v(cx, baseY + spikeH, -halfD,  lnx, lny, 0)
+        v(left, baseY, -halfD,         lnx, lny, 0)
+
+        -- 右斜面
+        v(right, baseY, halfD,          rnx, rny, 0)
+        v(cx, baseY + spikeH, -halfD,   rnx, rny, 0)
+        v(cx, baseY + spikeH, halfD,    rnx, rny, 0)
+        v(right, baseY, halfD,          rnx, rny, 0)
+        v(right, baseY, -halfD,         rnx, rny, 0)
+        v(cx, baseY + spikeH, -halfD,   rnx, rny, 0)
+
+        -- 底面
+        v(left,  baseY, halfD,   0, -1, 0)
+        v(right, baseY, -halfD,  0, -1, 0)
+        v(right, baseY, halfD,   0, -1, 0)
+        v(left,  baseY, halfD,   0, -1, 0)
+        v(left,  baseY, -halfD,  0, -1, 0)
+        v(right, baseY, -halfD,  0, -1, 0)
+    end
+
+    geom:Commit()
+end
+
+-- ============================================================================
 -- 初始化
 -- ============================================================================
 
@@ -186,6 +265,21 @@ function Map.Init(scene)
     outlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.BlockOutlineColor))
     outlineMat_:SetShaderParameter("Metallic", Variant(0.0))
     outlineMat_:SetShaderParameter("Roughness", Variant(1.0))
+
+    -- 创建尖刺材质（红色 PBR + 自发光，醒目危险感）
+    spikeMat_ = Material:new()
+    spikeMat_:SetTechnique(0, pbrTechnique_)
+    spikeMat_:SetShaderParameter("MatDiffColor", Variant(Config.SpikeColor))
+    spikeMat_:SetShaderParameter("Metallic", Variant(0.0))
+    spikeMat_:SetShaderParameter("Roughness", Variant(0.8))
+    spikeMat_:SetShaderParameter("MatEmissiveColor", Variant(Color(0.30, 0.03, 0.02)))
+
+    -- 创建尖刺描边材质（暗红色）
+    spikeOutlineMat_ = Material:new()
+    spikeOutlineMat_:SetTechnique(0, pbrTechnique_)
+    spikeOutlineMat_:SetShaderParameter("MatDiffColor", Variant(Config.SpikeOutlineColor))
+    spikeOutlineMat_:SetShaderParameter("Metallic", Variant(0.0))
+    spikeOutlineMat_:SetShaderParameter("Roughness", Variant(1.0))
 
     print("[Map] Initialized")
 end
@@ -301,6 +395,43 @@ function Map.CreateBlockNode(parent, gx, gy, blockType)
         end
         if isRightEdge then
             Map.CreateFlag(node, bs, flagColor, true)
+        end
+    end
+
+    -- 尖刺方块：方块本体换红色 + 顶部 3 个三角形尖刺
+    if MapData.HasSpike(gx, gy) then
+        -- 替换方块材质为红色（与尖刺同色系）
+        if spikeMat_ then
+            geom:SetMaterial(spikeMat_)
+        end
+        -- 描边也换暗红色
+        local outlineChild = node:GetChild("Outline")
+        if outlineChild then
+            local outGeom = outlineChild:GetComponent("CustomGeometry")
+            if outGeom and spikeOutlineMat_ then
+                outGeom:SetMaterial(spikeOutlineMat_)
+            end
+        end
+
+        -- 描边三角形组（略大，置于后层）
+        local spikeOutNode = node:CreateChild("SpikeOutline")
+        spikeOutNode.position = Vector3(0, 0, 0.06)
+        spikeOutNode.scale = Vector3(1.12, 1.12, 1.0)
+        local spikeOutGeom = spikeOutNode:CreateComponent("CustomGeometry")
+        buildSpikeTriangles(spikeOutGeom, bs)
+        spikeOutGeom.castShadows = false
+        if spikeOutlineMat_ then
+            spikeOutGeom:SetMaterial(spikeOutlineMat_)
+        end
+
+        -- 尖刺主体三角形组
+        local spikeNode = node:CreateChild("Spike")
+        spikeNode.position = Vector3(0, 0, -0.02)
+        local spikeGeom = spikeNode:CreateComponent("CustomGeometry")
+        buildSpikeTriangles(spikeGeom, bs)
+        spikeGeom.castShadows = true
+        if spikeMat_ then
+            spikeGeom:SetMaterial(spikeMat_)
         end
     end
 

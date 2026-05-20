@@ -803,6 +803,17 @@ function Player.UpdateOne(p, dt)
         end
     end
 
+    -- 尖刺检测：站在尖刺方块上 → 非冲刺则立即死亡（无敌由 Kill 内部判断）
+    if p.node and p.alive and p.onGround and p.dashTimer <= 0 then
+        local pos = p.node.position
+        local bs = Config.BlockSize
+        local gx = math.floor(pos.x / bs) + 1
+        local gy = math.floor((pos.y - bs * 0.6) / bs) + 1
+        if MapData.HasSpike(gx, gy) then
+            Player.Kill(p, "spike")
+        end
+    end
+
     -- 高度得分实时计算（基于当前 Y 位置）
     -- 结算冻结时跳过分数更新
     if p.node and not Player.frozen then
@@ -1081,9 +1092,17 @@ function Player.UpdateMovement(p, dt)
         if PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) and mapModule_ and p.hitCeilingPos then
             -- 超级变大：撞碎头顶普通平台，速度衰减50%
             local cx = p.hitCeilingPos.x
-            local cy = p.hitCeilingPos.y + Config.BlockSize * 0.3  -- 略向上偏移找到被撞方块
+            local bs = Config.BlockSize
+            local scale = PowerUp.GetScale(p)
+            -- 根据角色缩放调整向上偏移：2x大时碰撞点可能更偏下
+            local offset = bs * 0.3 + bs * (scale - 1.0) * 0.5
+            local cy = p.hitCeilingPos.y + offset
             local gx, gy = mapModule_.WorldToGrid(cx, cy)
             local destroyed = mapModule_.DestroyBlock(gx, gy, cx, cy)
+            -- 如果第一格没找到可破坏方块，尝试上一格
+            if not destroyed then
+                destroyed = mapModule_.DestroyBlock(gx, gy + 1, cx, cy + bs)
+            end
             if destroyed then
                 vel = Vector3(vel.x, vel.y * 0.5, 0)  -- 保留50%上升速度
                 SFX.Play("explode", 0.4, cx, cy)
@@ -1855,8 +1874,8 @@ function Player.Kill(p, reason, killerIndex)
         -- 3) 禁用整个玩家节点（统一用属性赋值风格）
         p.node.enabled = false
 
-        -- 爆炸死亡：喷溅特效 + 哭脸形象
-        if reason == "explosion" then
+        -- 爆炸/尖刺/下砸死亡：喷溅特效 + 哭脸形象
+        if reason == "explosion" or reason == "spike" or reason == "slam" then
             Player.SpawnSplatFX(deathPos, p.index)
             Player.SpawnDeathFace(p, deathPos)
         end

@@ -153,10 +153,10 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
-            -- 斜带矩形（从上边中点到左边中点，黑色）- 不跟随
+            -- 斜带矩形（穿过眼罩大球，黑色）- 不跟随
             {
                 name = "SkinAcc_Strip", modelType = "box",
-                pos = { -0.25, 0.25, -0.51 }, scale = { 0.72, 0.10, 0.02 },
+                pos = { -0.14, 0.06, -0.51 }, scale = { 1.0, 0.10, 0.02 },
                 rot = { 45, "FORWARD" }, colorFromOutline = false, followEyes = false,
             },
             -- 大球（眼罩主体，偏左，更大）- 不跟随

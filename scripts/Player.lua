@@ -945,7 +945,7 @@ function Player.DoSlamLanding(p)
     -- 屏幕震动（仅在视野内，幅度适中；超级变大时加强）
     local shakeAmp = PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) and Config.SuperBigSlamShake or 0.10
     Camera.Shake(shakeAmp, 0.15, pos)
-    SFX.Play("explosion", 0.6, pos.x, pos.y)
+    SFX.Play("kick", 0.6, pos.x, pos.y)
 
     -- 下砸落地粒子爆发（水平扩散的小圆粒子，高饱和鲜艳）
     if scene_ then

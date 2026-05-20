@@ -394,10 +394,10 @@ function Player.Create(index, isHuman)
         end
         p.skinId = skinId
 
-        -- 获取描边颜色（用于配件着色）
-        local _, outlineColor = CharacterClass.GetColors(classId)
+        -- 获取颜色（用于配件着色）
+        local bodyColorForSkin, outlineColor = CharacterClass.GetColors(classId)
         -- 应用 3D 配件
-        FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
+        FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor, bodyColorForSkin)
         -- 记录配件原始位置（用于跟随眼睛偏移）
         p.skinAccOrigPos = {}
         local followFlags = FaceSkin.GetAccessoryFollowFlags(skinId)
@@ -2361,7 +2361,7 @@ function Player.ResetAll()
             if p.isHuman then skinId = Economy.GetSelectedSkinId() end
             p.skinId = skinId
             FaceSkin.RemoveAccessories(p.visualNode)
-            FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+            FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor, bodyColor)
             p.skinAccOrigPos = {}
             local followFlags2 = FaceSkin.GetAccessoryFollowFlags(skinId)
             local numCh2 = p.visualNode:GetNumChildren(false)
@@ -2528,7 +2528,7 @@ function Player.ResetScoresOnly()
             if p.visualNode then
                 local skinId = p.skinId or "default"
                 FaceSkin.RemoveAccessories(p.visualNode)
-                FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+                FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor, bodyColor)
                 p.skinAccOrigPos = {}
                 local followFlags3 = FaceSkin.GetAccessoryFollowFlags(skinId)
                 local numCh3 = p.visualNode:GetNumChildren(false)
@@ -2665,7 +2665,7 @@ function Player.ResetHumanToSpawn()
                 local skinId = Economy.GetSelectedSkinId()
                 p.skinId = skinId
                 FaceSkin.RemoveAccessories(p.visualNode)
-                FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+                FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor, bodyColor)
                 p.skinAccOrigPos = {}
                 local followFlags4 = FaceSkin.GetAccessoryFollowFlags(skinId)
                 local numCh4 = p.visualNode:GetNumChildren(false)

@@ -153,22 +153,22 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
-            -- 斜带矩形（对角线穿过脸部，上左对齐边缘）- 不跟随
+            -- 斜带矩形（从上边中点到左边中点，黑色）- 不跟随
             {
                 name = "SkinAcc_Strip", modelType = "box",
-                pos = { -0.08, 0.0, -0.51 }, scale = { 1.3, 0.10, 0.02 },
-                rot = { 55, "FORWARD" }, colorFromOutline = true, followEyes = false,
+                pos = { -0.25, 0.25, -0.51 }, scale = { 0.72, 0.10, 0.02 },
+                rot = { 45, "FORWARD" }, colorFromOutline = false, followEyes = false,
             },
-            -- 大球（眼罩主体，偏左）- 不跟随
+            -- 大球（眼罩主体，偏左，更大）- 不跟随
             {
                 name = "SkinAcc_PatchBall", modelType = "sphere",
-                pos = { -0.14, 0.06, -0.52 }, scale = { 0.32, 0.32, 0.06 },
+                pos = { -0.14, 0.06, -0.52 }, scale = { 0.40, 0.40, 0.06 },
                 rot = nil, colorFromOutline = false, followEyes = false,
             },
-            -- 小球（露出的右眼）- 描边色，与眼罩同一水平线
+            -- 小球（露出的右眼）- 描边色，和默认眼睛一样大
             {
                 name = "SkinAcc_SmallEye", modelType = "sphere",
-                pos = { 0.22, 0.06, -0.53 }, scale = { 0.08, 0.08, 0.02 },
+                pos = { 0.22, 0.06, -0.53 }, scale = { 0.14, 0.14, 0.04 },
                 rot = nil, colorFromOutline = true, followEyes = true,
             },
         },
@@ -197,16 +197,16 @@ local skins = {
                 pos = { 0.16, 0.06, -0.52 }, scale = { 0.32, 0.32, 0.06 },
                 rot = nil, colorFromOutline = true, followEyes = true,
             },
-            -- 左星星（CustomGeometry五角星）— 角色主体色（bodyColor）
+            -- 左星星（CustomGeometry五角星）— 角色主体色，五角尖端到大球边缘
             {
                 name = "SkinAcc_StarL", modelType = "star",
-                pos = { -0.16, 0.06, -0.58 }, scale = { 0.18, 0.18, 0.01 },
+                pos = { -0.16, 0.06, -0.58 }, scale = { 0.32, 0.32, 0.01 },
                 rot = nil, colorFromBody = true, followEyes = true,
             },
-            -- 右星星（CustomGeometry五角星）— 角色主体色（bodyColor）
+            -- 右星星（CustomGeometry五角星）— 角色主体色，五角尖端到大球边缘
             {
                 name = "SkinAcc_StarR", modelType = "star",
-                pos = { 0.16, 0.06, -0.58 }, scale = { 0.18, 0.18, 0.01 },
+                pos = { 0.16, 0.06, -0.58 }, scale = { 0.32, 0.32, 0.01 },
                 rot = nil, colorFromBody = true, followEyes = true,
             },
         },

@@ -11,6 +11,7 @@ local RandomEvent = require("RandomEvent")
 local CharacterClass = require("CharacterClass")
 local Economy = require("Economy")
 local PowerUp = require("PowerUp")
+local FaceSkin = require("FaceSkin")
 
 local Player = {}
 
@@ -377,7 +378,40 @@ function Player.Create(index, isHuman)
         blinkPhase = 0,        -- 眨眼阶段进度 0~1
         isBlinking = false,    -- 是否在眨眼中
         idleTimer = 0,         -- 静止计时器
+
+        -- 皮肤（面部表情）
+        skinId = "default",
     }
+
+    -- =====================
+    -- 皮肤应用
+    -- =====================
+    do
+        local skinId = "default"
+        if isHuman then
+            skinId = Economy.GetSelectedSkinId()
+        end
+        p.skinId = skinId
+
+        -- 获取描边颜色（用于配件着色）
+        local _, outlineColor = CharacterClass.GetColors(classId)
+        -- 应用 3D 配件
+        FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
+        -- 存储独立左右眼参数
+        local ov = FaceSkin.GetEyeOverrides(skinId, eyeBaseX, eyeBaseY, eyeRadius)
+        p.eyeBaseX_L   = ov.eyeBaseX_L
+        p.eyeBaseY_L   = ov.eyeBaseY_L
+        p.eyeRadius_L  = ov.eyeRadius_L
+        p.eyeVisible_L = ov.eyeVisible_L
+        p.eyeFlattenY_L = ov.eyeFlattenY_L
+        p.eyeRotZ_L    = ov.eyeRotZ_L
+        p.eyeBaseX_R   = ov.eyeBaseX_R
+        p.eyeBaseY_R   = ov.eyeBaseY_R
+        p.eyeRadius_R  = ov.eyeRadius_R
+        p.eyeVisible_R = ov.eyeVisible_R
+        p.eyeFlattenY_R = ov.eyeFlattenY_R
+        p.eyeRotZ_R    = ov.eyeRotZ_R
+    end
 
     -- =====================
     -- 拖尾粒子发射器（在 scene 下创建，每帧跟随角色位置）
@@ -1358,10 +1392,24 @@ function Player.UpdateEyes(p, dt)
     local eyeR = p.visualNode:GetChild("EyeR")
     if eyeL == nil or eyeR == nil then return end
 
-    local bx = p.eyeBaseX
-    local by = p.eyeBaseY
-    local bz = p.eyeBaseZ
-    local r  = p.eyeRadius
+    -- 皮肤独立左右眼参数（有皮肤覆盖则用覆盖值，否则用基础值）
+    local bxL = p.eyeBaseX_L or p.eyeBaseX
+    local byL = p.eyeBaseY_L or p.eyeBaseY
+    local rL  = p.eyeRadius_L or p.eyeRadius
+    local bxR = p.eyeBaseX_R or p.eyeBaseX
+    local byR = p.eyeBaseY_R or p.eyeBaseY
+    local rR  = p.eyeRadius_R or p.eyeRadius
+    local bz  = p.eyeBaseZ
+    local visL = (p.eyeVisible_L ~= false)
+    local visR = (p.eyeVisible_R ~= false)
+    local flatL = p.eyeFlattenY_L or 1.0
+    local flatR = p.eyeFlattenY_R or 1.0
+    local skinRotL = p.eyeRotZ_L or 0
+    local skinRotR = p.eyeRotZ_R or 0
+
+    -- 隐藏不可见的眼睛
+    eyeL.enabled = visL
+    eyeR.enabled = visR
 
     -- =====================
     -- 1) 水平偏移：跟随移动方向
@@ -1376,10 +1424,8 @@ function Player.UpdateEyes(p, dt)
     if p.body then
         local vy = p.body.linearVelocity.y
         if vy > 2.0 then
-            -- 上升：眼睛看上方
             targetOffsetY = math.min(vy / 15.0, 1.0) * 0.10
         elseif vy < -2.0 then
-            -- 下落：眼睛看下方
             targetOffsetY = math.max(vy / 15.0, -1.0) * 0.10
         end
     end
@@ -1391,21 +1437,21 @@ function Player.UpdateEyes(p, dt)
     local isSquished = (p.squashScaleY < 0.93) or (p.squashScaleX < 0.93)
 
     if isSquished and p.stunTimer <= 0 then
-        -- >_< 表情：眼睛变成扁线 + 向内倾斜
         local minSquash = math.min(p.squashScaleX, p.squashScaleY)
         local squishFactor = math.max(0.15, (minSquash - 0.5) / (0.93 - 0.5))
-        local flatY = r * 0.22 * squishFactor
-        local flatX = r * 1.3
 
-        eyeL.scale = Vector3(flatX, flatY, r * 0.35)
-        eyeR.scale = Vector3(flatX, flatY, r * 0.35)
-
-        eyeL.rotation = Quaternion(-25, Vector3.FORWARD)
-        eyeR.rotation = Quaternion(25, Vector3.FORWARD)
-
-        -- 挤压时不偏移、不眨眼
-        eyeL.position = Vector3(-bx, by, bz)
-        eyeR.position = Vector3(bx, by, bz)
+        if visL then
+            local flatYL = rL * 0.22 * squishFactor
+            eyeL.scale = Vector3(rL * 1.3, flatYL, rL * 0.35)
+            eyeL.rotation = Quaternion(-25, Vector3.FORWARD)
+            eyeL.position = Vector3(-bxL, byL, bz)
+        end
+        if visR then
+            local flatYR = rR * 0.22 * squishFactor
+            eyeR.scale = Vector3(rR * 1.3, flatYR, rR * 0.35)
+            eyeR.rotation = Quaternion(25, Vector3.FORWARD)
+            eyeR.position = Vector3(bxR, byR, bz)
+        end
         return
     end
 
@@ -1413,22 +1459,24 @@ function Player.UpdateEyes(p, dt)
     -- 4) 眩晕表情：眼睛绕圆圈转动 @_@
     -- =====================
     if p.stunTimer > 0 then
-        local spinSpeed = 12.0  -- 转圈速度（弧度/秒）
-        local spinRadius = 0.06 -- 转圈半径
+        local spinSpeed = 12.0
+        local spinRadius = 0.06
         local t = p.stunTimer * spinSpeed
         local ox = math.cos(t) * spinRadius
         local oy = math.sin(t) * spinRadius
 
-        -- 两只眼睛反向旋转，形成 @_@ 效果
-        eyeL.position = Vector3(-bx + ox, by + oy, bz)
-        eyeR.position = Vector3(bx - ox, by - oy, bz)
-
-        -- 眼睛略微缩小表示虚弱
-        local smallR = r * 0.75
-        eyeL.scale = Vector3(smallR, smallR, r * 0.35)
-        eyeR.scale = Vector3(smallR, smallR, r * 0.35)
-        eyeL.rotation = Quaternion.IDENTITY
-        eyeR.rotation = Quaternion.IDENTITY
+        if visL then
+            eyeL.position = Vector3(-bxL + ox, byL + oy, bz)
+            local smallRL = rL * 0.75
+            eyeL.scale = Vector3(smallRL, smallRL, rL * 0.35)
+            eyeL.rotation = Quaternion.IDENTITY
+        end
+        if visR then
+            eyeR.position = Vector3(bxR - ox, byR - oy, bz)
+            local smallRR = rR * 0.75
+            eyeR.scale = Vector3(smallRR, smallRR, rR * 0.35)
+            eyeR.rotation = Quaternion.IDENTITY
+        end
         return
     end
 
@@ -1444,25 +1492,21 @@ function Player.UpdateEyes(p, dt)
         p.blinkPhase = 0
     end
 
-    -- 静止超过 1 秒后才开始眨眼计时
     local blinkScaleY = 1.0
     if p.idleTimer > 1.0 then
         p.blinkTimer = p.blinkTimer + dt
         if not p.isBlinking and p.blinkTimer >= p.blinkInterval then
-            -- 开始眨眼
             p.isBlinking = true
             p.blinkPhase = 0
             p.blinkTimer = 0
             p.blinkInterval = 2.5 + math.random() * 3.5
         end
         if p.isBlinking then
-            p.blinkPhase = p.blinkPhase + dt * 8.0  -- 眨眼速度
+            p.blinkPhase = p.blinkPhase + dt * 8.0
             if p.blinkPhase >= 1.0 then
-                -- 眨眼结束
                 p.isBlinking = false
                 p.blinkPhase = 0
             else
-                -- 眨眼曲线：0→1→0 正弦，中间完全闭眼
                 blinkScaleY = 1.0 - math.sin(p.blinkPhase * math.pi) * 0.92
             end
         end
@@ -1471,18 +1515,31 @@ function Player.UpdateEyes(p, dt)
     end
 
     -- =====================
-    -- 5) 应用正常表情
+    -- 6) 应用正常表情（含皮肤 flattenY 和 rotZ）
     -- =====================
-    eyeL.rotation = Quaternion.IDENTITY
-    eyeR.rotation = Quaternion.IDENTITY
+    local posYL = byL + p.eyeOffsetY
+    local posYR = byR + p.eyeOffsetY
 
-    local scaleY = r * blinkScaleY
-    eyeL.scale = Vector3(r, scaleY, r * 0.35)
-    eyeR.scale = Vector3(r, scaleY, r * 0.35)
-
-    local posY = by + p.eyeOffsetY
-    eyeL.position = Vector3(-bx + p.eyeOffsetX, posY, bz)
-    eyeR.position = Vector3(bx + p.eyeOffsetX, posY, bz)
+    if visL then
+        local syL = rL * blinkScaleY * flatL
+        eyeL.scale = Vector3(rL, syL, rL * 0.35)
+        eyeL.position = Vector3(-bxL + p.eyeOffsetX, posYL, bz)
+        if skinRotL ~= 0 then
+            eyeL.rotation = Quaternion(skinRotL, Vector3.FORWARD)
+        else
+            eyeL.rotation = Quaternion.IDENTITY
+        end
+    end
+    if visR then
+        local syR = rR * blinkScaleY * flatR
+        eyeR.scale = Vector3(rR, syR, rR * 0.35)
+        eyeR.position = Vector3(bxR + p.eyeOffsetX, posYR, bz)
+        if skinRotR ~= 0 then
+            eyeR.rotation = Quaternion(skinRotR, Vector3.FORWARD)
+        else
+            eyeR.rotation = Quaternion.IDENTITY
+        end
+    end
 end
 
 --- 更新能量
@@ -2265,6 +2322,19 @@ function Player.ResetAll()
                 end
             end
         end
+        -- 重新应用皮肤配件（颜色可能变了）
+        if p.visualNode then
+            local skinId = p.skinId or "default"
+            if p.isHuman then skinId = Economy.GetSelectedSkinId() end
+            p.skinId = skinId
+            FaceSkin.RemoveAccessories(p.visualNode)
+            FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+            local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
+            p.eyeBaseX_L = ov.eyeBaseX_L; p.eyeBaseY_L = ov.eyeBaseY_L; p.eyeRadius_L = ov.eyeRadius_L
+            p.eyeFlattenY_L = ov.eyeFlattenY_L; p.eyeRotZ_L = ov.eyeRotZ_L; p.eyeVisible_L = ov.eyeVisible_L
+            p.eyeBaseX_R = ov.eyeBaseX_R; p.eyeBaseY_R = ov.eyeBaseY_R; p.eyeRadius_R = ov.eyeRadius_R
+            p.eyeFlattenY_R = ov.eyeFlattenY_R; p.eyeRotZ_R = ov.eyeRotZ_R; p.eyeVisible_R = ov.eyeVisible_R
+        end
         -- 更新拖尾粒子颜色
         if p.trailEmitter then
             local maxC = math.max(bodyColor.r, bodyColor.g, bodyColor.b, 0.01)
@@ -2412,6 +2482,17 @@ function Player.ResetScoresOnly()
                     end
                 end
             end
+            -- 重新应用皮肤配件（AI 保持 default 皮肤，颜色可能变了）
+            if p.visualNode then
+                local skinId = p.skinId or "default"
+                FaceSkin.RemoveAccessories(p.visualNode)
+                FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+                local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
+                p.eyeBaseX_L = ov.eyeBaseX_L; p.eyeBaseY_L = ov.eyeBaseY_L; p.eyeRadius_L = ov.eyeRadius_L
+                p.eyeFlattenY_L = ov.eyeFlattenY_L; p.eyeRotZ_L = ov.eyeRotZ_L; p.eyeVisible_L = ov.eyeVisible_L
+                p.eyeBaseX_R = ov.eyeBaseX_R; p.eyeBaseY_R = ov.eyeBaseY_R; p.eyeRadius_R = ov.eyeRadius_R
+                p.eyeFlattenY_R = ov.eyeFlattenY_R; p.eyeRotZ_R = ov.eyeRotZ_R; p.eyeVisible_R = ov.eyeVisible_R
+            end
             -- 更新拖尾粒子颜色
             if p.trailEmitter then
                 local maxC = math.max(bodyColor.r, bodyColor.g, bodyColor.b, 0.01)
@@ -2525,6 +2606,18 @@ function Player.ResetHumanToSpawn()
                         end
                     end
                 end
+            end
+            -- 重新应用皮肤配件（人类玩家读取最新选择）
+            if p.visualNode then
+                local skinId = Economy.GetSelectedSkinId()
+                p.skinId = skinId
+                FaceSkin.RemoveAccessories(p.visualNode)
+                FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
+                local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
+                p.eyeBaseX_L = ov.eyeBaseX_L; p.eyeBaseY_L = ov.eyeBaseY_L; p.eyeRadius_L = ov.eyeRadius_L
+                p.eyeFlattenY_L = ov.eyeFlattenY_L; p.eyeRotZ_L = ov.eyeRotZ_L; p.eyeVisible_L = ov.eyeVisible_L
+                p.eyeBaseX_R = ov.eyeBaseX_R; p.eyeBaseY_R = ov.eyeBaseY_R; p.eyeRadius_R = ov.eyeRadius_R
+                p.eyeFlattenY_R = ov.eyeFlattenY_R; p.eyeRotZ_R = ov.eyeRotZ_R; p.eyeVisible_R = ov.eyeVisible_R
             end
             -- 更新拖尾粒子颜色
             if p.trailEmitter then

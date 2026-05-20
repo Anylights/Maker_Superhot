@@ -20,6 +20,7 @@ local RandomEvent = require("RandomEvent")
 local Economy = require("Economy")
 local ControlLayout = require("ControlLayout")
 local PowerUp = require("PowerUp")
+local FaceSkin = require("FaceSkin")
 local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local Standalone = {}

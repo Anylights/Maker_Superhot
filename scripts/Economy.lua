@@ -1,9 +1,10 @@
 -- ============================================================================
 -- Economy.lua - 货币与职业持久化（云存档）
--- 存储：金币（iscores）、已拥有职业列表 + 当前选中职业（values）
+-- 存储：金币（iscores）、已拥有职业列表 + 当前选中职业 + 皮肤（values）
 -- ============================================================================
 
 local CharacterClass = require("CharacterClass")
+local FaceSkin = require("FaceSkin")
 
 local Economy = {}
 
@@ -13,6 +14,10 @@ local ownedIds_   = { 1 }         -- 已拥有的职业 ID 列表（默认拥有
 local selectedId_ = 1             -- 当前选中职业 ID
 local loaded_     = false         -- 是否已从云端加载
 local loading_    = false         -- 正在加载中
+
+-- 皮肤缓存
+local ownedSkinIds_   = { "default" }  -- 已拥有的皮肤 ID 列表
+local selectedSkinId_ = "default"      -- 当前选中皮肤 ID
 
 -- ============================================================================
 -- 内部工具
@@ -57,6 +62,40 @@ local function deserializeOwned(str)
     return result
 end
 
+--- 检查是否拥有某皮肤
+---@param id string
+---@return boolean
+local function hasSkin(id)
+    for _, v in ipairs(ownedSkinIds_) do
+        if v == id then return true end
+    end
+    return false
+end
+
+--- 将皮肤 owned 列表序列化
+---@return string
+local function serializeOwnedSkins()
+    return table.concat(ownedSkinIds_, ",")
+end
+
+--- 从逗号分隔字符串反序列化皮肤 owned 列表
+---@param str string
+---@return string[]
+local function deserializeOwnedSkins(str)
+    if not str or str == "" then return { "default" } end
+    local result = {}
+    for s in string.gmatch(str, "([^,]+)") do
+        result[#result + 1] = s
+    end
+    -- 确保 default 始终存在
+    local hasDefault = false
+    for _, v in ipairs(result) do
+        if v == "default" then hasDefault = true; break end
+    end
+    if not hasDefault then table.insert(result, 1, "default") end
+    return result
+end
+
 -- ============================================================================
 -- 云端读写
 -- ============================================================================
@@ -86,9 +125,21 @@ function Economy.Load()
                     selectedId_ = 1
                 end
             end
+            -- 皮肤数据
+            if values.owned_skins then
+                ownedSkinIds_ = deserializeOwnedSkins(tostring(values.owned_skins))
+            end
+            if values.selected_skin then
+                local skinStr = tostring(values.selected_skin)
+                if FaceSkin.GetById(skinStr) and hasSkin(skinStr) then
+                    selectedSkinId_ = skinStr
+                else
+                    selectedSkinId_ = "default"
+                end
+            end
             loaded_ = true
             loading_ = false
-            print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_)
+            print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
         end,
         error = function(code, reason)
             print("[Economy] Load error: " .. tostring(reason) .. " (code=" .. tostring(code) .. ")")
@@ -110,9 +161,11 @@ function Economy.Save(callback)
         :SetInt("coins", coins_)
         :Set("owned_classes", serializeOwned())
         :Set("selected_class", tostring(selectedId_))
+        :Set("owned_skins", serializeOwnedSkins())
+        :Set("selected_skin", selectedSkinId_)
         :Save("Economy save", {
             ok = function()
-                print("[Economy] Saved: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_)
+                print("[Economy] Saved: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
                 if callback then callback() end
             end,
             error = function(code, reason)
@@ -207,6 +260,63 @@ function Economy.RewardFromScore(score)
     Economy.AddCoins(reward)
     Economy.Save()
     return reward
+end
+
+-- ============================================================================
+-- 皮肤 API
+-- ============================================================================
+
+--- 获取当前选中皮肤 ID
+---@return string
+function Economy.GetSelectedSkinId()
+    return selectedSkinId_
+end
+
+--- 设置选中皮肤（必须已拥有）
+---@param id string
+---@return boolean
+function Economy.SelectSkin(id)
+    if not hasSkin(id) then return false end
+    selectedSkinId_ = id
+    Economy.Save()
+    return true
+end
+
+--- 是否拥有某皮肤
+---@param id string
+---@return boolean
+function Economy.OwnsSkin(id)
+    return hasSkin(id)
+end
+
+--- 获取所有已拥有的皮肤 ID 列表
+---@return string[]
+function Economy.GetOwnedSkinIds()
+    return ownedSkinIds_
+end
+
+--- 购买皮肤
+---@param id string
+---@return boolean success
+---@return string? errorMsg
+function Economy.BuySkin(id)
+    if hasSkin(id) then
+        return false, "already_owned"
+    end
+    local def = FaceSkin.GetById(id)
+    if not def then
+        return false, "invalid_skin"
+    end
+    if coins_ < def.price then
+        return false, "not_enough_coins"
+    end
+
+    coins_ = coins_ - def.price
+    ownedSkinIds_[#ownedSkinIds_ + 1] = id
+    selectedSkinId_ = id
+    Economy.Save()
+    print("[Economy] Bought skin " .. def.name .. " for " .. def.price .. " coins, remaining=" .. coins_)
+    return true, nil
 end
 
 return Economy

@@ -923,7 +923,7 @@ function Player.DoDashKnockback(p)
                 other.squashVelX = 0
                 other.squashVelY = 0
                 local op = other.node.position
-                SFX.Play("explosion", 0.4, op.x, op.y)
+                SFX.Play("explosion", 0.6, op.x, op.y)
             end
             ::continueKB::
         end
@@ -945,7 +945,7 @@ function Player.DoSlamLanding(p)
     -- 屏幕震动（仅在视野内，幅度适中；超级变大时加强）
     local shakeAmp = PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) and Config.SuperBigSlamShake or 0.10
     Camera.Shake(shakeAmp, 0.15, pos)
-    SFX.Play("explosion", 0.6, pos.x, pos.y)
+    SFX.Play("explosion", 0.8, pos.x, pos.y)
 
     -- 下砸落地粒子爆发（水平扩散的小圆粒子，高饱和鲜艳）
     if scene_ then
@@ -1063,7 +1063,7 @@ function Player.DoJump(p)
 
     if p.node then
         local pp = p.node.position
-        SFX.Play("jump", 0.5, pp.x, pp.y)
+        SFX.Play("jump", 0.3, pp.x, pp.y)
     end
 end
 
@@ -1724,7 +1724,7 @@ function Player.DoExplode(p, progress)
     Camera.Shake(shakeIntensity, 0.25, pos)
 
     -- 爆炸音效
-    SFX.Play("explosion", 0.8, pos.x, pos.y)
+    SFX.Play("explosion", 1.0, pos.x, pos.y)
 
     print("[Player] Player " .. p.index .. " exploded! Radius=" .. actualRadius .. " Destroyed=" .. destroyed .. " blocks")
 end

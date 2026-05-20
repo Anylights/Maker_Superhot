@@ -61,7 +61,7 @@ local skins = {
             {
                 name    = "SkinAcc_Glasses",
                 pos     = { 0, 0.06, -0.52 },
-                scale   = { 0.70, 0.70, 1.0 },
+                scale   = { 0.95, 0.95, 1.0 },
                 rot     = nil,
                 texture = "image/sunglasses.png",  -- 使用贴图
                 colorFromOutline = false,
@@ -69,137 +69,7 @@ local skins = {
         },
     },
 
-    -- 3. 不屑脸
-    {
-        id    = "disdain",
-        name  = "不屑脸",
-        desc  = "一副看不起你的样子",
-        price = 400,
-        icon  = "😏",
-        eyeL  = { scaleMul = 1.0, offsetY = 0.0 },
-        eyeR  = { scaleMul = 0.7, offsetY = 0.05, flattenY = 0.6 },
-        accessories = {
-            -- 歪嘴（小斜条）
-            {
-                name = "SkinAcc_Smirk",
-                pos  = { 0.10, -0.20, -0.50 },
-                scale = { 0.14, 0.025, 0.03 },
-                rot   = { -15, "FORWARD" },
-                colorFromOutline = true,
-            },
-        },
-    },
 
-    -- 4. 萌萌脸
-    {
-        id    = "cute",
-        name  = "萌萌脸",
-        desc  = "大眼睛水汪汪",
-        price = 350,
-        icon  = "🥺",
-        eyeL  = { scaleMul = 1.5, offsetY = -0.03 },
-        eyeR  = { scaleMul = 1.5, offsetY = -0.03 },
-        accessories = {
-            -- 左腮红
-            {
-                name = "SkinAcc_BlushL",
-                pos  = { -0.25, -0.10, -0.50 },
-                scale = { 0.08, 0.04, 0.02 },
-                rot   = nil,
-                colorFromOutline = false,
-            },
-            -- 右腮红
-            {
-                name = "SkinAcc_BlushR",
-                pos  = { 0.25, -0.10, -0.50 },
-                scale = { 0.08, 0.04, 0.02 },
-                rot   = nil,
-                colorFromOutline = false,
-            },
-        },
-    },
-
-    -- 5. 坏笑脸
-    {
-        id    = "evil",
-        name  = "坏笑脸",
-        desc  = "倒V眉毛，满脸坏笑",
-        price = 500,
-        icon  = "😈",
-        eyeL  = { scaleMul = 0.9, flattenY = 0.65, rotZ = 15 },
-        eyeR  = { scaleMul = 0.9, flattenY = 0.65, rotZ = -15 },
-        accessories = {
-            -- 左尖角眉
-            {
-                name = "SkinAcc_BrowL",
-                pos  = { -0.18, 0.22, -0.50 },
-                scale = { 0.16, 0.030, 0.03 },
-                rot   = { 20, "FORWARD" },
-                colorFromOutline = true,
-            },
-            -- 右尖角眉
-            {
-                name = "SkinAcc_BrowR",
-                pos  = { 0.18, 0.22, -0.50 },
-                scale = { 0.16, 0.030, 0.03 },
-                rot   = { -20, "FORWARD" },
-                colorFromOutline = true,
-            },
-        },
-    },
-
-    -- 6. 暴怒脸
-    {
-        id    = "angry",
-        name  = "暴怒脸",
-        desc  = "气到变形，双眉紧锁",
-        price = 400,
-        icon  = "😡",
-        eyeL  = { scaleMul = 0.85, flattenY = 0.5 },
-        eyeR  = { scaleMul = 0.85, flattenY = 0.5 },
-        accessories = {
-            -- V形怒眉左
-            {
-                name = "SkinAcc_AngryBrowL",
-                pos  = { -0.14, 0.22, -0.50 },
-                scale = { 0.18, 0.035, 0.03 },
-                rot   = { -25, "FORWARD" },
-                colorFromOutline = true,
-            },
-            -- V形怒眉右
-            {
-                name = "SkinAcc_AngryBrowR",
-                pos  = { 0.14, 0.22, -0.50 },
-                scale = { 0.18, 0.035, 0.03 },
-                rot   = { 25, "FORWARD" },
-                colorFromOutline = true,
-            },
-        },
-    },
-
-    -- 7. 死鱼眼
-    {
-        id    = "dead_fish",
-        name  = "死鱼眼",
-        desc  = "两颗小豆豆，无精打采",
-        price = 250,
-        icon  = "😑",
-        eyeL  = { scaleMul = 0.5 },
-        eyeR  = { scaleMul = 0.5 },
-        accessories = {},
-    },
-
-    -- 8. 独眼怪
-    {
-        id    = "cyclops",
-        name  = "独眼怪",
-        desc  = "一只大眼，威慑全场",
-        price = 600,
-        icon  = "🧿",
-        eyeL  = { scaleMul = 2.0, offsetX = 0.16 },  -- 居中（原本 -0.16，+0.16 回到 0）
-        eyeR  = { visible = false },
-        accessories = {},
-    },
 }
 
 -- 按 ID 索引

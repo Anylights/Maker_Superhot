@@ -19,11 +19,13 @@ local FaceSkin = {}
 
 ---@class SkinAccessoryDef
 ---@field name string            子节点名
----@field pos Vector3             相对位置
----@field scale Vector3           缩放
----@field rot table|nil           旋转 {angle, axis} 或 nil
+---@field pos table              相对位置 {x, y, z}
+---@field scale table            缩放 {x, y, z}
+---@field rot table|nil          旋转 {angle, axis} 或 nil
 ---@field colorFromOutline boolean 是否使用描边色（true=描边色, false=自定义黑色）
 ---@field followEyes boolean|nil   是否跟随眼睛偏移（默认true）。设为false则嘴/眼罩等不跟随移动偏移
+---@field modelType string|nil   模型类型: "box"(默认)/"sphere"/"star"/"plane"
+---@field isHighlight boolean|nil 是否白色高光
 
 ---@class SkinDef
 ---@field id string
@@ -71,6 +73,7 @@ local skins = {
     },
 
     -- 3. 不屑脸（外八字线眼 + 小嘴）
+    --    参考图：两条横线微微外八字倾斜 + 下方一个小矩形嘴
     {
         id    = "bored",
         name  = "不屑冷漠",
@@ -80,37 +83,29 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
-            -- 左眼线段（左高右低，约10度倾斜）- 跟随偏移
+            -- 左眼：扁矩形，左高右低约8度倾斜
             {
-                name    = "SkinAcc_EyeLineL",
-                pos     = { -0.16, 0.08, -0.52 },
-                scale   = { 0.22, 0.06, 0.02 },
-                rot     = { 10, "FORWARD" },
-                colorFromOutline = false,
-                followEyes = true,
+                name = "SkinAcc_EyeLineL", modelType = "box",
+                pos = { -0.16, 0.08, -0.52 }, scale = { 0.22, 0.055, 0.02 },
+                rot = { 8, "FORWARD" }, colorFromOutline = true, followEyes = true,
             },
-            -- 右眼线段（右高左低，约-10度倾斜）- 跟随偏移
+            -- 右眼：扁矩形，右高左低约-8度倾斜
             {
-                name    = "SkinAcc_EyeLineR",
-                pos     = { 0.16, 0.08, -0.52 },
-                scale   = { 0.22, 0.06, 0.02 },
-                rot     = { -10, "FORWARD" },
-                colorFromOutline = false,
-                followEyes = true,
+                name = "SkinAcc_EyeLineR", modelType = "box",
+                pos = { 0.16, 0.08, -0.52 }, scale = { 0.22, 0.055, 0.02 },
+                rot = { -8, "FORWARD" }, colorFromOutline = true, followEyes = true,
             },
             -- 小嘴巴 - 不跟随偏移
             {
-                name    = "SkinAcc_Mouth",
-                pos     = { 0, -0.14, -0.52 },
-                scale   = { 0.12, 0.05, 0.02 },
-                rot     = nil,
-                colorFromOutline = false,
-                followEyes = false,
+                name = "SkinAcc_Mouth", modelType = "box",
+                pos = { 0, -0.16, -0.52 }, scale = { 0.12, 0.045, 0.02 },
+                rot = nil, colorFromOutline = true, followEyes = false,
             },
         },
     },
 
-    -- 4. 呆萌脸（圆眼带高光贴图）
+    -- 4. 呆萌脸（2大黑球 + 2小白球高光）
+    --    参考图：两个大圆黑眼 + 每个眼睛右上角一个小白圆高光点
     {
         id    = "cute",
         name  = "呆萌大眼",
@@ -120,19 +115,35 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
+            -- 左大球（眼睛）— 描边色
             {
-                name    = "SkinAcc_CuteEyes",
-                pos     = { 0, 0.06, -0.52 },
-                scale   = { 0.80, 0.55, 1.0 },
-                rot     = nil,
-                texture = "image/cute_eyes_only_20260520092017.png",
-                colorFromOutline = false,
-                followEyes = true,
+                name = "SkinAcc_EyeBigL", modelType = "sphere",
+                pos = { -0.16, 0.06, -0.52 }, scale = { 0.30, 0.30, 0.06 },
+                rot = nil, colorFromOutline = true, followEyes = true,
+            },
+            -- 右大球（眼睛）— 描边色
+            {
+                name = "SkinAcc_EyeBigR", modelType = "sphere",
+                pos = { 0.16, 0.06, -0.52 }, scale = { 0.30, 0.30, 0.06 },
+                rot = nil, colorFromOutline = true, followEyes = true,
+            },
+            -- 左眼高光（小白球，在左眼右上角偏移）
+            {
+                name = "SkinAcc_HighlightL", modelType = "sphere",
+                pos = { -0.08, 0.14, -0.57 }, scale = { 0.085, 0.085, 0.02 },
+                rot = nil, colorFromOutline = false, followEyes = true, isHighlight = true,
+            },
+            -- 右眼高光（小白球，在右眼右上角偏移）
+            {
+                name = "SkinAcc_HighlightR", modelType = "sphere",
+                pos = { 0.24, 0.14, -0.57 }, scale = { 0.085, 0.085, 0.02 },
+                rot = nil, colorFromOutline = false, followEyes = true, isHighlight = true,
             },
         },
     },
 
-    -- 5. 海盗眼罩（斜带贴图 + 小白点独眼）
+    -- 5. 海盗眼罩（1大黑球眼罩 + 1黑色斜矩形带 + 1小白球露出的眼睛）
+    --    参考图：大黑圆覆盖左眼区域 + 一条斜向深色矩形带穿过 + 右上方一个小白点
     {
         id    = "eyepatch",
         name  = "独眼海盗",
@@ -142,30 +153,29 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
-            -- 眼罩斜带+圆形贴图 - 不跟随
+            -- 斜带矩形（对角线穿过脸部，上左对齐边缘）- 不跟随
             {
-                name    = "SkinAcc_Patch",
-                pos     = { 0, 0.06, -0.52 },
-                scale   = { 0.95, 0.95, 1.0 },
-                rot     = nil,
-                texture = "image/eyepatch_strip_20260520092056.png",
-                colorFromOutline = false,
-                followEyes = false,
+                name = "SkinAcc_Strip", modelType = "box",
+                pos = { -0.08, 0.0, -0.51 }, scale = { 1.3, 0.10, 0.02 },
+                rot = { 55, "FORWARD" }, colorFromOutline = true, followEyes = false,
             },
-            -- 右上方小白点（露出的眼睛）- 跟随偏移
+            -- 大球（眼罩主体，偏左）- 不跟随
             {
-                name    = "SkinAcc_SmallEye",
-                pos     = { 0.22, 0.18, -0.53 },
-                scale   = { 0.07, 0.07, 0.02 },
-                rot     = nil,
-                colorFromOutline = false,
-                followEyes = true,
-                isHighlight = true,
+                name = "SkinAcc_PatchBall", modelType = "sphere",
+                pos = { -0.14, 0.06, -0.52 }, scale = { 0.32, 0.32, 0.06 },
+                rot = nil, colorFromOutline = false, followEyes = false,
+            },
+            -- 小球（露出的右眼）- 描边色，与眼罩同一水平线
+            {
+                name = "SkinAcc_SmallEye", modelType = "sphere",
+                pos = { 0.22, 0.06, -0.53 }, scale = { 0.08, 0.08, 0.02 },
+                rot = nil, colorFromOutline = true, followEyes = true,
             },
         },
     },
 
-    -- 6. 星星眼（贴图版）
+    -- 6. 星星眼（2大黑球 + 2个五角星，用CustomGeometry）
+    --    参考图：两个大圆黑底 + 每个里面一个五角星
     {
         id    = "stareyes",
         name  = "追星达人",
@@ -175,14 +185,29 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
+            -- 左大球（底色）— 描边色
             {
-                name    = "SkinAcc_Stars",
-                pos     = { 0, 0.06, -0.52 },
-                scale   = { 0.80, 0.55, 1.0 },
-                rot     = nil,
-                texture = "image/stars_only_20260520092018.png",
-                colorFromOutline = false,
-                followEyes = true,
+                name = "SkinAcc_StarBgL", modelType = "sphere",
+                pos = { -0.16, 0.06, -0.52 }, scale = { 0.32, 0.32, 0.06 },
+                rot = nil, colorFromOutline = true, followEyes = true,
+            },
+            -- 右大球（底色）— 描边色
+            {
+                name = "SkinAcc_StarBgR", modelType = "sphere",
+                pos = { 0.16, 0.06, -0.52 }, scale = { 0.32, 0.32, 0.06 },
+                rot = nil, colorFromOutline = true, followEyes = true,
+            },
+            -- 左星星（CustomGeometry五角星）— 角色主体色（bodyColor）
+            {
+                name = "SkinAcc_StarL", modelType = "star",
+                pos = { -0.16, 0.06, -0.58 }, scale = { 0.18, 0.18, 0.01 },
+                rot = nil, colorFromBody = true, followEyes = true,
+            },
+            -- 右星星（CustomGeometry五角星）— 角色主体色（bodyColor）
+            {
+                name = "SkinAcc_StarR", modelType = "star",
+                pos = { 0.16, 0.06, -0.58 }, scale = { 0.18, 0.18, 0.01 },
+                rot = nil, colorFromBody = true, followEyes = true,
             },
         },
     },
@@ -271,16 +296,43 @@ function FaceSkin.GetEyeOverrides(skinId, baseX, baseY, baseR)
     return result
 end
 
+--- 生成五角星的三角形顶点列表（用于 CustomGeometry）
+--- 返回三角形列表，每3个顶点为一个三角形
+---@param cx number 中心X
+---@param cy number 中心Y
+---@param outerR number 外径
+---@param innerR number 内径
+---@return table 顶点列表 {{x,y}, ...}
+local function generateStarVertices(cx, cy, outerR, innerR)
+    local verts = {}
+    local pts = {}  -- 10个顶点：交替外/内
+    for i = 0, 9 do
+        local angle = math.rad(-90 + i * 36)  -- 从顶部开始
+        local r = (i % 2 == 0) and outerR or innerR
+        pts[#pts + 1] = { x = cx + r * math.cos(angle), y = cy + r * math.sin(angle) }
+    end
+    -- 用扇形三角剖分（中心点 + 相邻两个顶点）
+    for i = 1, 10 do
+        local j = (i % 10) + 1
+        verts[#verts + 1] = { x = cx, y = cy }
+        verts[#verts + 1] = pts[i]
+        verts[#verts + 1] = pts[j]
+    end
+    return verts
+end
+
 --- 在 visualNode 上创建皮肤配件子节点
 ---@param visualNode any  角色视觉节点
 ---@param skinId string
 ---@param outlineColor Color  描边颜色（用于 colorFromOutline=true 的配件）
-function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
+---@param bodyColor Color|nil  身体颜色（用于 colorFromBody=true 的配件）
+function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor, bodyColor)
     if not visualNode then return end
     local def = skinById[skinId]
     if not def or #def.accessories == 0 then return end
 
     local boxModel = cache:GetResource("Model", "Models/Box.mdl")
+    local sphereModel = cache:GetResource("Model", "Models/Sphere.mdl")
     local planeModel = cache:GetResource("Model", "Models/Plane.mdl")
     local unlitTech = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
     local unlitAlphaTech = cache:GetResource("Technique", "Techniques/DiffAlpha.xml")
@@ -297,18 +349,48 @@ function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
             accNode.rotation = Quaternion(acc.rot[1], axis)
         end
 
-        local model = accNode:CreateComponent("StaticModel")
-        model.castShadows = false
+        -- 决定颜色
+        local matColor
+        if acc.colorFromBody and bodyColor then
+            matColor = bodyColor
+        elseif acc.colorFromOutline then
+            matColor = outlineColor
+        elseif acc.isHighlight then
+            matColor = Color(0.95, 0.95, 0.95, 1.0)
+        elseif string.find(acc.name, "Blush") then
+            matColor = Color(0.95, 0.45, 0.50, 1.0)
+        else
+            matColor = Color(0.05, 0.05, 0.05, 1.0)
+        end
 
-        if acc.texture then
+        local mtype = acc.modelType or "box"
+
+        if mtype == "star" then
+            -- 五角星用 CustomGeometry
+            local geom = accNode:CreateComponent("CustomGeometry")
+            geom:BeginGeometry(0, TRIANGLE_LIST)
+            local starVerts = generateStarVertices(0, 0, 0.5, 0.2)
+            for _, v in ipairs(starVerts) do
+                geom:DefineVertex(Vector3(v.x, v.y, 0))
+                geom:DefineNormal(Vector3(0, 0, -1))  -- 面向相机
+                geom:DefineTexCoord(Vector2(0, 0))
+            end
+            geom:Commit()
+            local mat = Material:new()
+            mat:SetTechnique(0, unlitTech)
+            mat:SetShaderParameter("MatDiffColor", Variant(matColor))
+            mat.cullMode = CULL_NONE
+            geom:SetMaterial(mat)
+        elseif acc.texture then
             -- 贴图配件：用 Plane 模型 + 透明贴图
+            local model = accNode:CreateComponent("StaticModel")
+            model.castShadows = false
             model.model = planeModel
-            -- Plane 默认朝上(Y+)，旋转-90°使法线朝Z-（面对相机）
             local baseRot = accNode.rotation or Quaternion.IDENTITY
             accNode.rotation = baseRot * Quaternion(-90, Vector3.RIGHT)
             local mat = Material:new()
             mat:SetTechnique(0, unlitAlphaTech)
-            mat.cullMode = CULL_NONE  -- 双面渲染，确保可见
+            mat.cullMode = CULL_NONE
             local tex = cache:GetResource("Texture2D", acc.texture)
             if tex then
                 mat:SetTexture(TU_DIFFUSE, tex)
@@ -316,19 +398,17 @@ function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
             mat:SetShaderParameter("MatDiffColor", Variant(Color(1, 1, 1, 1)))
             model:SetMaterial(mat)
         else
-            -- 纯色配件：用 Box 模型
-            model.model = boxModel
+            -- box 或 sphere
+            local model = accNode:CreateComponent("StaticModel")
+            model.castShadows = false
+            if mtype == "sphere" then
+                model.model = sphereModel
+            else
+                model.model = boxModel
+            end
             local mat = Material:new()
             mat:SetTechnique(0, unlitTech)
-            if acc.colorFromOutline then
-                mat:SetShaderParameter("MatDiffColor", Variant(outlineColor))
-            elseif acc.isHighlight then
-                mat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.95, 0.95, 1.0)))
-            elseif string.find(acc.name, "Blush") then
-                mat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.45, 0.50, 1.0)))
-            else
-                mat:SetShaderParameter("MatDiffColor", Variant(Color(0.05, 0.05, 0.05, 1.0)))
-            end
+            mat:SetShaderParameter("MatDiffColor", Variant(matColor))
             model:SetMaterial(mat)
         end
     end
@@ -453,8 +533,52 @@ function FaceSkin.DrawPreview(vg, cx, cy, size, skinId, bodyColor, outlineColor)
         local aw = acc.scale[1] * size
         local ah = acc.scale[2] * size
 
-        if acc.texture then
-            -- 贴图配件：用 nvgImagePattern 绘制
+        -- 决定颜色
+        local ar, ag, ab = 10, 10, 10  -- 默认黑色
+        if acc.colorFromBody and bodyColor then
+            ar = math.floor(bodyColor.r * 255)
+            ag = math.floor(bodyColor.g * 255)
+            ab = math.floor(bodyColor.b * 255)
+        elseif acc.colorFromOutline then
+            ar, ag, ab = oR, oG, oB
+        elseif acc.isHighlight then
+            ar, ag, ab = 240, 240, 240  -- 白色高光
+        elseif string.find(acc.name, "Blush") then
+            ar, ag, ab = 240, 115, 128  -- 腮红粉色
+        end
+
+        local mtype = acc.modelType or "box"
+
+        if mtype == "sphere" then
+            -- 圆形
+            nvgBeginPath(vg)
+            nvgEllipse(vg, ax, ay, aw * 0.5, ah * 0.5)
+            nvgFillColor(vg, nvgRGBA(ar, ag, ab, 255))
+            nvgFill(vg)
+        elseif mtype == "star" then
+            -- 五角星
+            local starR = math.min(aw, ah) * 0.5
+            local innerR = starR * 0.4
+            nvgSave(vg)
+            nvgTranslate(vg, ax, ay)
+            nvgBeginPath(vg)
+            for i = 0, 9 do
+                local angle = math.rad(-90 + i * 36)
+                local r = (i % 2 == 0) and starR or innerR
+                local px = r * math.cos(angle)
+                local py = r * math.sin(angle)
+                if i == 0 then
+                    nvgMoveTo(vg, px, py)
+                else
+                    nvgLineTo(vg, px, py)
+                end
+            end
+            nvgClosePath(vg)
+            nvgFillColor(vg, nvgRGBA(ar, ag, ab, 255))
+            nvgFill(vg)
+            nvgRestore(vg)
+        elseif acc.texture then
+            -- 贴图配件
             if not nvgImageCache[acc.texture] then
                 nvgImageCache[acc.texture] = nvgCreateImage(vg, acc.texture, 0)
             end
@@ -473,16 +597,7 @@ function FaceSkin.DrawPreview(vg, cx, cy, size, skinId, bodyColor, outlineColor)
                 nvgRestore(vg)
             end
         else
-            -- 纯色配件
-            local ar, ag, ab = 10, 10, 10  -- 默认黑色
-            if acc.colorFromOutline then
-                ar, ag, ab = oR, oG, oB
-            elseif acc.isHighlight then
-                ar, ag, ab = 240, 240, 240  -- 白色高光
-            elseif string.find(acc.name, "Blush") then
-                ar, ag, ab = 240, 115, 128  -- 腮红粉色
-            end
-
+            -- box 矩形
             nvgSave(vg)
             nvgTranslate(vg, ax, ay)
             if acc.rot then

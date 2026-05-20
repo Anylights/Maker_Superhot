@@ -23,6 +23,7 @@ local FaceSkin = {}
 ---@field scale Vector3           缩放
 ---@field rot table|nil           旋转 {angle, axis} 或 nil
 ---@field colorFromOutline boolean 是否使用描边色（true=描边色, false=自定义黑色）
+---@field followEyes boolean|nil   是否跟随眼睛偏移（默认true）。设为false则嘴/眼罩等不跟随移动偏移
 
 ---@class SkinDef
 ---@field id string
@@ -57,18 +58,134 @@ local skins = {
         eyeL  = { visible = false },
         eyeR  = { visible = false },
         accessories = {
-            -- 墨镜贴图（Plane + 透明纹理）
             {
                 name    = "SkinAcc_Glasses",
                 pos     = { 0, 0.06, -0.52 },
                 scale   = { 0.95, 0.95, 1.0 },
                 rot     = nil,
-                texture = "image/sunglasses.png",  -- 使用贴图
+                texture = "image/sunglasses.png",
                 colorFromOutline = false,
+                followEyes = true,
             },
         },
     },
 
+    -- 3. 不屑脸（外八字线眼 + 小嘴）
+    {
+        id    = "bored",
+        name  = "不屑冷漠",
+        desc  = "一脸不屑，看什么都无聊",
+        price = 200,
+        icon  = "😑",
+        eyeL  = { visible = false },
+        eyeR  = { visible = false },
+        accessories = {
+            -- 左眼线段（左高右低，约10度倾斜）- 跟随偏移
+            {
+                name    = "SkinAcc_EyeLineL",
+                pos     = { -0.16, 0.08, -0.52 },
+                scale   = { 0.22, 0.06, 0.02 },
+                rot     = { 10, "FORWARD" },
+                colorFromOutline = false,
+                followEyes = true,
+            },
+            -- 右眼线段（右高左低，约-10度倾斜）- 跟随偏移
+            {
+                name    = "SkinAcc_EyeLineR",
+                pos     = { 0.16, 0.08, -0.52 },
+                scale   = { 0.22, 0.06, 0.02 },
+                rot     = { -10, "FORWARD" },
+                colorFromOutline = false,
+                followEyes = true,
+            },
+            -- 小嘴巴 - 不跟随偏移
+            {
+                name    = "SkinAcc_Mouth",
+                pos     = { 0, -0.14, -0.52 },
+                scale   = { 0.12, 0.05, 0.02 },
+                rot     = nil,
+                colorFromOutline = false,
+                followEyes = false,
+            },
+        },
+    },
+
+    -- 4. 呆萌脸（圆眼带高光贴图）
+    {
+        id    = "cute",
+        name  = "呆萌大眼",
+        desc  = "水汪汪的大眼睛，谁能拒绝",
+        price = 250,
+        icon  = "🥺",
+        eyeL  = { visible = false },
+        eyeR  = { visible = false },
+        accessories = {
+            {
+                name    = "SkinAcc_CuteEyes",
+                pos     = { 0, 0.06, -0.52 },
+                scale   = { 0.80, 0.55, 1.0 },
+                rot     = nil,
+                texture = "image/cute_eyes_only_20260520092017.png",
+                colorFromOutline = false,
+                followEyes = true,
+            },
+        },
+    },
+
+    -- 5. 海盗眼罩（斜带贴图 + 小白点独眼）
+    {
+        id    = "eyepatch",
+        name  = "独眼海盗",
+        desc  = "一只眼睛就够用了",
+        price = 350,
+        icon  = "🏴‍☠️",
+        eyeL  = { visible = false },
+        eyeR  = { visible = false },
+        accessories = {
+            -- 眼罩斜带+圆形贴图 - 不跟随
+            {
+                name    = "SkinAcc_Patch",
+                pos     = { 0, 0.06, -0.52 },
+                scale   = { 0.95, 0.95, 1.0 },
+                rot     = nil,
+                texture = "image/eyepatch_strip_20260520092056.png",
+                colorFromOutline = false,
+                followEyes = false,
+            },
+            -- 右上方小白点（露出的眼睛）- 跟随偏移
+            {
+                name    = "SkinAcc_SmallEye",
+                pos     = { 0.22, 0.18, -0.53 },
+                scale   = { 0.07, 0.07, 0.02 },
+                rot     = nil,
+                colorFromOutline = false,
+                followEyes = true,
+                isHighlight = true,
+            },
+        },
+    },
+
+    -- 6. 星星眼（贴图版）
+    {
+        id    = "stareyes",
+        name  = "追星达人",
+        desc  = "眼里全是星星，闪闪发光",
+        price = 400,
+        icon  = "⭐",
+        eyeL  = { visible = false },
+        eyeR  = { visible = false },
+        accessories = {
+            {
+                name    = "SkinAcc_Stars",
+                pos     = { 0, 0.06, -0.52 },
+                scale   = { 0.80, 0.55, 1.0 },
+                rot     = nil,
+                texture = "image/stars_only_20260520092018.png",
+                colorFromOutline = false,
+                followEyes = true,
+            },
+        },
+    },
 
 }
 
@@ -205,12 +322,12 @@ function FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
             mat:SetTechnique(0, unlitTech)
             if acc.colorFromOutline then
                 mat:SetShaderParameter("MatDiffColor", Variant(outlineColor))
+            elseif acc.isHighlight then
+                mat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.95, 0.95, 1.0)))
+            elseif string.find(acc.name, "Blush") then
+                mat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.45, 0.50, 1.0)))
             else
-                if string.find(acc.name, "Blush") then
-                    mat:SetShaderParameter("MatDiffColor", Variant(Color(0.95, 0.45, 0.50, 1.0)))
-                else
-                    mat:SetShaderParameter("MatDiffColor", Variant(Color(0.05, 0.05, 0.05, 1.0)))
-                end
+                mat:SetShaderParameter("MatDiffColor", Variant(Color(0.05, 0.05, 0.05, 1.0)))
             end
             model:SetMaterial(mat)
         end
@@ -360,6 +477,8 @@ function FaceSkin.DrawPreview(vg, cx, cy, size, skinId, bodyColor, outlineColor)
             local ar, ag, ab = 10, 10, 10  -- 默认黑色
             if acc.colorFromOutline then
                 ar, ag, ab = oR, oG, oB
+            elseif acc.isHighlight then
+                ar, ag, ab = 240, 240, 240  -- 白色高光
             elseif string.find(acc.name, "Blush") then
                 ar, ag, ab = 240, 115, 128  -- 腮红粉色
             end
@@ -376,6 +495,20 @@ function FaceSkin.DrawPreview(vg, cx, cy, size, skinId, bodyColor, outlineColor)
             nvgRestore(vg)
         end
     end
+end
+
+--- 获取指定皮肤每个配件是否跟随眼睛偏移
+---@param skinId string
+---@return table<string, boolean>  { ["SkinAcc_xxx"] = true/false }
+function FaceSkin.GetAccessoryFollowFlags(skinId)
+    local flags = {}
+    local def = skinById[skinId]
+    if not def then return flags end
+    for _, acc in ipairs(def.accessories) do
+        -- 默认 followEyes = true（眼镜等跟随），设为 false 则不跟随（嘴、眼罩）
+        flags[acc.name] = (acc.followEyes ~= false)
+    end
+    return flags
 end
 
 return FaceSkin

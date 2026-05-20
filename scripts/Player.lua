@@ -400,11 +400,12 @@ function Player.Create(index, isHuman)
         FaceSkin.ApplyToVisual(visualNode, skinId, outlineColor)
         -- 记录配件原始位置（用于跟随眼睛偏移）
         p.skinAccOrigPos = {}
+        local followFlags = FaceSkin.GetAccessoryFollowFlags(skinId)
         local numCh = visualNode:GetNumChildren(false)
         for i = 0, numCh - 1 do
             local ch = visualNode:GetChild(i)
             if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
-                p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z, follow = (followFlags[ch.name] ~= false) }
             end
         end
         -- 存储独立左右眼参数
@@ -1554,13 +1555,17 @@ function Player.UpdateEyes(p, dt)
     end
 
     -- =====================
-    -- 7) 皮肤配件跟随眼睛偏移
+    -- 7) 皮肤配件跟随眼睛偏移（follow=true的跟随，follow=false的不动）
     -- =====================
     if p.skinAccOrigPos then
         for name, orig in pairs(p.skinAccOrigPos) do
             local accNode = p.visualNode:GetChild(name)
             if accNode then
-                accNode.position = Vector3(orig.x + p.eyeOffsetX, orig.y + p.eyeOffsetY, orig.z)
+                if orig.follow then
+                    accNode.position = Vector3(orig.x + p.eyeOffsetX, orig.y + p.eyeOffsetY, orig.z)
+                else
+                    accNode.position = Vector3(orig.x, orig.y, orig.z)
+                end
             end
         end
     end
@@ -2358,11 +2363,12 @@ function Player.ResetAll()
             FaceSkin.RemoveAccessories(p.visualNode)
             FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
             p.skinAccOrigPos = {}
+            local followFlags2 = FaceSkin.GetAccessoryFollowFlags(skinId)
             local numCh2 = p.visualNode:GetNumChildren(false)
             for i = 0, numCh2 - 1 do
                 local ch = p.visualNode:GetChild(i)
                 if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
-                    p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                    p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z, follow = (followFlags2[ch.name] ~= false) }
                 end
             end
             local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
@@ -2524,11 +2530,12 @@ function Player.ResetScoresOnly()
                 FaceSkin.RemoveAccessories(p.visualNode)
                 FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
                 p.skinAccOrigPos = {}
+                local followFlags3 = FaceSkin.GetAccessoryFollowFlags(skinId)
                 local numCh3 = p.visualNode:GetNumChildren(false)
                 for ii = 0, numCh3 - 1 do
                     local ch = p.visualNode:GetChild(ii)
                     if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
-                        p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                        p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z, follow = (followFlags3[ch.name] ~= false) }
                     end
                 end
                 local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)
@@ -2660,11 +2667,12 @@ function Player.ResetHumanToSpawn()
                 FaceSkin.RemoveAccessories(p.visualNode)
                 FaceSkin.ApplyToVisual(p.visualNode, skinId, outlineColor)
                 p.skinAccOrigPos = {}
+                local followFlags4 = FaceSkin.GetAccessoryFollowFlags(skinId)
                 local numCh4 = p.visualNode:GetNumChildren(false)
                 for ii = 0, numCh4 - 1 do
                     local ch = p.visualNode:GetChild(ii)
                     if ch and ch.name and string.sub(ch.name, 1, 8) == "SkinAcc_" then
-                        p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z }
+                        p.skinAccOrigPos[ch.name] = { x = ch.position.x, y = ch.position.y, z = ch.position.z, follow = (followFlags4[ch.name] ~= false) }
                     end
                 end
                 local ov = FaceSkin.GetEyeOverrides(skinId, p.eyeBaseX or 0.16, p.eyeBaseY or 0.18, p.eyeRadius or 0.08)

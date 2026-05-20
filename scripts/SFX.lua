@@ -21,7 +21,7 @@ local sfxEnabled_ = false  -- 音效是否启用（菜单时关闭）
 
 -- 音效文件映射
 local SFX_FILES = {
-    explosion    = "audio/sfx/bomb.ogg",
+    explosion    = "audio/sfx/explosion.ogg",
     jump         = "audio/sfx/jump.ogg",
     dash         = "audio/sfx/newdash.ogg",
     pickup_small = "audio/sfx/pickup_small.ogg",

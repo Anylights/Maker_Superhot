@@ -15,6 +15,7 @@ local Economy = require("Economy")
 local CharacterClass = require("CharacterClass")
 local ControlLayout = require("ControlLayout")
 local PowerUp = require("PowerUp")
+local Tutorial = require("Tutorial")
 
 local HUD = {}
 
@@ -542,6 +543,17 @@ function HandleNanoVGRender(eventType, eventData)
         else
             HUD.DrawMenu()
         end
+        nvgEndFrame(vg_)
+        return
+    end
+
+    -- 教程状态：委托给 Tutorial 模块渲染
+    if state == "tutorial" then
+        -- 教程期间也需要显示能量条和蓄力红圈
+        HUD.DrawWorldIndicators()
+        HUD.DrawEnergyBars()
+        -- 教程叠加层（最上层）
+        Tutorial.Draw(vg_, logW_, logH_, uiScale_, cachedMousePress_, mx, my)
         nvgEndFrame(vg_)
         return
     end
@@ -2657,11 +2669,11 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     nvgText(vg_, cx, classLabelY, classLabel)
 
     -- 按钮区域（开始 + 一命通天 + 商店 + 键位 横排）
-    local btnW = 66
+    local btnW = 56
     local btnH = 34
-    local btnGap = 6
+    local btnGap = 5
     local btnY = classLabelY + 14
-    local totalBtnW = btnW * 4 + btnGap * 3
+    local totalBtnW = btnW * 5 + btnGap * 4
     local btnStartX = cx - totalBtnW * 0.5
 
     -- 开始游戏按钮
@@ -2697,6 +2709,15 @@ function HUD.DrawMenu_Mobile(t, mx, my)
         Theme.secondary[1], Theme.secondary[2], Theme.secondary[3], keyHovered)
     if keyClicked then
         menuButtonClicked_ = "layoutEditor"
+    end
+
+    -- 新手教程按钮
+    local tutX = keyX + btnW + btnGap
+    local tutHovered = mx >= tutX and mx <= tutX + btnW and my >= btnY and my <= btnY + btnH
+    local tutClicked = HUD.DrawRubberButton(tutX, btnY, btnW, btnH, "新手教程",
+        80, 200, 120, tutHovered)
+    if tutClicked then
+        menuButtonClicked_ = "tutorial"
     end
 
     -- ==================== 下方：排行榜（可滚动，居中，较窄）====================
@@ -3033,12 +3054,12 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     local classLabel = "当前职业: " .. (classDef and (classDef.icon .. " " .. classDef.name) or "街头小子")
     nvgText(vg_, cx, classLabelY, classLabel)
 
-    -- 按钮区域（开始 + 一命通天 + 商店 横排）
-    local btnW = 130
+    -- 按钮区域（开始 + 一命通天 + 商店 + 新手教程 横排）
+    local btnW = 120
     local btnH = 50
-    local btnGap = 14
+    local btnGap = 12
     local btnY = classLabelY + 18
-    local totalBtnW = btnW * 3 + btnGap * 2
+    local totalBtnW = btnW * 4 + btnGap * 3
     local btnStartX = cx - totalBtnW * 0.5
 
     -- 开始游戏按钮
@@ -3065,6 +3086,15 @@ function HUD.DrawMenu_Desktop(t, mx, my)
         Theme.accent[1], Theme.accent[2], Theme.accent[3], shopHovered)
     if shopClicked then
         menuButtonClicked_ = "shop"
+    end
+
+    -- 新手教程按钮
+    local tutX = shopX + btnW + btnGap
+    local tutHovered = mx >= tutX and mx <= tutX + btnW and my >= btnY and my <= btnY + btnH
+    local tutClicked = HUD.DrawRubberButton(tutX, btnY, btnW, btnH, "新手教程",
+        80, 200, 120, tutHovered)
+    if tutClicked then
+        menuButtonClicked_ = "tutorial"
     end
 
     -- 排行榜区域

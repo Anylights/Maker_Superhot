@@ -19,6 +19,9 @@ local loading_    = false         -- 正在加载中
 local ownedSkinIds_   = { "default" }  -- 已拥有的皮肤 ID 列表
 local selectedSkinId_ = "default"      -- 当前选中皮肤 ID
 
+-- 教程缓存
+local tutorialDone_   = false          -- 是否已完成新手教程
+
 -- ============================================================================
 -- 内部工具
 -- ============================================================================
@@ -101,10 +104,12 @@ end
 -- ============================================================================
 
 --- 从云端加载经济数据
-function Economy.Load()
+---@param onLoaded? fun() 加载完成回调（可选）
+function Economy.Load(onLoaded)
     if not clientCloud then
         print("[Economy] clientCloud not available, using defaults")
         loaded_ = true
+        if onLoaded then onLoaded() end
         return
     end
     if loading_ then return end
@@ -117,6 +122,7 @@ function Economy.Load()
         :Key("selected_class")
         :Key("owned_skins")
         :Key("selected_skin")
+        :Key("tutorial_done")
         :Fetch({
             ok = function(values, iscores)
                 coins_ = iscores.coins or 0
@@ -151,17 +157,23 @@ function Economy.Load()
                         selectedSkinId_ = "default"
                     end
                 end
+                -- 教程完成标记
+                if values.tutorial_done then
+                    tutorialDone_ = (tostring(values.tutorial_done) == "1")
+                end
                 loaded_ = true
                 loading_ = false
                 print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
                 if needFixSave then
                     Economy.Save()
                 end
+                if onLoaded then onLoaded() end
             end,
             error = function(code, reason)
                 print("[Economy] Load error: " .. tostring(reason) .. " (code=" .. tostring(code) .. ")")
                 loaded_ = true
                 loading_ = false
+                if onLoaded then onLoaded() end
             end,
         })
 end
@@ -180,6 +192,7 @@ function Economy.Save(callback)
         :Set("selected_class", tostring(selectedId_))
         :Set("owned_skins", serializeOwnedSkins())
         :Set("selected_skin", selectedSkinId_)
+        :Set("tutorial_done", tutorialDone_ and "1" or "0")
         :Save("Economy save", {
             ok = function()
                 print("[Economy] Saved: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
@@ -334,6 +347,24 @@ function Economy.BuySkin(id)
     Economy.Save()
     print("[Economy] Bought skin " .. def.name .. " for " .. def.price .. " coins, remaining=" .. coins_)
     return true, nil
+end
+
+-- ============================================================================
+-- 教程 API
+-- ============================================================================
+
+--- 是否已完成新手教程
+---@return boolean
+function Economy.IsTutorialDone()
+    return tutorialDone_
+end
+
+--- 标记教程已完成并保存云端
+function Economy.SetTutorialDone()
+    if tutorialDone_ then return end
+    tutorialDone_ = true
+    Economy.Save()
+    print("[Economy] Tutorial marked as done")
 end
 
 return Economy

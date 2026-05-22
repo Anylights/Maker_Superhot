@@ -22,6 +22,7 @@ local ControlLayout = require("ControlLayout")
 local PowerUp = require("PowerUp")
 local FaceSkin = require("FaceSkin")
 local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
+local Tutorial = require("Tutorial")
 
 local Standalone = {}
 
@@ -109,8 +110,22 @@ function Standalone.Start()
     if TuningPanel then TuningPanel.Init(scene_) end
     if ExplosionTuningPanel then ExplosionTuningPanel.Init(scene_) end
 
-    -- 加载经济数据（云存档）
-    Economy.Load()
+    -- 初始化教程模块
+    Tutorial.Init(Player, GameManager, Map)
+
+    -- 加载经济数据（云存档）— 加载完成后检测是否需要自动进入教程
+    Economy.Load(function()
+        if not Economy.IsTutorialDone() then
+            print("[Standalone] First-time player detected → entering tutorial")
+            coinRewarded_ = false
+            Camera.spectateMode = false
+            Standalone.SetVirtualControlsVisible(true)
+            SFX.PlayGameBGM()
+            SFX.EnableSFX()
+            GameManager.EnterTutorial()
+            Tutorial.Start()
+        end
+    end)
 
     -- 开始播放菜单 BGM，禁用游戏音效
     SFX.PlayMenuBGM()
@@ -688,6 +703,31 @@ function Standalone.HandleUpdate(dt)
             HUD.SetShopOpen(true)
         elseif btn == "layoutEditor" then
             HUD.OpenLayoutEditor()
+        elseif btn == "tutorial" then
+            coinRewarded_ = false
+            Camera.spectateMode = false
+            Standalone.SetVirtualControlsVisible(true)
+            SFX.PlayGameBGM()
+            SFX.EnableSFX()
+            GameManager.EnterTutorial()
+            Tutorial.Start()
+        end
+    end
+
+    -- 教程状态（Update 延迟到 HandlePlayerInput 之后，见下方）
+    if GameManager.state == GameManager.STATE_TUTORIAL then
+        Camera.spectateMode = false
+        Standalone.SetVirtualControlsVisible(true)
+        -- 清除所有 AI 输入，防止残留移动
+        for _, p in ipairs(Player.list) do
+            if not p.isHuman then
+                p.inputMoveX = 0
+                p.inputJump = false
+                p.inputDash = false
+                p.inputSlam = false
+                p.inputCharging = false
+                p.inputExplodeRelease = false
+            end
         end
     end
 
@@ -754,6 +794,31 @@ function Standalone.HandleUpdate(dt)
                 p.inputCharging = false
                 p.inputExplodeRelease = false
             end
+        end
+    end
+
+    -- 教程状态：在 HandlePlayerInput 之后更新（确保能检测到本帧输入）
+    if GameManager.state == GameManager.STATE_TUTORIAL and Tutorial.IsActive() then
+        -- 非能量步骤禁止蓄力/爆炸（防止点击触发爆炸）
+        local step = Tutorial.GetCurrentStepId()
+        if step ~= "energy" then
+            for _, p in ipairs(Player.list) do
+                if p.isHuman then
+                    p.inputCharging = false
+                    p.inputExplodeRelease = false
+                    p.wasChargingInput = false
+                end
+            end
+        end
+        Tutorial.Update(dt)
+        -- 教程结束 → 返回菜单
+        if not Tutorial.IsActive() then
+            print("[Standalone] Tutorial finished → returning to menu")
+            Camera.spectateMode = true
+            Standalone.SetVirtualControlsVisible(false)
+            SFX.PlayMenuBGM()
+            SFX.DisableSFX()
+            GameManager.EnterMenu()
         end
     end
 

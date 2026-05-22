@@ -16,6 +16,7 @@ GameManager.STATE_MENU      = "menu"
 GameManager.STATE_COUNTDOWN = "countdown"
 GameManager.STATE_PLAYING   = "playing"
 GameManager.STATE_RESULT    = "result"
+GameManager.STATE_TUTORIAL  = "tutorial"
 
 -- 当前状态
 GameManager.state = GameManager.STATE_MENU
@@ -91,6 +92,11 @@ end
 --- 进入主菜单
 function GameManager.EnterMenu()
     GameManager.SetState(GameManager.STATE_MENU)
+end
+
+--- 进入新手教程
+function GameManager.EnterTutorial()
+    GameManager.SetState(GameManager.STATE_TUTORIAL)
 end
 
 --- 初始化持久世界（首次加载时调用，散布 AI）
@@ -207,6 +213,8 @@ function GameManager.Update(dt)
 
     if state == GameManager.STATE_MENU then
         return
+    elseif state == GameManager.STATE_TUTORIAL then
+        return  -- 教程由 Tutorial 模块自行管理
     elseif state == GameManager.STATE_COUNTDOWN then
         GameManager.UpdateCountdown(dt)
     elseif state == GameManager.STATE_PLAYING then
@@ -351,13 +359,14 @@ function GameManager.GetWinner()
     return nil
 end
 
---- 玩家是否可以移动（倒计时和结算时不能）
+--- 玩家是否可以移动（倒计时和结算时不能，教程中可以）
 ---@return boolean
 function GameManager.CanPlayersMove()
     return GameManager.state == GameManager.STATE_PLAYING
+        or GameManager.state == GameManager.STATE_TUTORIAL
 end
 
---- AI 是否可以移动（菜单、游戏中、结算时都可以，持久世界）
+--- AI 是否可以移动（菜单、游戏中、结算时都可以，教程中不动）
 ---@return boolean
 function GameManager.CanAIMove()
     return GameManager.state == GameManager.STATE_MENU

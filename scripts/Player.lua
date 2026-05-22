@@ -391,6 +391,23 @@ function Player.Create(index, isHuman)
         local skinId = "default"
         if isHuman then
             skinId = Economy.GetSelectedSkinId()
+        else
+            -- AI 玩家 30% 概率随机应用非 default 皮肤
+            if math.random() < 0.3 then
+                local allSkins = FaceSkin.GetAll()
+                if #allSkins > 1 then
+                    -- 从非 default 皮肤中随机选一个
+                    local candidates = {}
+                    for _, s in ipairs(allSkins) do
+                        if s.id ~= "default" then
+                            candidates[#candidates + 1] = s.id
+                        end
+                    end
+                    if #candidates > 0 then
+                        skinId = candidates[math.random(1, #candidates)]
+                    end
+                end
+            end
         end
         p.skinId = skinId
 
@@ -850,8 +867,8 @@ function Player.UpdateOne(p, dt)
         end
     end
 
-    -- 尖刺检测：站在尖刺方块上 → 非冲刺则立即死亡（无敌由 Kill 内部判断）
-    if p.node and p.alive and p.onGround and p.dashTimer <= 0 then
+    -- 尖刺检测：站在尖刺方块上 → 立即死亡（冲刺也不免疫，无敌由 Kill 内部判断）
+    if p.node and p.alive and p.onGround then
         local pos = p.node.position
         local bs = Config.BlockSize
         local gx = math.floor(pos.x / bs) + 1

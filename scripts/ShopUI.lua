@@ -20,9 +20,11 @@ local buttonClicked_ = nil    -- "back" | nil
 
 -- 触摸拖拽状态
 local touchActive_ = false
+local touchDragging_ = false   -- 实际发生了拖拽（移动超过阈值）
 local touchStartY_ = 0
 local touchLastY_ = 0
 local touchStartScrollY_ = 0
+local DRAG_THRESHOLD = 5       -- 移动超过此像素才视为拖拽
 
 -- ============================================================================
 -- 公共 API
@@ -121,7 +123,7 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     nvgFillColor(vg, nvgRGBA(255, 255, 255, backHover and 255 or 210))
     nvgText(vg, backX + backBtnSize * 0.5, backY + backBtnSize * 0.5, "←")
 
-    if mousePress and backHover and not touchActive_ then
+    if mousePress and backHover and not touchDragging_ then
         buttonClicked_ = "back"
     end
 
@@ -203,21 +205,29 @@ function handleScrollInput(vg, logW, logH, isMobile, mx, my, mousePress)
     -- 触摸拖拽（移动端 + 桌面端鼠标拖拽）
     local mouseDown = input:GetMouseButtonDown(MOUSEB_LEFT)
     if mousePress and not touchActive_ then
-        -- 开始拖拽
+        -- 按下：开始追踪，但还不算拖拽
         touchActive_ = true
+        touchDragging_ = false
         touchStartY_ = my
         touchLastY_ = my
         touchStartScrollY_ = scrollY_
         scrollVel_ = 0
     elseif touchActive_ and mouseDown then
-        -- 拖拽中
-        local deltaY = touchLastY_ - my
-        scrollVel_ = deltaY  -- 记录速度用于惯性
-        touchLastY_ = my
-        scrollY_ = touchStartScrollY_ + (touchStartY_ - my)
+        -- 按住中：检查是否超过拖拽阈值
+        local totalDelta = math.abs(my - touchStartY_)
+        if totalDelta > DRAG_THRESHOLD then
+            touchDragging_ = true
+        end
+        if touchDragging_ then
+            local deltaY = touchLastY_ - my
+            scrollVel_ = deltaY
+            touchLastY_ = my
+            scrollY_ = touchStartScrollY_ + (touchStartY_ - my)
+        end
     elseif touchActive_ and not mouseDown then
-        -- 结束拖拽，应用惯性
+        -- 松开
         touchActive_ = false
+        -- touchDragging_ 保持到下一帧，不在这里重置
     end
 
     -- 惯性滚动
@@ -359,17 +369,12 @@ function drawWaterfallGrid(vg, logW, logH, topY, classes, allSkins, selectedClas
     local classRows = math.ceil(#classes / cols)
     curY = curY + classRows * (cardH + gap)
 
-    -- --- 皮肤区块 ---
+    -- --- 皮肤区块（与职业统一三列布局）---
     curY = curY + sectionGap
-    local skinCols = 4
-    local skinCardW = maxCardW
-    local skinTotalW = skinCols * skinCardW + (skinCols - 1) * gap
-    if skinTotalW > logW * 0.92 then
-        skinCardW = math.floor((logW * 0.92 - (skinCols - 1) * gap) / skinCols)
-        skinTotalW = skinCols * skinCardW + (skinCols - 1) * gap
-    end
-    local skinStartX = math.floor((logW - skinTotalW) * 0.5)
-    local skinCardH = 140
+    local skinCols = cols         -- 统一使用3列
+    local skinCardW = maxCardW    -- 复用职业区块的卡片宽度
+    local skinStartX = startX     -- 复用职业区块的起始X
+    local skinCardH = 160         -- 统一卡片高度
 
     labelY = topY + curY - scrollY_
     if labelY + sectionLabelH > topY - 10 and labelY < logH + 10 then
@@ -647,7 +652,7 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
         nvgFontSize(vg, math.floor(h * 0.48))
         nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 200)))
-        nvgText(vg, x + w * 0.5, y + h * 0.5, "已装备 ✓")
+        nvgText(vg, x + w * 0.5, y + h * 0.5, "已装备")
     elseif isOwned then
         nvgBeginPath(vg)
         nvgRoundedRect(vg, x, y, w, h, cornerR)
@@ -666,7 +671,7 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
         nvgFillColor(vg, nvgRGBA(255, 255, 255, 255))
         nvgText(vg, x + w * 0.5, y + h * 0.5, "选择")
 
-        if mousePress and hovered and not touchActive_ then
+        if mousePress and hovered and not touchDragging_ then
             Economy.SelectClass(cls.id)
             buyResult_ = { text = "已选择 " .. cls.name .. "!", color = Theme.success, timer = 1.5 }
         end
@@ -705,7 +710,7 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
         end
         nvgText(vg, x + w * 0.5, y + h * 0.5, "🪙 " .. cls.price)
 
-        if mousePress and hovered and canAfford and not touchActive_ then
+        if mousePress and hovered and canAfford and not touchDragging_ then
             local ok, err = Economy.BuyClass(cls.id)
             if ok then
                 buyResult_ = { text = "购买成功！已装备 " .. cls.name, color = Theme.success, timer = 2.0 }
@@ -735,7 +740,7 @@ function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePr
         nvgFontSize(vg, math.floor(h * 0.48))
         nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 200)))
-        nvgText(vg, x + w * 0.5, y + h * 0.5, "已装备 ✓")
+        nvgText(vg, x + w * 0.5, y + h * 0.5, "已装备")
     elseif isOwned then
         nvgBeginPath(vg)
         nvgRoundedRect(vg, x, y, w, h, cornerR)
@@ -754,7 +759,7 @@ function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePr
         nvgFillColor(vg, nvgRGBA(255, 255, 255, 255))
         nvgText(vg, x + w * 0.5, y + h * 0.5, "选择")
 
-        if mousePress and hovered and not touchActive_ then
+        if mousePress and hovered and not touchDragging_ then
             Economy.SelectSkin(skin.id)
             buyResult_ = { text = "已选择 " .. skin.name .. "!", color = Theme.success, timer = 1.5 }
         end
@@ -793,7 +798,7 @@ function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePr
         end
         nvgText(vg, x + w * 0.5, y + h * 0.5, "🪙 " .. skin.price)
 
-        if mousePress and hovered and canAfford and not touchActive_ then
+        if mousePress and hovered and canAfford and not touchDragging_ then
             local ok, err = Economy.BuySkin(skin.id)
             if ok then
                 buyResult_ = { text = "购买成功！已装备 " .. skin.name, color = Theme.success, timer = 2.0 }

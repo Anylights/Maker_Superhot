@@ -120,6 +120,13 @@ function Economy.Load()
         :Fetch({
             ok = function(values, iscores)
                 coins_ = iscores.coins or 0
+                -- 一次性修正：之前的 bug 导致金币异常膨胀，超过 10 万则重置为 0 并回写云端
+                local needFixSave = false
+                if coins_ > 100000 then
+                    print("[Economy] Coin overflow detected (" .. coins_ .. "), resetting to 0")
+                    coins_ = 0
+                    needFixSave = true
+                end
                 -- owned_classes 和 selected_class 存在 values 里
                 if values.owned_classes then
                     ownedIds_ = deserializeOwned(tostring(values.owned_classes))
@@ -147,6 +154,9 @@ function Economy.Load()
                 loaded_ = true
                 loading_ = false
                 print("[Economy] Loaded: coins=" .. coins_ .. " owned=" .. serializeOwned() .. " selected=" .. selectedId_ .. " skin=" .. selectedSkinId_)
+                if needFixSave then
+                    Economy.Save()
+                end
             end,
             error = function(code, reason)
                 print("[Economy] Load error: " .. tostring(reason) .. " (code=" .. tostring(code) .. ")")

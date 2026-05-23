@@ -58,6 +58,7 @@ local layoutDragOffX_ = 0       -- 拖拽偏移
 local layoutDragOffY_ = 0
 local layoutSaving_ = false     -- 正在保存中
 local layoutTouchId_ = nil      -- 正在使用的触摸 ID（防止多指冲突）
+local layoutSizeAccum_ = 0      -- +/- 按住时的时间累加器（秒），用于匀速调整大小（10/s）
 
 -- 菜单排行榜全屏展开状态
 local menuLeaderboardExpanded_ = false
@@ -89,6 +90,21 @@ function HUD.CacheInput()
     if cachedMousePress_ then
         cachedMouseLogX_ = input.mousePosition.x / dpr_
         cachedMouseLogY_ = input.mousePosition.y / dpr_
+    end
+    -- 手机端键位编辑器：触摸 press（新出现的 touch）也视为 press
+    -- 仅在编辑器打开时注入，避免影响商店/菜单等其他界面的触摸处理
+    -- 新触摸的特征：lastPosition == position（上一帧不存在此触摸点）
+    if not cachedMousePress_ and layoutEditorOpen_ and input.numTouches > 0 then
+        for i = 0, input.numTouches - 1 do
+            local touch = input:GetTouch(i)
+            if touch and touch.lastPosition.x == touch.position.x
+                      and touch.lastPosition.y == touch.position.y then
+                cachedMousePress_ = true
+                cachedMouseLogX_ = touch.position.x / dpr_
+                cachedMouseLogY_ = touch.position.y / dpr_
+                break
+            end
+        end
     end
     -- G 键切换 AI 寻路可视化
     if input:GetKeyPress(KEY_G) then
@@ -4160,6 +4176,12 @@ function HUD.DrawLayoutEditor(mx, my)
     local vg = vg_
     local w, h = logW_, logH_
     local pressed = cachedMousePress_
+    -- press 发生时用缓存坐标（触摸/鼠标均统一在 CacheInput 中记录）
+    -- hover 检测继续用传入的实时 mx/my，确保视觉反馈流畅
+    if pressed then
+        mx = cachedMouseLogX_
+        my = cachedMouseLogY_
+    end
 
     -- 半透明背景
     nvgBeginPath(vg)
@@ -4255,8 +4277,9 @@ function HUD.DrawLayoutEditor(mx, my)
             -- 点击了某个控件：设为选中
             layoutSelected_ = hitCtrl
         else
-            -- 点击空白处：取消选中（但不清除正在拖拽的状态）
-            if not layoutDragging_ then
+            -- 点击空白处：取消选中（但不清除正在拖拽的状态，且底部按钮栏内的点击不清除选中，否则 +/- 操作前选中会丢失）
+            local bottomBarY = h - (isMobileHUD_ and 44 or 56)
+            if not layoutDragging_ and my < bottomBarY then
                 layoutSelected_ = nil
             end
         end
@@ -4317,12 +4340,13 @@ function HUD.DrawLayoutEditor(mx, my)
     -- 按钮布局
     local btnH = isMobileHUD_ and 28 or 36
     local btnW = isMobileHUD_ and 60 or 80
-    local smallBtnW = isMobileHUD_ and 32 or 40
+    local smallBtnW = isMobileHUD_ and 44 or 40
     local btnGap = isMobileHUD_ and 6 or 10
     local btnY2 = barY + (barH - btnH) / 2
 
     -- 从左到右：[- 缩小] [+ 放大] ... [重置] [保存] [返回]
-    local leftX = isMobileHUD_ and 10 or 20
+    -- 手机端从 x=50 开始，避免被圆角裁切（圆角通常 30-40px）
+    local leftX = isMobileHUD_ and 50 or 20
 
     -- 缩小按钮
     local shrinkX = leftX
@@ -4332,44 +4356,56 @@ function HUD.DrawLayoutEditor(mx, my)
     -- 当前操作目标（优先拖拽中的，其次是选中的）
     local activeCtrl = layoutDragging_ or layoutSelected_
 
-    if pressed and shrinkHov and activeCtrl then
-        local data = layoutEditorData_[activeCtrl]
-        local def = nil
-        for _, d in ipairs(LAYOUT_CONTROLS) do
-            if d.name == activeCtrl then def = d; break end
-        end
-        if def and data then
-            local key = def.radiusKey
-            data[key] = math.max(30, (data[key] or 80) - 8)
-            if def.name == "joystick" then
-                -- 同步缩放摇杆的 knob 和 move 半径
-                local ratio = data[key] / 154  -- 与默认 baseRadius 的比
-                data.knobRadius = math.max(20, math.floor(56 * ratio + 0.5))
-                data.moveRadius = math.max(30, math.floor(84 * ratio + 0.5))
-            end
-        end
-    end
-
     -- 放大按钮
     local growX = shrinkX + smallBtnW + btnGap
     local growHov = mx >= growX and mx <= growX + smallBtnW and my >= btnY2 and my <= btnY2 + btnH
     HUD.DrawRubberButton(growX, btnY2, smallBtnW, btnH, "+",
         120, 120, 140, growHov)
-    if pressed and growHov and activeCtrl then
-        local data = layoutEditorData_[activeCtrl]
-        local def = nil
-        for _, d in ipairs(LAYOUT_CONTROLS) do
-            if d.name == activeCtrl then def = d; break end
+
+    -- +/- 按住匀速调整大小：10单位/秒（不再用 pressed，改为按住检测）
+    -- 检测鼠标/触摸是否按住（区分桌面和手机）
+    local btnHeld = false
+    if input:GetMouseButtonDown(MOUSEB_LEFT) then
+        btnHeld = true
+    elseif input.numTouches > 0 then
+        for i = 0, input.numTouches - 1 do
+            local touch = input:GetTouch(i)
+            if touch then btnHeld = true; break end
         end
-        if def and data then
-            local key = def.radiusKey
-            data[key] = math.min(300, (data[key] or 80) + 8)
-            if def.name == "joystick" then
-                local ratio = data[key] / 154
-                data.knobRadius = math.floor(56 * ratio + 0.5)
-                data.moveRadius = math.floor(84 * ratio + 0.5)
+    end
+
+    local sizeDir = 0
+    if btnHeld and activeCtrl then
+        if shrinkHov then sizeDir = -1
+        elseif growHov then sizeDir = 1
+        end
+    end
+
+    if sizeDir ~= 0 then
+        layoutSizeAccum_ = layoutSizeAccum_ + renderDt_
+        -- 每 0.1 秒触发一次（即 10次/秒，每次变化1单位 → 10单位/秒）
+        local steps = math.floor(layoutSizeAccum_ * 10)
+        if steps > 0 then
+            layoutSizeAccum_ = layoutSizeAccum_ - steps * 0.1
+            local data = layoutEditorData_[activeCtrl]
+            local def = nil
+            for _, d in ipairs(LAYOUT_CONTROLS) do
+                if d.name == activeCtrl then def = d; break end
+            end
+            if def and data then
+                local key = def.radiusKey
+                local delta = sizeDir * steps
+                data[key] = math.max(30, math.min(300, (data[key] or 80) + delta))
+                if def.name == "joystick" then
+                    local ratio = data[key] / 154
+                    data.knobRadius = math.max(20, math.floor(56 * ratio + 0.5))
+                    data.moveRadius = math.max(30, math.floor(84 * ratio + 0.5))
+                end
             end
         end
+    else
+        -- 没有按住时重置累加器，下次按住从0开始（避免松开后残留时间导致跳变）
+        layoutSizeAccum_ = 0
     end
 
     -- 当前选中提示

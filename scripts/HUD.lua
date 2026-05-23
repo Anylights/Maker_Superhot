@@ -16,6 +16,7 @@ local CharacterClass = require("CharacterClass")
 local ControlLayout = require("ControlLayout")
 local PowerUp = require("PowerUp")
 local Tutorial = require("Tutorial")
+local GameManager = require("GameManager")
 
 local HUD = {}
 

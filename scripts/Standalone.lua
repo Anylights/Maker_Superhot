@@ -911,6 +911,9 @@ end
 
 ---@param dt number
 function Standalone.HandlePostUpdate(dt)
+    -- 物理步后纠正：清除冲刺期间重力污染的 Y 速度
+    Player.PostUpdate()
+
     local positions = Player.GetAlivePositions()
     local humanPos = Player.GetHumanPosition()
     Camera.Update(dt, positions, humanPos)

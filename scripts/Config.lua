@@ -104,8 +104,8 @@ Config.PickupLargeOutline = Color(0.50, 0.35, 0.03, 1.0)
 -- 移动系统
 Config.MoveSpeed       = 8.0     -- 水平移动速度 m/s
 Config.MaxJumps        = 2       -- 最大跳跃次数（二段跳）
-Config.DashSpeed       = 25.0    -- 冲刺速度 m/s（3x 移动速度，冲刺感更强）
-Config.DashDuration    = 0.22    -- 冲刺持续时间（秒）：覆盖约 5.5m
+Config.DashSpeed       = 33.33   -- 冲刺速度 m/s
+Config.DashDuration    = 0.0825  -- 冲刺持续时间（秒）：覆盖约 2.75m
 Config.DashCooldown    = 2.0     -- 冲刺冷却（秒）
 Config.AirControlRatio = 0.7     -- 空中控制系数
 

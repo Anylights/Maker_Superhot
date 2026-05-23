@@ -31,6 +31,10 @@ local pbrAlphaTechnique_ = nil
 local circleTexture_ = nil
 local unlitAlphaTechnique_ = nil
 
+-- 冲刺虚影残影系统
+-- 每个 ghost: { node, matBody, matOutline, matEyeL, matEyeR, elapsed, duration, color }
+local dashGhosts_ = {}
+
 
 
 -- ============================================================================
@@ -303,6 +307,7 @@ function Player.Create(index, isHuman)
         dashCooldown = 0,     -- 冲刺冷却计时
         dashDir = 1,          -- 冲刺方向 1/-1
         lastFaceDir = 1,      -- 最后面朝方向
+        dashGhostTimer = 0,   -- 虚影生成计时（冲刺中每隔 GHOST_INTERVAL 生成一个）
 
         -- 能量
         energy = 0,
@@ -594,6 +599,161 @@ function PlayerCollision:HandleCollision(eventType, eventData)
 end
 
 -- ============================================================================
+-- 冲刺虚影系统
+-- ============================================================================
+
+local GHOST_DURATION    = 0.22   -- 每个虚影存活时间（秒）
+local GHOST_INTERVAL    = 0.028  -- 生成间隔（秒）：0.11s冲刺时间内约生成4个
+local GHOST_ALPHA_START = 0.55   -- 初始透明度
+local GHOST_ALPHA_EYE   = 0.45   -- 眼睛初始透明度
+
+--- 生成一个冲刺虚影（在玩家当前位置创建半透明克隆）
+---@param p table 玩家数据
+local function spawnDashGhost(p)
+    if not p.node or not scene_ then return end
+    local pos = p.node.position
+
+    -- 取玩家实际颜色（皮肤/职业覆盖后的颜色，否则退回默认配色）
+    local pc = p.bodyColor or Config.GetPlayerColor(p.index)
+    local oc = p.outlineColor or Config.GetPlayerOutlineColor(p.index)
+
+    -- 创建虚影根节点（复制玩家位置和旋转）
+    local ghostNode = scene_:CreateChild("DashGhost", LOCAL)
+    ghostNode.position = pos
+    ghostNode.rotation = p.node.rotation
+
+    -- 虚影节点缩放（略小于玩家）
+    local visualNode = ghostNode:CreateChild("GhostVisual")
+    visualNode.scale = Vector3(0.9, 0.9, 0.9)
+
+    -- 躯体（半透明圆角方块）
+    local geom = visualNode:CreateComponent("CustomGeometry")
+    mapModule_.BuildRoundedBox(geom, Config.BlockSize, 0.1)
+    geom.castShadows = false
+    local matBody = Material:new()
+    matBody:SetTechnique(0, pbrAlphaTechnique_)
+    matBody:SetShaderParameter("MatDiffColor",
+        Variant(Color(pc.r, pc.g, pc.b, GHOST_ALPHA_START)))
+    matBody:SetShaderParameter("MatEmissiveColor",
+        Variant(Color(pc.r * 0.4, pc.g * 0.4, pc.b * 0.4)))
+    matBody:SetShaderParameter("Metallic", Variant(0.0))
+    matBody:SetShaderParameter("Roughness", Variant(1.0))
+    geom:SetMaterial(matBody)
+
+    -- 描边（半透明）
+    local outlineNode = visualNode:CreateChild("GhostOutline")
+    outlineNode.position = Vector3(0, 0, 0.08)
+    outlineNode.scale = Vector3(1.15, 1.15, 1.0)
+    local outlineGeom = outlineNode:CreateComponent("CustomGeometry")
+    mapModule_.BuildRoundedBox(outlineGeom, Config.BlockSize, 0.1)
+    outlineGeom.castShadows = false
+    local matOutline = Material:new()
+    matOutline:SetTechnique(0, pbrAlphaTechnique_)
+    matOutline:SetShaderParameter("MatDiffColor",
+        Variant(Color(oc.r, oc.g, oc.b, GHOST_ALPHA_START * 0.6)))
+    matOutline:SetShaderParameter("Metallic", Variant(0.0))
+    matOutline:SetShaderParameter("Roughness", Variant(1.0))
+    outlineGeom:SetMaterial(matOutline)
+
+    -- 眼睛（复制玩家当前眼睛参数）
+    local unlitTech = cache:GetResource("Technique", "Techniques/NoTextureUnlit.xml")
+    -- 注意：眼睛用不透明Unlit，整体透明度通过 node enabled 控制
+    -- 改用 PBRNoTextureAlpha 以支持 alpha
+    local eyeAlphaTech = pbrAlphaTechnique_
+    local sphereModel = cache:GetResource("Model", "Models/Sphere.mdl")
+    local eyeR = p.eyeRadius or 0.22
+    local ebX   = p.eyeBaseX or 0.16
+    local ebY   = p.eyeBaseY or 0.06
+    local ebZ   = p.eyeBaseZ or -0.48
+    local eoX   = p.eyeOffsetX or 0
+    local eoY   = p.eyeOffsetY or 0
+
+    local eyeL = visualNode:CreateChild("GhostEyeL")
+    eyeL.position = Vector3(-ebX + eoX, ebY + eoY, ebZ)
+    eyeL.scale = Vector3(eyeR, eyeR, eyeR * 0.35)
+    local eyeLModel = eyeL:CreateComponent("StaticModel")
+    eyeLModel.model = sphereModel
+    eyeLModel.castShadows = false
+    local matEyeL = Material:new()
+    matEyeL:SetTechnique(0, eyeAlphaTech)
+    matEyeL:SetShaderParameter("MatDiffColor",
+        Variant(Color(oc.r, oc.g, oc.b, GHOST_ALPHA_EYE)))
+    matEyeL:SetShaderParameter("Metallic", Variant(0.0))
+    matEyeL:SetShaderParameter("Roughness", Variant(1.0))
+    eyeLModel:SetMaterial(matEyeL)
+
+    local eyeRNode = visualNode:CreateChild("GhostEyeR")
+    eyeRNode.position = Vector3(ebX + eoX, ebY + eoY, ebZ)
+    eyeRNode.scale = Vector3(eyeR, eyeR, eyeR * 0.35)
+    local eyeRModel = eyeRNode:CreateComponent("StaticModel")
+    eyeRModel.model = sphereModel
+    eyeRModel.castShadows = false
+    local matEyeR = Material:new()
+    matEyeR:SetTechnique(0, eyeAlphaTech)
+    matEyeR:SetShaderParameter("MatDiffColor",
+        Variant(Color(oc.r, oc.g, oc.b, GHOST_ALPHA_EYE)))
+    matEyeR:SetShaderParameter("Metallic", Variant(0.0))
+    matEyeR:SetShaderParameter("Roughness", Variant(1.0))
+    eyeRModel:SetMaterial(matEyeR)
+
+    dashGhosts_[#dashGhosts_ + 1] = {
+        node      = ghostNode,
+        matBody   = matBody,
+        matOutline = matOutline,
+        matEyeL   = matEyeL,
+        matEyeR   = matEyeR,
+        elapsed   = 0,
+        duration  = GHOST_DURATION,
+        pr = pc.r, pg = pc.g, pb = pc.b,
+        or_ = oc.r, og = oc.g, ob = oc.b,
+    }
+end
+
+--- 每帧更新所有虚影（淡出 + 销毁）
+---@param dt number
+local function updateDashGhosts(dt)
+    local i = 1
+    while i <= #dashGhosts_ do
+        local g = dashGhosts_[i]
+        g.elapsed = g.elapsed + dt
+        local t = g.elapsed / g.duration      -- 0→1
+        local alpha = (1.0 - t)               -- 线性淡出
+
+        if alpha <= 0 or g.elapsed >= g.duration then
+            -- 销毁节点
+            if g.node then g.node:Remove() end
+            table.remove(dashGhosts_, i)
+        else
+            -- 更新所有材质 alpha
+            local ba = GHOST_ALPHA_START * alpha
+            local oa = GHOST_ALPHA_START * 0.6 * alpha
+            local ea = GHOST_ALPHA_EYE * alpha
+            g.matBody:SetShaderParameter("MatDiffColor",
+                Variant(Color(g.pr, g.pg, g.pb, ba)))
+            g.matOutline:SetShaderParameter("MatDiffColor",
+                Variant(Color(g.or_, g.og, g.ob, oa)))
+            g.matEyeL:SetShaderParameter("MatDiffColor",
+                Variant(Color(g.or_, g.og, g.ob, ea)))
+            g.matEyeR:SetShaderParameter("MatDiffColor",
+                Variant(Color(g.or_, g.og, g.ob, ea)))
+            i = i + 1
+        end
+    end
+end
+
+--- 清除指定玩家的所有虚影（死亡/重生时调用）
+---@param playerIndex number
+function Player.ClearDashGhosts(playerIndex)
+    local i = 1
+    while i <= #dashGhosts_ do
+        local g = dashGhosts_[i]
+        -- 虚影没有直接的 playerIndex 引用，通过节点名快速全清（重生时整体清理即可）
+        if g.node then g.node:Remove() end
+        table.remove(dashGhosts_, i)
+    end
+end
+
+-- ============================================================================
 -- 更新
 -- ============================================================================
 
@@ -602,6 +762,21 @@ end
 function Player.UpdateAll(dt)
     for _, p in ipairs(Player.list) do
         Player.UpdateOne(p, dt)
+    end
+    -- 虚影淡出更新
+    updateDashGhosts(dt)
+end
+
+--- 物理步之后调用：强制清除冲刺期间被重力污染的 Y 速度
+--- 必须在 PostUpdate 中调用（物理已积分完毕）
+function Player.PostUpdate()
+    for _, p in ipairs(Player.list) do
+        if p.body and p.dashTimer > 0 then
+            local vel = p.body.linearVelocity
+            if math.abs(vel.y) > 0.001 then
+                p.body.linearVelocity = Vector3(vel.x, 0, 0)
+            end
+        end
     end
 end
 
@@ -1091,18 +1266,32 @@ function Player.UpdateMovement(p, dt)
     if p.body == nil then return end
     local vel = p.body.linearVelocity
 
-    -- 冲刺中（不受重力影响，Y 速度锁定为 0）
+    -- 冲刺中（完全水平，不受重力影响）
     if p.dashTimer > 0 then
         p.dashTimer = p.dashTimer - dt
         local dSpeed = p.dashSpeed
         if PowerUp.HasEffect(p.index, PowerUp.SUPER_SMALL) then
             dSpeed = dSpeed * Config.SuperSmallDashMul
         end
+        -- 强制水平速度；linearFactor Y=0 已锁死 Y 方向，此处归零保险
         p.body.linearVelocity = Vector3(p.dashDir * dSpeed, 0, 0)
         -- 冲刺击退：检测附近其他玩家并击飞
         Player.DoDashKnockback(p)
+        -- 虚影残影：按间隔生成半透明克隆
+        p.dashGhostTimer = (p.dashGhostTimer or 0) - dt
+        if p.dashGhostTimer <= 0 then
+            spawnDashGhost(p)
+            p.dashGhostTimer = GHOST_INTERVAL
+        end
         return
     end
+    -- 冲刺结束：恢复摩擦/阻尼 + 恢复 Y 轴物理 + 重置虚影计时器
+    if p.body then
+        p.body.friction = 0.3
+        p.body.linearDamping = 0.05
+        p.body.linearFactor = Vector3(1, 1, 0)  -- 恢复 Y 轴受力
+    end
+    p.dashGhostTimer = 0
 
     -- 下砸输入处理：空中按下S → 快速下落
     if p.inputSlam and not p.onGround and not p.slamming then
@@ -1110,8 +1299,6 @@ function Player.UpdateMovement(p, dt)
         p.inputSlam = false
         -- 立即给一个超快的向下速度
         p.body.linearVelocity = Vector3(0, -Config.SlamSpeed, 0)
-        local pp = p.node.position
-        SFX.Play("dash", 0.5, pp.x, pp.y)
         return
     end
     p.inputSlam = false
@@ -1243,6 +1430,12 @@ function Player.UpdateMovement(p, dt)
             -- 只在第一次冲刺时启动冷却
             if p.dashesUsed == 1 then
                 p.dashCooldown = p.dashCooldownMax or Config.DashCooldown
+            end
+            -- 冲刺期间：锁定 Y 轴（彻底禁止重力影响）+ 清零摩擦/阻尼
+            if p.body then
+                p.body.linearFactor = Vector3(1, 0, 0)  -- 锁死 Y 轴，重力无法改变 Y 速度
+                p.body.friction = 0.0
+                p.body.linearDamping = 0.0
             end
             local pp = p.node.position
             SFX.Play("dash", 0.6, pp.x, pp.y)

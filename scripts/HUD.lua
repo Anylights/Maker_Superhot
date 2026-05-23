@@ -117,6 +117,9 @@ local KILL_BOUNCE_DURATION = 0.8
 local scorePopups_ = {}
 local SCORE_POPUP_DURATION = 1.2
 
+-- 退出确认弹窗状态（仅限时模式游戏中使用）
+local quitConfirmVisible_ = false
+
 -- ============================================================================
 -- 玩家昵称系统
 -- ============================================================================
@@ -608,6 +611,7 @@ function HandleNanoVGRender(eventType, eventData)
     if state == "playing" then
         HUD.DrawGameTimer()
         HUD.DrawHeightIndicator()
+        HUD.DrawQuitButton()
         RandomEvent.DrawAnnouncement(vg_, logW_, logH_)
         PowerUp.DrawBuffHUD(vg_, logW_, logH_)
     end
@@ -624,6 +628,11 @@ function HandleNanoVGRender(eventType, eventData)
         HUD.DrawReviveScreen()
     elseif state == "result" then
         HUD.DrawResultScreen()
+    end
+
+    -- 退出确认弹窗（最顶层，覆盖一切）
+    if state == "playing" then
+        HUD.DrawQuitConfirmDialog()
     end
 
     nvgEndFrame(vg_)
@@ -1374,6 +1383,100 @@ function HUD.DrawHeightIndicator()
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 180)
     nvgText(vg_, x + math.floor(8 * s), y + math.floor(26 * s), "最高 " .. maxBlocks)
+end
+
+--- 绘制退出按钮（仅限时模式，高度 UI 正下方，右对齐，宽度为高度 UI 一半）
+function HUD.DrawQuitButton()
+    -- 仅限时模式显示
+    if GameManager.gameMode ~= Config.GAMEMODE_NORMAL then return end
+
+    local s  = isMobileHUD_ and (uiScale_ * 1.8) or uiScale_
+    local pw = math.floor(100 * s)    -- 与高度 UI 等宽
+    local ph = math.floor(44 * s)     -- 高度 UI 高度
+    local x  = isMobileHUD_ and math.floor(16 * s) or math.floor(10 * s)
+    local scorePanelY = isMobileHUD_ and math.floor(20 * s) or math.floor(10 * s)
+    local heightY = scorePanelY + math.floor(50 * s) + math.floor(6 * s)
+
+    -- 退出按钮尺寸：宽度为高度 UI 的一半，右对齐
+    local bw   = math.floor(pw * 0.5)
+    local bh   = math.floor(28 * s)
+    local gap  = math.floor(4 * s)
+    local bx   = x + pw - bw           -- 右对齐
+    local by   = heightY + ph + gap
+
+    local mx = cachedMouseLogX_
+    local my = cachedMouseLogY_
+    local hov = mx >= bx and mx <= bx + bw and my >= by and my <= by + bh
+
+    -- 使用暗红色调区别于普通按钮，点击后弹出确认框
+    if HUD.DrawRubberButton(bx, by, bw, bh, "退出", 180, 50, 50, hov) then
+        quitConfirmVisible_ = true
+    end
+end
+
+--- 绘制退出确认弹窗（全屏遮罩 + 对话框）
+function HUD.DrawQuitConfirmDialog()
+    if not quitConfirmVisible_ then return end
+
+    local mx = cachedMouseLogX_
+    local my = cachedMouseLogY_
+
+    -- 半透明遮罩
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 160))
+    nvgFill(vg_)
+
+    -- 弹窗尺寸
+    local s   = isMobileHUD_ and (uiScale_ * 1.8) or uiScale_
+    local dw  = math.floor(200 * s)
+    local dh  = math.floor(110 * s)
+    local dx  = math.floor((logW_ - dw) * 0.5)
+    local dy  = math.floor((logH_ - dh) * 0.5)
+    local r   = Theme.radiusMd
+
+    -- 弹窗背景
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, dx, dy, dw, dh, r)
+    nvgFillColor(vg_, nvgRGBA(Theme.bgMid[1], Theme.bgMid[2], Theme.bgMid[3], 240))
+    nvgFill(vg_)
+    nvgStrokeColor(vg_, nvgRGBA(255, 255, 255, 40))
+    nvgStrokeWidth(vg_, 1.5)
+    nvgStroke(vg_)
+
+    -- 标题文字
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, math.max(14, math.floor(16 * s)))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, 230))
+    nvgText(vg_, dx + dw * 0.5, dy + math.floor(16 * s), "退出游戏？")
+
+    -- 副标题
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, math.max(10, math.floor(12 * s)))
+    nvgFillColor(vg_, nvgRGBA(200, 200, 200, 180))
+    nvgText(vg_, dx + dw * 0.5, dy + math.floor(36 * s), "本局分数不计入排行榜")
+
+    -- 两个按钮
+    local btnW   = math.floor(dw * 0.42)
+    local btnH   = math.floor(30 * s)
+    local btnY   = dy + dh - btnH - math.floor(12 * s)
+    local confirmX = dx + math.floor(dw * 0.05)
+    local cancelX  = dx + dw - btnW - math.floor(dw * 0.05)
+
+    local confirmHov = mx >= confirmX and mx <= confirmX + btnW and my >= btnY and my <= btnY + btnH
+    local cancelHov  = mx >= cancelX  and mx <= cancelX  + btnW and my >= btnY and my <= btnY + btnH
+
+    -- 确认退出（红色）
+    if HUD.DrawRubberButton(confirmX, btnY, btnW, btnH, "确认退出", 180, 50, 50, confirmHov) then
+        quitConfirmVisible_ = false
+        GameManager.EnterMenu()
+    end
+
+    -- 取消（灰色）
+    if HUD.DrawRubberButton(cancelX, btnY, btnW, btnH, "取消", 80, 80, 100, cancelHov) then
+        quitConfirmVisible_ = false
+    end
 end
 
 -- ============================================================================

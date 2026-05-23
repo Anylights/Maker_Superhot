@@ -2121,7 +2121,7 @@ function HUD.DrawResultScreen()
     -- 一命通天附加信息：层数 + 存活时间
     local extraInfoH = 0
     if isOnelife and p1Entry then
-        local floors = math.floor((p1Entry.heightScore or 0) / Config.HeightScoreUnit)
+        local floors = math.floor((p1Entry.maxHeight or 0) / Config.BlockSize)
         local elapsed = p1Entry.elapsedTime or 0
         local tStr = string.format("%d:%02d", math.floor(elapsed / 60), math.floor(elapsed % 60))
         local infoY = scoreY + scoreFs + math.floor(4 * uiScale_)
@@ -2146,7 +2146,7 @@ function HUD.DrawResultScreen()
 
     -- 本局战绩（带高亮数字 + 评语）
     if p1Entry then
-        local floors = math.floor((p1Entry.heightScore or 0) / Config.HeightScoreUnit)
+        local floors = math.floor((p1Entry.maxHeight or 0) / Config.BlockSize)
         local slams = p1Entry.slamHits or 0
         local gotSlmd = p1Entry.gotSlammed or 0
         local dths = p1Entry.deaths or 0
@@ -2366,30 +2366,44 @@ function HUD.SubmitCloudScore(rankings)
     local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
 
     if isOnelife then
-        -- 一命通天模式：提交最高分数、高度和存活时间
+        -- 一命通天模式：提交最高分数、高度和存活时间，同时更新普通排行榜字段
         local score = p1Entry.score or 0
         local height = p1Entry.maxHeight or 0
+        local kills = p1Entry.kills or 0
+        local slamHits = p1Entry.slamHits or 0
         local elapsed = math.floor(p1Entry.elapsedTime or 0)
         if score <= 0 then return end
 
         clientCloud:Get("onelife_best_score", {
             ok = function(values, iscores)
                 local oldScore = iscores.onelife_best_score or 0
+                local oldNormalScore = iscores.high_score or 0
                 local batch = clientCloud:BatchSet()
+                -- 一命通天最高记录
                 if score > oldScore then
                     batch:SetInt("onelife_best_score", score)
                     batch:SetInt("onelife_best_height", height)
                     batch:SetInt("onelife_best_time", elapsed)
                 end
+                -- 同时更新普通排行榜的最高层/击杀/砸晕（用于结算界面云端排行榜显示）
+                if score > oldNormalScore then
+                    batch:SetInt("high_score", score)
+                    batch:SetInt("max_height", height)
+                    batch:SetInt("max_kills", kills)
+                    batch:SetInt("max_slam_hits", slamHits)
+                end
                 batch:Add("onelife_play_count", 1)
+                batch:Add("play_count", 1)
                 batch:Save("onelife result", {
                     ok = function()
                         print("[HUD] Onelife score submitted: score=" .. score .. " height=" .. height .. " time=" .. elapsed)
                         HUD.LoadOnelifeLeaderboard()
+                        HUD.LoadCloudLeaderboard()
                     end,
                     error = function(code, reason)
                         print("[HUD] Onelife submit error: " .. tostring(reason))
                         HUD.LoadOnelifeLeaderboard()
+                        HUD.LoadCloudLeaderboard()
                     end
                 })
             end,
@@ -2399,10 +2413,21 @@ function HUD.SubmitCloudScore(rankings)
                     :SetInt("onelife_best_score", score)
                     :SetInt("onelife_best_height", height)
                     :SetInt("onelife_best_time", elapsed)
+                    :SetInt("high_score", score)
+                    :SetInt("max_height", height)
+                    :SetInt("max_kills", kills)
+                    :SetInt("max_slam_hits", slamHits)
                     :Add("onelife_play_count", 1)
+                    :Add("play_count", 1)
                     :Save("onelife result", {
-                        ok = function() HUD.LoadOnelifeLeaderboard() end,
-                        error = function() HUD.LoadOnelifeLeaderboard() end
+                        ok = function()
+                            HUD.LoadOnelifeLeaderboard()
+                            HUD.LoadCloudLeaderboard()
+                        end,
+                        error = function()
+                            HUD.LoadOnelifeLeaderboard()
+                            HUD.LoadCloudLeaderboard()
+                        end
                     })
             end
         })

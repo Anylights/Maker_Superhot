@@ -41,6 +41,9 @@ GameManager.elapsedTime = 0
 -- 击杀事件队列（供 HUD 消费）
 GameManager.killEvents = {}
 
+-- 结算快照（EndGame 时保存，防止玩家死亡/复活后数据归零）
+GameManager.resultSnapshot = nil
+
 -- 模块引用
 local playerModule_ = nil
 local mapModule_ = nil
@@ -129,6 +132,8 @@ end
 --- 玩家加入游戏（点击"开始"或"再来一局"）
 --- 只重置分数和人类玩家位置，AI 保持当前位置继续攀爬
 function GameManager.JoinGame()
+    -- 清除上一局结算快照
+    GameManager.resultSnapshot = nil
     -- 一命通天模式：无限时间
     if GameManager.gameMode == Config.GAMEMODE_ONELIFE then
         GameManager.gameTimer = 99999
@@ -360,8 +365,31 @@ end
 --- 结束游戏，进入结算
 function GameManager.EndGame()
     SFX.Play("round_end", 0.7)
+    -- 在冻结前保存快照，确保结算数据为游戏结束瞬间的真实值
+    if playerModule_ then
+        local snapshot = {}
+        for _, p in ipairs(playerModule_.list) do
+            table.insert(snapshot, {
+                index       = p.index,
+                score       = p.score or 0,
+                heightScore = p.heightScore or 0,
+                killScore   = p.killScore or 0,
+                pickupScore = p.pickupScore or 0,
+                deaths      = p.deaths or 0,
+                maxHeight   = p.maxHeight or 0,
+                kills       = p.kills or 0,
+                slamHits    = p.slamHits or 0,
+                gotSlammed  = p.gotSlammed or 0,
+                gotKilled   = p.gotKilled or 0,
+                elapsedTime = GameManager.elapsedTime or 0,
+            })
+        end
+        table.sort(snapshot, function(a, b) return a.score > b.score end)
+        GameManager.resultSnapshot = snapshot
+        print("[GameManager] Result snapshot saved (" .. #snapshot .. " players)")
+    end
     GameManager.SetState(GameManager.STATE_RESULT)
-    -- 冻结所有玩家物理体，防止结算后分数/高度继续变化
+    -- 冻结所有玩家物理体
     if playerModule_ and playerModule_.FreezeAll then
         playerModule_.FreezeAll()
     end
@@ -383,6 +411,10 @@ end
 --- 获取排名列表（按总分降序排列的玩家索引）
 ---@return table rankings  每项 { index, score, heightScore, killScore, pickupScore, deaths }
 function GameManager.GetRankings()
+    -- 结算状态优先返回快照，防止玩家死亡/复活后数据归零
+    if GameManager.state == GameManager.STATE_RESULT and GameManager.resultSnapshot then
+        return GameManager.resultSnapshot
+    end
     local rankings = {}
     if playerModule_ then
         for _, p in ipairs(playerModule_.list) do

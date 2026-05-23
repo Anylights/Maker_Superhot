@@ -1053,19 +1053,20 @@ function Player.UpdateOne(p, dt)
         end
     end
 
-    -- 高度得分实时计算（基于当前 Y 位置）
+    -- 高度得分：只增不减，基于历史最高高度
     -- 结算冻结时跳过分数更新
     if p.node and not Player.frozen then
         local currentY = p.node.position.y
-        -- 记录历史最高
+        local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
+        -- 达到新高度时更新最高记录和得分
         if currentY > p.maxHeight then
             p.maxHeight = currentY
+            local maxHeightBlocks = (p.maxHeight - spawnY) / Config.BlockSize
+            local newHeightScore = math.floor(maxHeightBlocks) * Config.HeightScoreUnit
+            if newHeightScore > p.heightScore then
+                p.heightScore = newHeightScore
+            end
         end
-        -- 实时高度得分 = (当前Y - 出生Y) / BlockSize * HeightScoreUnit
-        -- 下降时分数也减少
-        local spawnX, spawnY = MapData.GetSpawnPosition(p.index)
-        local heightBlocks = (currentY - spawnY) / Config.BlockSize
-        p.heightScore = math.floor(heightBlocks) * Config.HeightScoreUnit
         -- 总分 = 高度 + 击杀 + 拾取 + 欲穷千里额外
         p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
     end
@@ -2074,15 +2075,17 @@ function Player.Kill(p, reason, killerIndex)
 
     -- 死亡惩罚
     if reason == "fall" then
-        -- 坠落惩罚：扣除200分（20层平台高度）
-        local fallPenalty = Config.HeightScoreUnit * 20  -- 200分
-        p.pickupScore = math.max(0, p.pickupScore - fallPenalty)
-        p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
-        -- 屏幕弹出"失足！"提示（在重生点位置显示，坠落位置已不可见）
-        if p.isHuman then
-            local HUD = require("HUD")
-            local sx, sy = MapData.GetSpawnPosition(p.index)
-            HUD.AddScorePopup(sx, sy + 2, "失足！-" .. fallPenalty .. "分", 255, 80, 80, 28)
+        -- 失足惩罚：仅限时模式扣 200 分，一命通天模式不扣（死亡即结束，另有处理）
+        local GameManagerRef = require("GameManager")
+        if GameManagerRef.gameMode == Config.GAMEMODE_NORMAL then
+            local fallPenalty = Config.HeightScoreUnit * 20  -- 200分
+            p.pickupScore = math.max(0, p.pickupScore - fallPenalty)
+            p.score = p.heightScore + p.killScore + p.pickupScore + (p.climbBonusScore or 0)
+            if p.isHuman then
+                local HUD = require("HUD")
+                local sx, sy = MapData.GetSpawnPosition(p.index)
+                HUD.AddScorePopup(sx, sy + 2, "失足！-" .. fallPenalty .. "分", 255, 80, 80, 28)
+            end
         end
     else
         p.pickupScore = math.max(0, p.pickupScore - Config.DeathPenalty)

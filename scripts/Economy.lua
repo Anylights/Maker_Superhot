@@ -123,11 +123,39 @@ function Economy.Load(onLoaded)
         :Key("owned_skins")
         :Key("selected_skin")
         :Key("tutorial_done")
+        :Key("data_reset_v1")
         :Fetch({
             ok = function(values, iscores)
                 coins_ = iscores.coins or 0
-                -- 一次性修正：之前的 bug 导致金币异常膨胀，超过 10 万则重置为 0 并回写云端
+                -- 一次性数据重置（data_reset_v1 未设置时执行）
                 local needFixSave = false
+                if not values.data_reset_v1 then
+                    print("[Economy] One-time data reset: clearing coins + scores")
+                    coins_ = 0
+                    needFixSave = true
+                    -- 清空排行榜云端分数
+                    if clientCloud then
+                        clientCloud:BatchSet()
+                            :SetInt("data_reset_v1", 1)
+                            :SetInt("coins", 0)
+                            :SetInt("high_score", 0)
+                            :SetInt("max_height", 0)
+                            :SetInt("max_kills", 0)
+                            :SetInt("max_slam_hits", 0)
+                            :SetInt("onelife_best_score", 0)
+                            :SetInt("onelife_best_height", 0)
+                            :SetInt("onelife_best_time", 0)
+                            :Save("one-time reset", {
+                                ok = function()
+                                    print("[Economy] One-time reset complete")
+                                end,
+                                error = function(code, reason)
+                                    print("[Economy] Reset error: " .. tostring(reason))
+                                end,
+                            })
+                    end
+                end
+                -- 一次性修正：之前的 bug 导致金币异常膨胀，超过 10 万则重置为 0 并回写云端
                 if coins_ > 100000 then
                     print("[Economy] Coin overflow detected (" .. coins_ .. "), resetting to 0")
                     coins_ = 0

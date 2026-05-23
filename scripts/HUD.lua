@@ -57,8 +57,18 @@ local layoutDragOffY_ = 0
 local layoutSaving_ = false     -- 正在保存中
 local layoutTouchId_ = nil      -- 正在使用的触摸 ID（防止多指冲突）
 
+-- 菜单排行榜全屏展开状态
+local menuLeaderboardExpanded_ = false
+local menuLeaderboardJustOpened_ = false  -- 打开后跳过同帧关闭检测
+local menuLeaderFullScrollY_ = 0
+local menuLeaderFullDragStart_ = nil
+local menuLeaderFullDragScroll_ = 0
+
 -- 结算画面按钮点击结果
 local resultButtonClicked_ = nil  -- "restart" | "menu" | nil
+
+-- 复活画面按钮点击结果
+local reviveButtonClicked_ = nil  -- "coin" | "ad" | "giveup" | nil
 
 -- 标题图片句柄
 local titleImage_ = -1
@@ -451,6 +461,14 @@ function HUD.GetResultButtonClicked()
     return v
 end
 
+--- 获取复活画面中哪个按钮被点击（获取后自动清除）
+---@return string|nil -- "coin" | "ad" | "giveup" | nil
+function HUD.GetReviveButtonClicked()
+    local v = reviveButtonClicked_
+    reviveButtonClicked_ = nil
+    return v
+end
+
 --- 刷新分辨率数据
 function HUD.RefreshResolution()
     physW_ = graphics:GetWidth()
@@ -530,6 +548,9 @@ function HandleNanoVGRender(eventType, eventData)
     local my = input.mousePosition.y / dpr_
     local state = gameManager_ and gameManager_.state or "playing"
 
+    -- 离开菜单时重置排行榜展开状态
+    if state ~= "menu" then menuLeaderboardExpanded_ = false end
+
     -- 主菜单 / 商店 / 键位编辑器
     if state == "menu" then
         if layoutEditorOpen_ then
@@ -541,7 +562,15 @@ function HandleNanoVGRender(eventType, eventData)
                 shopOpen_ = false
             end
         else
+            -- 全屏排行榜展开时屏蔽菜单层的点击事件，防止穿透到下方按钮
+            local savedPress = cachedMousePress_
+            if menuLeaderboardExpanded_ then cachedMousePress_ = false end
             HUD.DrawMenu()
+            cachedMousePress_ = savedPress
+            -- 全屏排行榜叠加层（点击菜单排行榜后展开）
+            if menuLeaderboardExpanded_ then
+                HUD.DrawFullMenuLeaderboard(mx, my)
+            end
         end
         nvgEndFrame(vg_)
         return
@@ -590,6 +619,8 @@ function HandleNanoVGRender(eventType, eventData)
     -- 状态覆盖层
     if state == "countdown" then
         HUD.DrawCountdown()
+    elseif state == "revive" then
+        HUD.DrawReviveScreen()
     elseif state == "result" then
         HUD.DrawResultScreen()
     end
@@ -1169,8 +1200,11 @@ function HUD.DrawScoreRankings()
     local padX = math.max(6, math.floor(8 * s))
     local panelW = math.max(90, math.floor(140 * s))
     local panelH = headerH + #rankings * lineH + 4
-    local panelX = logW_ - panelW - math.max(6, math.floor(10 * s))
-    local panelY = math.max(6, math.floor(10 * s))
+    -- 移动端右上角：TapTap 胶囊高度约 58px，再加本次下移 58px 共 116px；右边贴边留 6px
+    local safeRight = isMobileHUD_ and math.floor(6 * s)   or math.max(6, math.floor(10 * s))
+    local safeTop   = isMobileHUD_ and math.floor(116 * s) or math.max(6, math.floor(10 * s))
+    local panelX = logW_ - panelW - safeRight
+    local panelY = safeTop
 
     -- 面板背景
     drawPanel(panelX, panelY, panelW, panelH, Theme.radiusMd, 180)
@@ -1456,8 +1490,9 @@ function HUD.DrawPlayerScore()
     local s = isMobileHUD_ and (uiScale_ * 1.8) or uiScale_
     local pw = math.floor(100 * s)
     local ph = math.floor(50 * s)
-    local x = math.floor(10 * s)
-    local y = math.floor(10 * s)
+    -- 手机端左上角向右下偏移，避开屏幕边缘裁切区域
+    local x = isMobileHUD_ and math.floor(16 * s) or math.floor(10 * s)
+    local y = isMobileHUD_ and math.floor(20 * s) or math.floor(10 * s)
 
     drawPanel(x, y, pw, ph, Theme.radiusMd, 180)
 
@@ -1721,8 +1756,13 @@ function HUD.DrawCountdown()
 
     local num = gameManager_.GetCountdownNumber()
 
+    -- 字体大小随屏幕缩放（移动端逻辑高≈360，桌面≥720）
+    local countdownFontSize = math.max(60, math.floor(120 * uiScale_))
+    local subFontSize       = math.max(12, math.floor(18 * uiScale_))
+    local subOffsetY        = math.max(50, math.floor(80 * uiScale_))
+
     nvgFontFace(vg_, "bold")
-    nvgFontSize(vg_, 120)
+    nvgFontSize(vg_, countdownFontSize)
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
 
     -- 阴影
@@ -1741,9 +1781,159 @@ function HUD.DrawCountdown()
 
     -- 副标题
     nvgFontFace(vg_, "sans")
-    nvgFontSize(vg_, 18)
+    nvgFontSize(vg_, subFontSize)
     fillTheme(Theme.textSec, 200)
-    nvgText(vg_, logW_ * 0.5, logH_ * 0.5 + 80, "向上攀登，争取最高分!")
+    nvgText(vg_, logW_ * 0.5, logH_ * 0.5 + subOffsetY, "向上攀登，争取最高分!")
+end
+
+-- ============================================================================
+-- 复活选择画面（一命通天模式）
+-- ============================================================================
+
+--- 绘制复活选择界面
+function HUD.DrawReviveScreen()
+    local GameManager = require("GameManager")
+
+    -- 半透明深色遮罩
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillColor(vg_, nvgRGBA(10, 5, 20, 200))
+    nvgFill(vg_)
+
+    local cx = logW_ * 0.5
+    local mx = input.mousePosition.x / dpr_
+    local my = input.mousePosition.y / dpr_
+
+    -- 标题 "你被击败了！"
+    local titleFs = math.max(24, math.floor(44 * uiScale_))
+    local titleY = logH_ * 0.18
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, titleFs)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    -- 阴影
+    nvgFillColor(vg_, nvgRGBA(0, 0, 0, 150))
+    nvgText(vg_, cx + 2, titleY + 2, "你被击败了！")
+    -- 红色脉冲标题
+    local pulse = math.abs(math.sin(time.elapsedTime * 2.5)) * 40 + 215
+    nvgFillColor(vg_, nvgRGBA(Theme.error[1], Theme.error[2], Theme.error[3], math.floor(pulse)))
+    nvgText(vg_, cx, titleY, "你被击败了！")
+
+    -- 副标题提示
+    local subFs = math.max(12, math.floor(16 * uiScale_))
+    local subY = titleY + titleFs * 0.6 + math.floor(8 * uiScale_)
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, subFs)
+    nvgFillColor(vg_, nvgRGBA(200, 200, 220, 180))
+    nvgText(vg_, cx, subY, "使用复活机会继续挑战！")
+
+    -- 按钮区域
+    local btnW = math.max(160, math.floor(220 * uiScale_))
+    local btnH = math.max(isMobileHUD_ and 42 or 48, math.floor(54 * uiScale_))
+    local btnGap = math.floor(14 * uiScale_)
+    local btnStartY = logH_ * 0.38
+
+    -- === 金币复活按钮 ===
+    local coinUsed = GameManager.reviveCoinUsed
+    local coinRemain = 2 - coinUsed
+    local coinCost = coinUsed == 0 and 100 or 200
+    local coinBalance = Economy.GetCoins()
+    local canAfford = coinBalance >= coinCost
+    local coinAvailable = coinRemain > 0 and canAfford
+
+    local coinBtnX = cx - btnW * 0.5
+    local coinBtnY = btnStartY
+    local coinHover = mx >= coinBtnX and mx <= coinBtnX + btnW and my >= coinBtnY and my <= coinBtnY + btnH
+
+    if coinRemain > 0 then
+        if canAfford then
+            -- 可用：黄金色按钮
+            local clicked = HUD.DrawRubberButton(coinBtnX, coinBtnY, btnW, btnH,
+                "金币复活 (" .. coinCost .. ")",
+                220, 170, 30, coinHover)
+            if clicked then
+                reviveButtonClicked_ = "coin"
+            end
+        else
+            -- 余额不足：灰色按钮
+            HUD.DrawRubberButton(coinBtnX, coinBtnY, btnW, btnH,
+                "金币不足 (需" .. coinCost .. ")",
+                80, 80, 90, false)
+        end
+        -- 剩余次数 + 余额提示
+        local infoFs = math.max(10, math.floor(12 * uiScale_))
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, infoFs)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(vg_, nvgRGBA(180, 180, 200, 160))
+        nvgText(vg_, cx, coinBtnY + btnH + math.floor(3 * uiScale_),
+            "剩余 " .. coinRemain .. "/2 次  |  余额 " .. coinBalance .. " 金币")
+    else
+        -- 已用完：灰色
+        HUD.DrawRubberButton(coinBtnX, coinBtnY, btnW, btnH,
+            "金币复活 (已用完)",
+            80, 80, 90, false)
+    end
+
+    -- === 广告复活按钮 ===
+    local adUsed = GameManager.reviveAdUsed
+    local adRemain = 1 - adUsed
+    local waitingAd = GameManager.reviveWaitingAd
+
+    local adBtnY = coinBtnY + btnH + math.floor(28 * uiScale_)
+    local adBtnX = cx - btnW * 0.5
+    local adHover = mx >= adBtnX and mx <= adBtnX + btnW and my >= adBtnY and my <= adBtnY + btnH
+
+    if waitingAd then
+        -- 正在加载广告
+        local dots = string.rep(".", math.floor(time.elapsedTime * 2) % 4)
+        HUD.DrawRubberButton(adBtnX, adBtnY, btnW, btnH,
+            "加载中" .. dots,
+            60, 60, 70, false)
+    elseif adRemain > 0 then
+        -- 可用：绿色按钮
+        local clicked = HUD.DrawRubberButton(adBtnX, adBtnY, btnW, btnH,
+            "看广告复活",
+            40, 170, 80, adHover)
+        if clicked then
+            reviveButtonClicked_ = "ad"
+        end
+        -- 剩余次数
+        local infoFs = math.max(10, math.floor(12 * uiScale_))
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, infoFs)
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(vg_, nvgRGBA(180, 180, 200, 160))
+        nvgText(vg_, cx, adBtnY + btnH + math.floor(3 * uiScale_),
+            "剩余 " .. adRemain .. "/1 次")
+    else
+        -- 已用完
+        HUD.DrawRubberButton(adBtnX, adBtnY, btnW, btnH,
+            "广告复活 (已使用)",
+            80, 80, 90, false)
+    end
+
+    -- === 放弃按钮 ===
+    local giveupBtnY = adBtnY + btnH + math.floor(28 * uiScale_)
+    local giveupBtnX = cx - btnW * 0.5
+    local giveupHover = mx >= giveupBtnX and mx <= giveupBtnX + btnW and my >= giveupBtnY and my <= giveupBtnY + btnH
+
+    local giveupClicked = HUD.DrawRubberButton(giveupBtnX, giveupBtnY, btnW, btnH,
+        "放弃，进入结算",
+        100, 100, 110, giveupHover)
+    if giveupClicked then
+        reviveButtonClicked_ = "giveup"
+    end
+
+    -- 底部复活次数总结
+    local totalUsed = coinUsed + adUsed
+    local totalMax = 3
+    local summaryFs = math.max(10, math.floor(13 * uiScale_))
+    local summaryY = logH_ - math.floor(30 * uiScale_)
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, summaryFs)
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(150, 150, 170, 140))
+    nvgText(vg_, cx, summaryY, "已复活 " .. totalUsed .. "/" .. totalMax .. " 次")
 end
 
 -- ============================================================================
@@ -2794,7 +2984,25 @@ function HUD.DrawMenu_Mobile(t, mx, my)
     local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or onelifeLeaderboardLoading_
 
     -- 面板背景
-    drawPanel(lbX - 2, contentY - 2, lbW + 4, panelH + 4, Theme.radiusMd, 140)
+    -- 点击整个排行榜区域（包含 tab）展开完整排行榜
+    local lbAreaTop = tabY
+    local lbAreaBot = contentY + panelH + 4
+    local lbHovered = mx >= lbX - 2 and mx <= lbX + lbW + 2
+                   and my >= lbAreaTop and my <= lbAreaBot
+    -- hover 时面板边框微亮提示可点击
+    drawPanel(lbX - 2, contentY - 2, lbW + 4, panelH + 4, Theme.radiusMd, lbHovered and 180 or 140)
+    if lbHovered then
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, lbX - 2, contentY - 2, lbW + 4, panelH + 4, Theme.radiusMd)
+        nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 60)))
+        nvgStrokeWidth(vg_, 1)
+        nvgStroke(vg_)
+    end
+    if cachedMousePress_ and lbHovered and not onelifeHover and not histHover then
+        menuLeaderboardExpanded_ = true
+        menuLeaderboardJustOpened_ = true
+        menuLeaderFullScrollY_ = 0
+    end
 
     if isLoading then
         nvgFontFace(vg_, "sans")
@@ -2964,6 +3172,249 @@ function HUD.DrawMenu_Mobile(t, mx, my)
         nvgRoundedRect(vg_, lbX + lbW - 3, scrollbarY, 3, scrollbarH, 1.5)
         nvgFillColor(vg_, nvgRGBA(255, 255, 255, 40))
         nvgFill(vg_)
+    end
+
+end
+
+-- ============================================================================
+-- 菜单全屏排行榜叠加层（点击排行榜区域后显示）
+-- ============================================================================
+--- 绘制全屏排行榜叠加层
+--- @param mx number 鼠标/触摸 X（逻辑像素）
+--- @param my number 鼠标/触摸 Y（逻辑像素）
+function HUD.DrawFullMenuLeaderboard(mx, my)
+    -- 同帧打开时跳过关闭检测，防止点击穿透立刻关闭
+    local justOpened = menuLeaderboardJustOpened_
+    menuLeaderboardJustOpened_ = false
+
+    local s   = uiScale_
+    local cx  = logW_ * 0.5
+
+    -- ── 当前排行榜数据 ────────────────────────────────────────────────────────
+    local currentData = menuLeaderboardTab_ == "history" and cloudLeaderboard_ or onelifeLeaderboard_
+    local isLoading   = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or onelifeLeaderboardLoading_
+
+    -- ── 安全区 ───────────────────────────────────────────────────────────────
+    local safeTop    = isMobileHUD_ and math.floor(64 * s) or math.floor(10 * s)
+    local safeBottom = isMobileHUD_ and math.floor(20 * s) or math.floor(10 * s)
+
+    -- ── 面板尺寸 ─────────────────────────────────────────────────────────────
+    local panelW  = math.min(logW_ - math.floor(24 * s), math.max(240, math.floor(420 * s)))
+    local lineH   = math.max(18, math.floor(24 * s))
+    local headerH = math.max(22, math.floor(30 * s))
+    local footerH = math.max(40, math.floor(50 * s))
+    local padX    = math.max(8,  math.floor(12 * s))
+
+    local totalRows = (currentData and #currentData or 0)
+    local contentH  = totalRows * lineH
+
+    local availH  = logH_ - safeTop - safeBottom
+    local panelH  = math.min(availH, headerH + contentH + footerH)
+    local listAreaH = math.max(0, panelH - headerH - footerH)
+    local maxScroll = math.max(0, contentH - listAreaH)
+    menuLeaderFullScrollY_ = math.max(0, math.min(menuLeaderFullScrollY_, maxScroll))
+
+    local panelX = cx - panelW * 0.5
+    local panelY = safeTop
+    local listY  = panelY + headerH
+
+    -- ── 触摸/鼠标拖拽滚动 ────────────────────────────────────────────────────
+    local inListArea = mx >= panelX and mx <= panelX + panelW
+                    and my >= listY  and my <= listY + listAreaH
+    if input:GetMouseButtonDown(MOUSEB_LEFT) and inListArea then
+        if menuLeaderFullDragStart_ == nil then
+            menuLeaderFullDragStart_  = my
+            menuLeaderFullDragScroll_ = menuLeaderFullScrollY_
+        else
+            local drag = menuLeaderFullDragStart_ - my
+            menuLeaderFullScrollY_ = math.max(0, math.min(
+                menuLeaderFullDragScroll_ + drag, maxScroll))
+        end
+    else
+        menuLeaderFullDragStart_ = nil
+    end
+
+    -- 鼠标滚轮支持
+    local wheel = input:GetMouseMoveWheel()
+    if wheel ~= 0 then
+        menuLeaderFullScrollY_ = math.max(0, math.min(
+            menuLeaderFullScrollY_ - wheel * 24, maxScroll))
+    end
+
+    -- ── 背景遮罩 ─────────────────────────────────────────────────────────────
+    nvgBeginPath(vg_)
+    nvgRect(vg_, 0, 0, logW_, logH_)
+    nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.bg, 220)))
+    nvgFill(vg_)
+
+    -- ── 面板背景 ─────────────────────────────────────────────────────────────
+    drawPanel(panelX, panelY, panelW, panelH, Theme.radiusMd, 230)
+
+    -- ── 标题栏 ───────────────────────────────────────────────────────────────
+    local tabLabel = menuLeaderboardTab_ == "history" and "限时挑战 · 完整排行榜" or "一命通天 · 完整排行榜"
+    nvgFontFace(vg_, "bold")
+    nvgFontSize(vg_, math.max(12, math.floor(15 * s)))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    fillTheme(Theme.primary, 240)
+    nvgText(vg_, cx, panelY + headerH * 0.5, tabLabel)
+
+    -- 标题下分割线
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, panelX + padX, panelY + headerH)
+    nvgLineTo(vg_, panelX + panelW - padX, panelY + headerH)
+    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 40)))
+    nvgStrokeWidth(vg_, 1)
+    nvgStroke(vg_)
+
+    -- ── 列表（带裁剪）───────────────────────────────────────────────────────
+    local lbCols
+    if menuLeaderboardTab_ == "onelife" then
+        lbCols = {
+            { x = panelX + padX,              label = "#",     align = NVG_ALIGN_LEFT },
+            { x = panelX + padX + math.floor(18 * s), label = "昵称",   align = NVG_ALIGN_LEFT },
+            { x = panelX + panelW * 0.55,     label = "最高分", align = NVG_ALIGN_CENTER },
+            { x = panelX + panelW * 0.75,     label = "最高层", align = NVG_ALIGN_CENTER },
+            { x = panelX + panelW * 0.92,     label = "场",    align = NVG_ALIGN_CENTER },
+        }
+    else
+        lbCols = {
+            { x = panelX + padX,              label = "#",     align = NVG_ALIGN_LEFT },
+            { x = panelX + padX + math.floor(18 * s), label = "昵称",   align = NVG_ALIGN_LEFT },
+            { x = panelX + panelW * 0.55,     label = "最高分", align = NVG_ALIGN_CENTER },
+            { x = panelX + panelW * 0.75,     label = "高度",  align = NVG_ALIGN_CENTER },
+            { x = panelX + panelW * 0.92,     label = "场",    align = NVG_ALIGN_CENTER },
+        }
+    end
+
+    if isLoading then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, math.max(12, math.floor(14 * s)))
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        fillTheme(Theme.textSec, 180)
+        nvgText(vg_, cx, listY + listAreaH * 0.5, "加载中...")
+    elseif not currentData or #currentData == 0 then
+        nvgFontFace(vg_, "sans")
+        nvgFontSize(vg_, math.max(12, math.floor(14 * s)))
+        nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        fillTheme(Theme.textSec, 180)
+        nvgText(vg_, cx, listY + listAreaH * 0.5, "暂无数据")
+    else
+        local fontSize = math.max(10, math.floor(13 * s))
+
+        nvgSave(vg_)
+        nvgScissor(vg_, panelX + 2, listY, panelW - 4, listAreaH)
+
+        for rank, entry in ipairs(currentData) do
+            local ey = listY + (rank - 1) * lineH - menuLeaderFullScrollY_
+            if ey + lineH > listY and ey < listY + listAreaH then
+                -- 自己行高亮
+                if entry.isMe then
+                    nvgBeginPath(vg_)
+                    nvgRoundedRect(vg_, panelX + 4, ey + 1, panelW - 8, lineH - 2, 3)
+                    nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, 25)))
+                    nvgFill(vg_)
+                end
+
+                local prefix = rank == 1 and "🥇" or (rank == 2 and "🥈" or (rank == 3 and "🥉" or ("#" .. rank)))
+                local nameDisplay = entry.nickname or "玩家"
+                if entry.isMe then nameDisplay = nameDisplay .. "(我)" end
+                local maxLen = isMobileHUD_ and 8 or 14
+                if #nameDisplay > maxLen then nameDisplay = nameDisplay:sub(1, maxLen - 1) .. "." end
+
+                local values
+                if menuLeaderboardTab_ == "onelife" then
+                    local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
+                    values = { prefix, nameDisplay, tostring(entry.score), tostring(floors) .. "层", tostring(entry.playCount) }
+                else
+                    values = { prefix, nameDisplay, tostring(entry.score), tostring(entry.maxHeight), tostring(entry.playCount) }
+                end
+
+                local textAlpha
+                if entry.isMe then      textAlpha = 255
+                elseif rank == 1 then   textAlpha = 240
+                elseif rank <= 3 then   textAlpha = 220
+                else                    textAlpha = 180
+                end
+
+                nvgFontFace(vg_, (entry.isMe or rank <= 3) and "bold" or "sans")
+                nvgFontSize(vg_, fontSize)
+                for ci, col in ipairs(lbCols) do
+                    nvgTextAlign(vg_, col.align + NVG_ALIGN_MIDDLE)
+                    if entry.isMe then
+                        nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.primary, textAlpha)))
+                    else
+                        nvgFillColor(vg_, nvgRGBA(255, 255, 255, textAlpha))
+                    end
+                    nvgText(vg_, col.x, ey + lineH * 0.5, values[ci])
+                end
+            end
+        end
+
+        nvgRestore(vg_)
+
+        -- 滚动条
+        if maxScroll > 0 then
+            local sbW    = math.max(3, math.floor(4 * s))
+            local sbX    = panelX + panelW - sbW - math.floor(3 * s)
+            local ratio  = listAreaH / contentH
+            local thumbH = math.max(16, math.floor(listAreaH * ratio))
+            local thumbY = listY + (menuLeaderFullScrollY_ / maxScroll) * (listAreaH - thumbH)
+            nvgBeginPath(vg_)
+            nvgRoundedRect(vg_, sbX, listY + 2, sbW, listAreaH - 4, sbW * 0.5)
+            nvgFillColor(vg_, nvgRGBA(255, 255, 255, 20))
+            nvgFill(vg_)
+            nvgBeginPath(vg_)
+            nvgRoundedRect(vg_, sbX, thumbY, sbW, thumbH, sbW * 0.5)
+            nvgFillColor(vg_, nvgRGBA(255, 255, 255, 90))
+            nvgFill(vg_)
+        end
+    end
+
+    -- ── 底部分割线 ────────────────────────────────────────────────────────────
+    local sepY = panelY + panelH - footerH
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, panelX + padX, sepY)
+    nvgLineTo(vg_, panelX + panelW - padX, sepY)
+    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 40)))
+    nvgStrokeWidth(vg_, 1)
+    nvgStroke(vg_)
+
+    -- ── 返回按钮 ─────────────────────────────────────────────────────────────
+    local btnW  = math.max(80, math.floor(110 * s))
+    local btnH  = math.max(30, math.floor(38 * s))
+    local btnX  = cx - btnW * 0.5
+    local btnY2 = sepY + (footerH - btnH) * 0.5
+    local btnHov = mx >= btnX and mx <= btnX + btnW and my >= btnY2 and my <= btnY2 + btnH
+
+    local btnR = Theme.radiusSm or 6
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, btnX, btnY2, btnW, btnH, btnR)
+    nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.surface, btnHov and 230 or 160)))
+    nvgFill(vg_)
+    nvgBeginPath(vg_)
+    nvgRoundedRect(vg_, btnX, btnY2, btnW, btnH, btnR)
+    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 60)))
+    nvgStrokeWidth(vg_, 1)
+    nvgStroke(vg_)
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, math.max(12, math.floor(14 * s)))
+    nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg_, nvgRGBA(255, 255, 255, btnHov and 240 or 200))
+    nvgText(vg_, cx, btnY2 + btnH * 0.5, "← 返回")
+
+    -- ── 交互关闭（justOpened 时跳过，防止同帧点击穿透） ──────────────────────
+    if not justOpened then
+        if cachedMousePress_ and btnHov then
+            menuLeaderboardExpanded_ = false
+            menuLeaderFullScrollY_ = 0
+        end
+        -- 点击面板外也关闭（排除拖拽）
+        local inPanel = mx >= panelX and mx <= panelX + panelW
+                     and my >= panelY and my <= panelY + panelH
+        if cachedMousePress_ and not inPanel then
+            menuLeaderboardExpanded_ = false
+            menuLeaderFullScrollY_ = 0
+        end
     end
 end
 
@@ -3159,7 +3610,25 @@ function HUD.DrawMenu_Desktop(t, mx, my)
     local isLoading = menuLeaderboardTab_ == "history" and cloudLeaderboardLoading_ or onelifeLeaderboardLoading_
 
     local panelH = 200
-    drawPanel(lbX - 6, contentY - 4, lbW + 12, panelH + 8, Theme.radiusMd, 160)
+
+    -- 点击整个排行榜区域（含 tab）展开完整排行榜
+    local lbAreaTop = tabY
+    local lbAreaBot = contentY + panelH + 8
+    local lbHovered = mx >= lbX - 6 and mx <= lbX + lbW + 6
+                   and my >= lbAreaTop and my <= lbAreaBot
+    drawPanel(lbX - 6, contentY - 4, lbW + 12, panelH + 8, Theme.radiusMd, lbHovered and 180 or 160)
+    if lbHovered then
+        nvgBeginPath(vg_)
+        nvgRoundedRect(vg_, lbX - 6, contentY - 4, lbW + 12, panelH + 8, Theme.radiusMd)
+        nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 60)))
+        nvgStrokeWidth(vg_, 1)
+        nvgStroke(vg_)
+    end
+    if cachedMousePress_ and lbHovered and not onelifeHover and not histHover then
+        menuLeaderboardExpanded_ = true
+        menuLeaderboardJustOpened_ = true
+        menuLeaderFullScrollY_ = 0
+    end
 
     if isLoading then
         nvgFontFace(vg_, "sans")
@@ -3257,6 +3726,7 @@ function HUD.DrawMenu_Desktop(t, mx, my)
             end
         end
     end
+
 end
 
 -- ============================================================================

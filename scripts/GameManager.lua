@@ -17,6 +17,7 @@ GameManager.STATE_COUNTDOWN = "countdown"
 GameManager.STATE_PLAYING   = "playing"
 GameManager.STATE_RESULT    = "result"
 GameManager.STATE_TUTORIAL  = "tutorial"
+GameManager.STATE_REVIVE    = "revive"
 
 -- 当前状态
 GameManager.state = GameManager.STATE_MENU
@@ -27,6 +28,12 @@ GameManager.gameMode = Config.GAMEMODE_NORMAL
 
 -- 游戏计时（倒计时，秒）
 GameManager.gameTimer = 0
+
+-- 复活系统（一命通天模式，per-run）
+GameManager.reviveCoinUsed   = 0      -- 已用金币复活次数 (max 2)
+GameManager.reviveAdUsed     = 0      -- 已用广告复活次数 (max 1)
+GameManager.reviveWaitingAd  = false  -- 是否正在等待广告回调
+GameManager.reviveDeadPlayer = nil    -- 当前等待复活的玩家引用
 
 -- 一命通天模式：累计存活时间
 GameManager.elapsedTime = 0
@@ -123,6 +130,12 @@ function GameManager.JoinGame()
         GameManager.gameTimer = Config.GameDuration
     end
     GameManager.killEvents = {}
+
+    -- 重置复活计数器
+    GameManager.reviveCoinUsed   = 0
+    GameManager.reviveAdUsed     = 0
+    GameManager.reviveWaitingAd  = false
+    GameManager.reviveDeadPlayer = nil
 
     -- 解冻所有玩家（上一局结束时冻结了物理）
     if playerModule_ and playerModule_.UnfreezeAll then
@@ -296,7 +309,44 @@ function GameManager.OnPlayerDeath(p)
     if GameManager.gameMode ~= Config.GAMEMODE_ONELIFE then return end
     if not p.isHuman then return end
     if GameManager.state ~= GameManager.STATE_PLAYING then return end
-    print("[GameManager] Onelife mode: human player died → ending game")
+
+    -- 检查是否还有复活机会（金币最多2次 + 广告最多1次）
+    local hasChance = (GameManager.reviveCoinUsed < 2) or (GameManager.reviveAdUsed < 1)
+    if hasChance then
+        print("[GameManager] Onelife mode: human died → revive offer (coin=" .. GameManager.reviveCoinUsed .. "/2, ad=" .. GameManager.reviveAdUsed .. "/1)")
+        GameManager.reviveDeadPlayer = p
+        GameManager.SetState(GameManager.STATE_REVIVE)
+        -- 冻结所有玩家，暂停游戏
+        if playerModule_ and playerModule_.FreezeAll then
+            playerModule_.FreezeAll()
+        end
+    else
+        print("[GameManager] Onelife mode: human died, no revive left → ending game")
+        GameManager.EndGame()
+    end
+end
+
+--- 执行复活：恢复玩家并回到 PLAYING 状态
+function GameManager.RevivePlayer()
+    local p = GameManager.reviveDeadPlayer
+    if not p then return end
+    local Player = require("Player")
+    Player.Respawn(p)
+    -- 解冻所有玩家
+    if playerModule_ and playerModule_.UnfreezeAll then
+        playerModule_.UnfreezeAll()
+    end
+    GameManager.reviveDeadPlayer = nil
+    GameManager.reviveWaitingAd = false
+    GameManager.SetState(GameManager.STATE_PLAYING)
+    print("[GameManager] Player revived → back to playing")
+end
+
+--- 放弃复活：进入结算
+function GameManager.GiveUpRevive()
+    GameManager.reviveDeadPlayer = nil
+    GameManager.reviveWaitingAd = false
+    print("[GameManager] Player gave up revive → ending game")
     GameManager.EndGame()
 end
 

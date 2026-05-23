@@ -250,6 +250,31 @@ function Standalone.InitMobileControls()
 
     print("[Standalone] Mobile controls initialized (landscape), isMobile=" .. tostring(isMobile_))
 
+    -- 告知 Tutorial 哪些区域是虚拟控制区（避免"点击继续"被触控误触）
+    -- 所有控件均为 VA_BOTTOM，计算逻辑坐标下的包围盒，整体下扩一些确保覆盖
+    do
+        local dpr2 = graphics:GetDPR()
+        local lw = graphics:GetWidth() / dpr2
+        local lh = graphics:GetHeight() / dpr2
+        -- VirtualControls 内部用物理像素，mx/my 是逻辑像素，必须除以 DPR 统一坐标系
+        local physScaleFactor = VirtualControls.GetScaleFactor and VirtualControls.GetScaleFactor() or 1
+        local s = physScaleFactor / dpr2  -- 逻辑像素缩放因子
+        -- 左侧摇杆区域（逻辑坐标）
+        local jsRadius = 154 * s
+        local jsCX    = 266 * s
+        local jsCY    = lh - 203 * s
+        -- 右侧按钮群（以跳跃按钮为中心，整体覆盖）
+        local btnGroupR  = 200  -- 设计像素半径
+        local btnCX = lw - jumpRight * s
+        local btnCY = lh - jumpBottom * s
+        Tutorial.SetMobileExcludeRects({
+            -- 摇杆区：中心 ± radius，并向下扩展到屏幕底边
+            { jsCX - jsRadius, jsCY - jsRadius, jsCX + jsRadius, lh },
+            -- 右侧按钮群：以跳跃按钮为中心扩大覆盖
+            { btnCX - btnGroupR * s, btnCY - btnGroupR * s, lw, lh },
+        })
+    end
+
     -- 从云端加载自定义布局并应用
     ControlLayout.LoadFromCloud(function(layout)
         Standalone.ApplyLayout(layout)
@@ -732,6 +757,48 @@ function Standalone.HandleUpdate(dt)
     end
 
     -- 结算画面（不阻塞后续逻辑，AI 继续运行）
+    -- 复活选择画面（一命通天模式）
+    if GameManager.state == GameManager.STATE_REVIVE then
+        Camera.spectateMode = true
+        Standalone.SetVirtualControlsVisible(false)
+
+        local btn = HUD.GetReviveButtonClicked()
+        if btn == "coin" then
+            local cost = GameManager.reviveCoinUsed == 0 and 100 or 200
+            if Economy.GetCoins() >= cost then
+                Economy.AddCoins(-cost)
+                Economy.Save()
+                GameManager.reviveCoinUsed = GameManager.reviveCoinUsed + 1
+                GameManager.RevivePlayer()
+                Camera.spectateMode = false
+                Standalone.SetVirtualControlsVisible(true)
+                SFX.Play("pickup_large", 0.8)
+                print("[Standalone] 金币复活成功，花费 " .. cost .. " 金币 (第 " .. GameManager.reviveCoinUsed .. " 次)")
+            end
+        elseif btn == "ad" then
+            if GameManager.reviveAdUsed < 1 and not GameManager.reviveWaitingAd then
+                GameManager.reviveWaitingAd = true
+                print("[Standalone] 请求播放激励视频广告...")
+                ---@diagnostic disable-next-line: undefined-global
+                sdk:ShowRewardVideoAd(function(result)
+                    GameManager.reviveWaitingAd = false
+                    if result.success then
+                        GameManager.reviveAdUsed = GameManager.reviveAdUsed + 1
+                        GameManager.RevivePlayer()
+                        Camera.spectateMode = false
+                        Standalone.SetVirtualControlsVisible(true)
+                        SFX.Play("pickup_large", 0.8)
+                        print("[Standalone] 广告复活成功")
+                    else
+                        print("[Standalone] 广告播放失败: " .. tostring(result.msg))
+                    end
+                end)
+            end
+        elseif btn == "giveup" then
+            GameManager.GiveUpRevive()
+        end
+    end
+
     if GameManager.state == GameManager.STATE_RESULT then
         Camera.spectateMode = true
         Standalone.SetVirtualControlsVisible(false)
@@ -798,20 +865,24 @@ function Standalone.HandleUpdate(dt)
     end
 
     -- 教程状态：在 HandlePlayerInput 之后更新（确保能检测到本帧输入）
-    if GameManager.state == GameManager.STATE_TUTORIAL and Tutorial.IsActive() then
-        -- 非能量步骤禁止蓄力/爆炸（防止点击触发爆炸）
-        local step = Tutorial.GetCurrentStepId()
-        if step ~= "energy" then
-            for _, p in ipairs(Player.list) do
-                if p.isHuman then
-                    p.inputCharging = false
-                    p.inputExplodeRelease = false
-                    p.wasChargingInput = false
+    if GameManager.state == GameManager.STATE_TUTORIAL then
+        if Tutorial.IsActive() then
+            -- 非能量步骤禁止蓄力/爆炸（防止点击触发爆炸）
+            local step = Tutorial.GetCurrentStepId()
+            if step ~= "energy" then
+                for _, p in ipairs(Player.list) do
+                    if p.isHuman then
+                        p.inputCharging = false
+                        p.inputExplodeRelease = false
+                        p.wasChargingInput = false
+                    end
                 end
             end
+            Tutorial.Update(dt)
         end
-        Tutorial.Update(dt)
-        -- 教程结束 → 返回菜单
+        -- 教程结束（通关或跳过）→ 返回菜单
+        -- 注意：Tutorial.Finish() 可能在 NanoVGRender 帧（Draw）中被调用，
+        -- 此时 IsActive() 已为 false，须在外层 STATE_TUTORIAL 块中检测
         if not Tutorial.IsActive() then
             print("[Standalone] Tutorial finished → returning to menu")
             Camera.spectateMode = true

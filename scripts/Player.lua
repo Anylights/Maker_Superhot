@@ -1152,23 +1152,23 @@ function Player.UpdateMovement(p, dt)
     -- =====================
     -- 天花板碰撞处理
     -- =====================
-    if p.hitCeiling and vel.y > 0 then
+    -- 天花板碰撞：用 prevVelY 判断（物理引擎碰撞处理后 vel.y 已被清零，不能用 vel.y）
+    if p.hitCeiling and (p.prevVelY or 0) > 0 then
         if PowerUp.HasEffect(p.index, PowerUp.SUPER_BIG) and mapModule_ and p.hitCeilingPos then
-            -- 超级变大：撞碎头顶普通平台，速度衰减50%
+            -- 超级变大：尝试撞碎头顶普通平台
             local cx = p.hitCeilingPos.x
             local bs = Config.BlockSize
-            local scale = PowerUp.GetScale(p)
-            -- 根据角色缩放调整向上偏移：2x大时碰撞点可能更偏下
-            local offset = bs * 0.3 + bs * (scale - 1.0) * 0.5
-            local cy = p.hitCeilingPos.y + offset
+            -- 接触点在方块底面，往上加一点点确保落在方块内
+            local cy = p.hitCeilingPos.y + bs * 0.1
             local gx, gy = mapModule_.WorldToGrid(cx, cy)
             local destroyed = mapModule_.DestroyBlock(gx, gy, cx, cy)
-            -- 如果第一格没找到可破坏方块，尝试上一格
+            -- 若第一格未命中，尝试再上一格
             if not destroyed then
                 destroyed = mapModule_.DestroyBlock(gx, gy + 1, cx, cy + bs)
             end
             if destroyed then
-                vel = Vector3(vel.x, vel.y * 0.5, 0)  -- 保留50%上升速度
+                -- 恢复碰撞前的上升速度，跳跃曲线无衰减
+                vel = Vector3(vel.x, p.prevVelY, 0)
                 SFX.Play("explode", 0.4, cx, cy)
             else
                 vel = Vector3(vel.x, 0, 0)  -- 不可破坏方块：完全停止

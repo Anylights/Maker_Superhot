@@ -213,6 +213,7 @@ function ExplosionTuningPanel.BuildUI()
 
     for _, param in ipairs(PARAMS) do
         local val = currentValues_[param.key]
+        if val == nil then val = param.default or 0 end
 
         local valLabel = UI.Label {
             text = string.format(param.format, val),
@@ -342,6 +343,8 @@ end
 function ExplosionTuningPanel.Show()
     if visible_ then return end
     EnsureUIInit()
+    -- 每次打开时重新从 Config 读取默认值，防止游戏结束后 Config 发生变化导致 nil
+    currentValues_ = GetDefaults()
     visible_ = true
     ExplosionTuningPanel.BuildUI()
     print("[ExplosionTuningPanel] Shown")

@@ -95,15 +95,17 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     -- =====================
     -- 顶部标题栏
     -- =====================
-    local headerH = isMobile and 44 or 52
+    -- 移动端：状态栏+胶囊约占顶部 44px，header 需要更高以避开
+    local safeTop = isMobile and 44 or 0
+    local headerH = (isMobile and 88 or 52)
     local titleSize = isMobile and 20 or 28
-    local coinSize = isMobile and 13 or 16
-    local backBtnSize = isMobile and 32 or 40
+    local coinSize = isMobile and 14 or 16
+    local backBtnSize = isMobile and 44 or 40   -- 移动端更大触摸目标
 
-    -- 返回按钮（左上角，大按钮）
-    local backPad = isMobile and 8 or 12
+    -- 返回按钮（左上角，大按钮，移动端位于安全区下方）
+    local backPad = isMobile and 10 or 12
     local backX = backPad
-    local backY = (headerH - backBtnSize) * 0.5
+    local backY = safeTop + (headerH - safeTop - backBtnSize) * 0.5
     local backHover = mx >= backX and mx <= backX + backBtnSize and my >= backY and my <= backY + backBtnSize
 
     nvgBeginPath(vg)
@@ -127,23 +129,26 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
         buttonClicked_ = "back"
     end
 
-    -- 标题（居中）
+    -- 标题（居中，移动端垂直居中于安全区以下的内容区）
+    local titleCY = isMobile and (safeTop + (headerH - safeTop) * 0.5) or (headerH * 0.5)
     nvgFontFace(vg, "bold")
     nvgFontSize(vg, titleSize)
     nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg, nvgRGBA(0, 0, 0, 120))
-    nvgText(vg, logW * 0.5 + 1, headerH * 0.5 + 1, "商店")
+    nvgText(vg, logW * 0.5 + 1, titleCY + 1, "商店")
     nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 255)))
-    nvgText(vg, logW * 0.5, headerH * 0.5, "商店")
+    nvgText(vg, logW * 0.5, titleCY, "商店")
 
-    -- 金币显示（右上角）
+    -- 金币显示（右上角，移动端避开 TapTap 胶囊：右留 100px + 垂直居中于安全区下方内容区）
     local coins = Economy.GetCoins()
     local coinText = "🪙 " .. tostring(coins)
+    local coinRightPad = isMobile and 100 or 16
+    local coinCY = isMobile and (safeTop + (headerH - safeTop) * 0.5) or (headerH * 0.5)
     nvgFontFace(vg, "bold")
     nvgFontSize(vg, coinSize)
     nvgTextAlign(vg, NVG_ALIGN_RIGHT + NVG_ALIGN_MIDDLE)
     nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 240)))
-    nvgText(vg, logW - 16, headerH * 0.5, coinText)
+    nvgText(vg, logW - coinRightPad, coinCY, coinText)
 
     -- =====================
     -- 购买结果提示（淡出）

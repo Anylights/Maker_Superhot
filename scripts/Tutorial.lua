@@ -55,6 +55,10 @@ local cachedPress_ = false
 local cachedMX_ = 0
 local cachedMY_ = 0
 
+-- 移动端控制区域排除矩形（防止点击虚拟控制触发"点击继续"）
+-- 格式：{ {x1,y1,x2,y2}, ... }  逻辑坐标
+local mobileExcludeRects_ = {}
+
 -- ============================================================================
 -- 教程步骤定义
 -- ============================================================================
@@ -180,10 +184,14 @@ function Tutorial.Start()
     chargeDone_ = false
     explodeDone_ = false
 
-    -- 给人类玩家满能量（方便教爆炸）
+    -- 确保人类玩家存活（一命通天模式结束后 alive=false，重进教程需要复活）
     if playerModule_ then
         for _, p in ipairs(playerModule_.list) do
-            if p.isHuman and p.alive then
+            if p.isHuman then
+                if not p.alive then
+                    playerModule_.Respawn(p)
+                end
+                -- 给满能量（方便教爆炸）
                 p.energy = 1.0
             end
         end
@@ -225,8 +233,23 @@ end
 -- 更新逻辑
 -- ============================================================================
 
+--- 设置移动端虚拟控制排除区域（由 Standalone 在 InitMobileControls 后调用）
+---@param rects table  格式 {{x1,y1,x2,y2}, ...}，逻辑坐标
+function Tutorial.SetMobileExcludeRects(rects)
+    mobileExcludeRects_ = rects or {}
+end
+
 --- 缓存输入（由外部在 Update 阶段调用）
 function Tutorial.CacheInput(mousePress, mx, my)
+    -- 移动端：如果点击落在虚拟控制区域内，不算作"点击继续"
+    if mousePress and isMobile_ and #mobileExcludeRects_ > 0 then
+        for _, r in ipairs(mobileExcludeRects_) do
+            if mx >= r[1] and mx <= r[3] and my >= r[2] and my <= r[4] then
+                mousePress = false
+                break
+            end
+        end
+    end
     cachedPress_ = mousePress
     cachedMX_ = mx
     cachedMY_ = my
@@ -542,10 +565,19 @@ end
 
 --- 绘制跳过按钮（右上角）
 function Tutorial.DrawSkipButton(ctx, w, mousePress, mx, my)
-    local btnW = math.floor(60 * uiScale_)
-    local btnH = math.floor(26 * uiScale_)
-    local btnX = w - btnW - 10
-    local btnY = 6
+    -- 移动端：更大的按钮 + 避开 TapTap 胶囊菜单（右约100px，顶约58px）
+    local btnW, btnH, btnX, btnY
+    if isMobile_ then
+        btnW = math.floor(80 * uiScale_)
+        btnH = math.floor(40 * uiScale_)
+        btnX = w - btnW - math.floor(100 * uiScale_)
+        btnY = math.floor(58 * uiScale_)
+    else
+        btnW = math.floor(60 * uiScale_)
+        btnH = math.floor(26 * uiScale_)
+        btnX = w - btnW - 10
+        btnY = 6
+    end
 
     local hovered = mx >= btnX and mx <= btnX + btnW and my >= btnY and my <= btnY + btnH
 

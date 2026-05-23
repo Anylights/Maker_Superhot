@@ -5,7 +5,7 @@
     "id": "540864398"
   },
   "entry": "main.lua",
-  "version": "1.0.104",
+  "version": "1.0.108",
   "taptap_publish": {
     "title": "超级红温",
     "description": "你红温了吗？超Q弹的多人竞技爬塔对战游戏，使用冲刺、下砸、蓄力爆炸等技能击飞对手，攀登到最高点！",
@@ -39,10 +39,10 @@
     "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_VERTICAL_2026-05-14T11-55-23_01.png"
   },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_agbd_1779075990787.png",
-    "generated_at": "2026-05-18T03:46:30.910Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_agbd_1779532272357.png",
+    "generated_at": "2026-05-23T10:31:12.482Z"
   },
   "metadata": {
-    "updated_at": "2026-05-18T05:17:59.713Z"
+    "updated_at": "2026-05-23T10:31:12.482Z"
   }
 }

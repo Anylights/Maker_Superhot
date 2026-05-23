@@ -268,6 +268,19 @@ function Tutorial.Update(dt)
         fadeAlpha_ = math.max(0, fadeAlpha_ - dt * 400)
     end
 
+    -- 教程期间自动复活（死亡后 1 秒内复活，保持教程流程连贯）
+    if playerModule_ then
+        for _, p in ipairs(playerModule_.list) do
+            if p.isHuman and not p.alive then
+                playerModule_.Respawn(p)
+                -- 给满能量，以防在能量步骤死亡
+                p.energy = 1.0
+                print("[Tutorial] Auto-respawned human player during tutorial")
+                break
+            end
+        end
+    end
+
     -- 追踪玩家动作
     Tutorial.TrackPlayerActions(dt)
 
@@ -571,7 +584,8 @@ function Tutorial.DrawSkipButton(ctx, w, mousePress, mx, my)
         btnW = math.floor(80 * uiScale_)
         btnH = math.floor(40 * uiScale_)
         btnX = w - btnW - math.floor(100 * uiScale_)
-        btnY = math.floor(58 * uiScale_)
+        -- 胶囊高度约 58px，再偏移一个胶囊距离（58px）+ 间距（8px）到其下方
+        btnY = math.floor(58 * uiScale_) + math.floor(58 * uiScale_) + math.floor(8 * uiScale_)
     else
         btnW = math.floor(60 * uiScale_)
         btnH = math.floor(26 * uiScale_)

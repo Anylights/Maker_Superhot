@@ -103,6 +103,13 @@ end
 
 --- 进入新手教程
 function GameManager.EnterTutorial()
+    -- 教程强制用普通模式，防止 ONELIFE 模式的死亡逻辑（respawnTimer=99999）干扰复活
+    GameManager.gameMode = Config.GAMEMODE_NORMAL
+    -- 解冻玩家：游戏结束时 FreezeAll() 会设置 Player.frozen=true，
+    -- 若不解冻，Player.Kill 会直接 return，导致教程中掉落无法死亡/复活
+    if playerModule_ and playerModule_.UnfreezeAll then
+        playerModule_.UnfreezeAll()
+    end
     GameManager.SetState(GameManager.STATE_TUTORIAL)
 end
 

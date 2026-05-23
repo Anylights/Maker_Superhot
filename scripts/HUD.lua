@@ -52,6 +52,7 @@ local shopOpen_ = false
 local layoutEditorOpen_ = false
 local layoutEditorData_ = nil   -- 编辑中的布局副本
 local layoutDragging_ = nil     -- 当前正在拖拽的控件名 ("joystick"/"jump"/"dash"/"slam"/"charge")
+local layoutSelected_ = nil     -- 当前选中的控件名（点击选中，可用+/-调整大小）
 local layoutDragOffX_ = 0       -- 拖拽偏移
 local layoutDragOffY_ = 0
 local layoutSaving_ = false     -- 正在保存中
@@ -3201,8 +3202,8 @@ function HUD.DrawFullMenuLeaderboard(mx, my)
     local safeBottom = isMobileHUD_ and math.floor(20 * s) or math.floor(10 * s)
 
     -- ── 面板尺寸 ─────────────────────────────────────────────────────────────
-    -- 手机端使用屏幕宽度的 96%，PC 端最大 560px
-    local panelW  = isMobileHUD_ and math.floor(logW_ * 0.96)
+    -- 手机端使用屏幕宽度的 84%，PC 端最大 560px
+    local panelW  = isMobileHUD_ and math.floor(logW_ * 0.84)
                     or math.min(logW_ - math.floor(24 * s), math.max(300, math.floor(560 * s)))
     local lineH   = math.max(18, math.floor(24 * s))
     -- headerH 拆分为标题行 + 列表头行
@@ -3796,6 +3797,7 @@ function HUD.OpenLayoutEditor()
         end
     end
     layoutDragging_ = nil
+    layoutSelected_ = nil
     layoutSaving_ = false
 
     layoutDiagPrinted_ = false  -- 下次DrawLayoutEditor时打印一次诊断
@@ -3807,6 +3809,7 @@ function HUD.CloseLayoutEditor()
     layoutEditorOpen_ = false
     layoutEditorData_ = nil
     layoutDragging_ = nil
+    layoutSelected_ = nil
     layoutTouchId_ = nil
     print("[HUD] Layout editor closed")
 end
@@ -4040,6 +4043,7 @@ function HUD.DrawLayoutEditor(mx, my)
             local dist = math.sqrt(dx * dx + dy * dy)
             local isHover = dist <= r
             local isDragging = (layoutDragging_ == def.name)
+            local isSelected = (layoutSelected_ == def.name)
 
             if isHover and dist < hitDist and not layoutDragging_ then
                 hitCtrl = def.name
@@ -4049,16 +4053,26 @@ function HUD.DrawLayoutEditor(mx, my)
             -- 绘制圆形背景
             nvgBeginPath(vg)
             nvgCircle(vg, cx, cy, r)
-            local alpha = (isDragging or isHover) and 160 or 100
+            local alpha = (isDragging or isSelected or isHover) and 160 or 100
             nvgFillColor(vg, nvgRGBA(def.color[1], def.color[2], def.color[3], alpha))
             nvgFill(vg)
 
-            -- 边框
+            -- 边框（选中态：黄色粗边框）
             nvgBeginPath(vg)
             nvgCircle(vg, cx, cy, r)
-            local borderAlpha = isDragging and 255 or (isHover and 220 or 120)
-            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, borderAlpha))
-            nvgStrokeWidth(vg, isDragging and 3 or 1.5)
+            if isSelected and not isDragging then
+                nvgStrokeColor(vg, nvgRGBA(255, 230, 0, 255))
+                nvgStrokeWidth(vg, 3)
+            elseif isDragging then
+                nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 255))
+                nvgStrokeWidth(vg, 3)
+            elseif isHover then
+                nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 220))
+                nvgStrokeWidth(vg, 1.5)
+            else
+                nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 120))
+                nvgStrokeWidth(vg, 1.5)
+            end
             nvgStroke(vg)
 
             -- 标签
@@ -4068,8 +4082,8 @@ function HUD.DrawLayoutEditor(mx, my)
             nvgFillColor(vg, nvgRGBA(255, 255, 255, 230))
             nvgText(vg, cx, cy, def.label)
 
-            -- 被选中的控件显示缩放提示
-            if isDragging then
+            -- 选中或拖拽时显示大小提示
+            if isSelected or isDragging then
                 nvgFontSize(vg, isMobileHUD_ and 8 or 10)
                 nvgFontFace(vg, "sans")
                 nvgFillColor(vg, nvgRGBA(255, 255, 200, 180))
@@ -4079,19 +4093,41 @@ function HUD.DrawLayoutEditor(mx, my)
         end
     end
 
-    -- ========== 拖拽逻辑 ==========
-    if pressed and not layoutDragging_ and hitCtrl then
-        -- 开始拖拽
-        layoutDragging_ = hitCtrl
-        local data = layoutEditorData_[hitCtrl]
+    -- ========== 点击选中 / 拖拽移动逻辑 ==========
+    -- 点击控件 → 选中（高亮，+/-可调大小）
+    -- 在选中控件上按住拖拽 → 移动位置
+    -- 点击空白处 → 取消选中
+    if pressed then
+        if hitCtrl then
+            -- 点击了某个控件：设为选中
+            layoutSelected_ = hitCtrl
+        else
+            -- 点击空白处：取消选中（但不清除正在拖拽的状态）
+            if not layoutDragging_ then
+                layoutSelected_ = nil
+            end
+        end
+    end
+
+    -- 按住拖拽：如果按住鼠标/触摸且在选中的控件上，开始拖拽
+    if input:GetMouseButtonDown(MOUSEB_LEFT) and not layoutDragging_ and layoutSelected_ then
+        -- 检测是否在选中控件内
+        local selCtrl = layoutSelected_
+        local data = layoutEditorData_[selCtrl]
         local def = nil
         for _, d in ipairs(LAYOUT_CONTROLS) do
-            if d.name == hitCtrl then def = d; break end
+            if d.name == selCtrl then def = d; break end
         end
         if def and data then
             local cx, cy = designToLogical(data.x, data.y, def.alignH, def.alignV)
-            layoutDragOffX_ = mx - cx
-            layoutDragOffY_ = my - cy
+            local r = designRadiusToLogical(data[def.radiusKey] or 80)
+            local ddx = mx - cx
+            local ddy = my - cy
+            if math.sqrt(ddx*ddx + ddy*ddy) <= r then
+                layoutDragging_ = selCtrl
+                layoutDragOffX_ = ddx
+                layoutDragOffY_ = ddy
+            end
         end
     end
 
@@ -4111,6 +4147,8 @@ function HUD.DrawLayoutEditor(mx, my)
 
         -- 检测松开（没有触摸且没有鼠标按下）
         if input.numTouches == 0 and not input:GetMouseButtonDown(MOUSEB_LEFT) then
+            -- 拖拽结束后保持选中状态，方便继续调整大小
+            layoutSelected_ = layoutDragging_
             layoutDragging_ = nil
         end
     end
@@ -4138,11 +4176,14 @@ function HUD.DrawLayoutEditor(mx, my)
     local shrinkHov = mx >= shrinkX and mx <= shrinkX + smallBtnW and my >= btnY2 and my <= btnY2 + btnH
     HUD.DrawRubberButton(shrinkX, btnY2, smallBtnW, btnH, "-",
         120, 120, 140, shrinkHov)
-    if pressed and shrinkHov and layoutDragging_ then
-        local data = layoutEditorData_[layoutDragging_]
+    -- 当前操作目标（优先拖拽中的，其次是选中的）
+    local activeCtrl = layoutDragging_ or layoutSelected_
+
+    if pressed and shrinkHov and activeCtrl then
+        local data = layoutEditorData_[activeCtrl]
         local def = nil
         for _, d in ipairs(LAYOUT_CONTROLS) do
-            if d.name == layoutDragging_ then def = d; break end
+            if d.name == activeCtrl then def = d; break end
         end
         if def and data then
             local key = def.radiusKey
@@ -4161,11 +4202,11 @@ function HUD.DrawLayoutEditor(mx, my)
     local growHov = mx >= growX and mx <= growX + smallBtnW and my >= btnY2 and my <= btnY2 + btnH
     HUD.DrawRubberButton(growX, btnY2, smallBtnW, btnH, "+",
         120, 120, 140, growHov)
-    if pressed and growHov and layoutDragging_ then
-        local data = layoutEditorData_[layoutDragging_]
+    if pressed and growHov and activeCtrl then
+        local data = layoutEditorData_[activeCtrl]
         local def = nil
         for _, d in ipairs(LAYOUT_CONTROLS) do
-            if d.name == layoutDragging_ then def = d; break end
+            if d.name == activeCtrl then def = d; break end
         end
         if def and data then
             local key = def.radiusKey
@@ -4179,14 +4220,14 @@ function HUD.DrawLayoutEditor(mx, my)
     end
 
     -- 当前选中提示
-    if layoutDragging_ then
+    if activeCtrl then
         nvgFontFace(vg, "sans")
         nvgFontSize(vg, isMobileHUD_ and 10 or 12)
         nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_MIDDLE)
         nvgFillColor(vg, nvgRGBA(255, 255, 200, 200))
-        local selLabel = "选中: "
+        local selLabel = layoutDragging_ and "移动: " or "选中: "
         for _, d in ipairs(LAYOUT_CONTROLS) do
-            if d.name == layoutDragging_ then selLabel = selLabel .. d.label; break end
+            if d.name == activeCtrl then selLabel = selLabel .. d.label; break end
         end
         nvgText(vg, growX + smallBtnW + btnGap, btnY2 + btnH * 0.5, selLabel)
     end
@@ -4253,6 +4294,7 @@ function HUD.DrawLayoutEditor(mx, my)
             end
         end
         layoutDragging_ = nil
+        layoutSelected_ = nil
     end
 end
 

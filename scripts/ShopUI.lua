@@ -182,7 +182,7 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     nvgScissor(vg, 0, contentTop, logW, logH - contentTop)
 
     if isMobile then
-        drawWaterfallList(vg, logW, logH, contentTop, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my, true)
+        drawTwoColumnMobile(vg, logW, logH, contentTop, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my)
     else
         drawWaterfallGrid(vg, logW, logH, contentTop, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my)
     end
@@ -268,7 +268,63 @@ function drawScrollbar(vg, logW, logH, contentTop)
 end
 
 -- ============================================================================
--- 瀑布流布局：手机端（单列列表）
+-- 双列布局：手机端（左职业 / 右表情）
+-- ============================================================================
+
+function drawTwoColumnMobile(vg, logW, logH, topY, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my)
+    local outerPad = 8          -- 左右外边距
+    local colGap   = 8          -- 两列之间间距
+    local colW     = math.floor((logW - outerPad * 2 - colGap) * 0.5)
+    local cardH    = 130        -- 卡片高度（非compact，适合半屏宽）
+    local cardGap  = 8          -- 卡片上下间距
+    local labelH   = 26         -- 列标题高度
+
+    local leftX  = outerPad
+    local rightX = outerPad + colW + colGap
+
+    -- 左列：职业
+    local leftCurY = 4 + labelH  -- 顶部留出标题行
+    -- 右列：表情
+    local rightCurY = 4 + labelH
+
+    -- 绘制列标题（固定在内容区顶部，随滚动偏移）
+    local leftLabelY  = topY + 4 - scrollY_
+    local rightLabelY = topY + 4 - scrollY_
+    if leftLabelY + labelH > topY - 4 and leftLabelY < logH + 4 then
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, 13)
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
+        nvgText(vg, leftX  + colW * 0.5, leftLabelY  + labelH * 0.5, "— 职业 —")
+        nvgText(vg, rightX + colW * 0.5, rightLabelY + labelH * 0.5, "— 表情 —")
+    end
+
+    -- 绘制职业（左列）
+    for _, cls in ipairs(classes) do
+        local cy = topY + leftCurY - scrollY_
+        if cy + cardH > topY - 10 and cy < logH + 10 then
+            drawClassCard(vg, leftX, cy, colW, cardH, cls, selectedClassId, mousePress, mx, my, false)
+        end
+        leftCurY = leftCurY + cardH + cardGap
+    end
+
+    -- 绘制表情（右列）
+    for _, skin in ipairs(allSkins) do
+        local cy = topY + rightCurY - scrollY_
+        if cy + cardH > topY - 10 and cy < logH + 10 then
+            drawSkinCard(vg, rightX, cy, colW, cardH, skin, selectedSkinId, mousePress, mx, my, false)
+        end
+        rightCurY = rightCurY + cardH + cardGap
+    end
+
+    -- 底部留空，以较高的列为准
+    local totalH = math.max(leftCurY, rightCurY) + 20
+    local viewH  = logH - topY
+    maxScrollY_  = math.max(0, totalH - viewH)
+end
+
+-- ============================================================================
+-- 瀑布流布局：手机端（单列列表，保留备用）
 -- ============================================================================
 
 function drawWaterfallList(vg, logW, logH, topY, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my, isMobile)

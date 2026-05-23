@@ -11,20 +11,35 @@ local Theme = require("Theme")
 
 local ShopUI = {}
 
--- 内部状态
-local scrollY_ = 0           -- 滚动偏移
-local scrollVel_ = 0         -- 滚动惯性速度
-local maxScrollY_ = 0        -- 最大滚动范围
+-- 内部状态（桌面端单列滚动）
+local scrollY_ = 0
+local scrollVel_ = 0
+local maxScrollY_ = 0
+
+-- 移动端双面板独立滚动
+local scrollYClass_ = 0      -- 职业面板
+local velClass_     = 0
+local maxScrollClass_ = 0
+local scrollYSkin_  = 0      -- 表情面板
+local velSkin_      = 0
+local maxScrollSkin_ = 0
+
 local buyResult_ = nil        -- 购买结果提示 { text, color, timer }
 local buttonClicked_ = nil    -- "back" | nil
+local pendingAdUnlock_ = nil  -- { type="class"|"skin", item=... } 推迟到 Update 阶段调用 SDK
 
 -- 触摸拖拽状态
-local touchActive_ = false
-local touchDragging_ = false   -- 实际发生了拖拽（移动超过阈值）
-local touchStartY_ = 0
-local touchLastY_ = 0
+local touchActive_       = false
+local touchDragging_     = false
+local touchStartY_       = 0
+local touchLastY_        = 0
 local touchStartScrollY_ = 0
-local DRAG_THRESHOLD = 5       -- 移动超过此像素才视为拖拽
+local touchSide_         = 0   -- 0=桌面, 1=左面板(职业), 2=右面板(表情)
+local DRAG_THRESHOLD     = 5
+
+-- 可通过广告解锁的职业/皮肤（其余只能金币购买）
+local AD_UNLOCK_CLASSES = { [2]=true, [3]=true, [4]=true }  -- 弹跳忍者/能量达人/疾风突击
+local AD_UNLOCK_SKINS   = { ["bored"]=true, ["stareyes"]=true }  -- 不屑冷漠/追星达人
 
 -- ============================================================================
 -- 公共 API
@@ -40,12 +55,35 @@ end
 
 --- 重置商店状态（进入商店时调用）
 function ShopUI.Reset()
-    scrollY_ = 0
-    scrollVel_ = 0
-    maxScrollY_ = 0
-    buyResult_ = nil
-    buttonClicked_ = nil
-    touchActive_ = false
+    scrollY_ = 0; scrollVel_ = 0; maxScrollY_ = 0
+    scrollYClass_ = 0; velClass_ = 0; maxScrollClass_ = 0
+    scrollYSkin_  = 0; velSkin_ = 0; maxScrollSkin_  = 0
+    buyResult_ = nil; buttonClicked_ = nil
+    touchActive_ = false; touchSide_ = 0
+    pendingAdUnlock_ = nil
+end
+
+--- 处理挂起的广告解锁请求（必须在 Update 阶段调用，不能在渲染回调中调用）
+--- sdk:ShowRewardVideoAd 内部会修改渲染顺序，禁止在 NanoVGRender 中执行
+function ShopUI.ProcessPendingAds()
+    if not pendingAdUnlock_ then return end
+    local pending = pendingAdUnlock_
+    pendingAdUnlock_ = nil
+    sdk:ShowRewardVideoAd(function(result)
+        if result.success then
+            if pending.type == "class" then
+                local ok, _ = Economy.UnlockClassFree(pending.item.id)
+                if ok then
+                    buyResult_ = { text = "广告奖励！已解锁 " .. pending.item.name, color = Theme.success, timer = 2.0 }
+                end
+            else
+                local ok, _ = Economy.UnlockSkinFree(pending.item.id)
+                if ok then
+                    buyResult_ = { text = "广告奖励！已解锁 " .. pending.item.name, color = Theme.success, timer = 2.0 }
+                end
+            end
+        end
+    end)
 end
 
 --- 绘制商店界面
@@ -190,9 +228,7 @@ function ShopUI.Draw(vg, logW, logH, uiScale, isMobile, mousePress, mx, my)
     nvgRestore(vg)
 
     -- 滚动条指示器
-    if maxScrollY_ > 0 then
-        drawScrollbar(vg, logW, logH, contentTop)
-    end
+    drawScrollbar(vg, logW, logH, contentTop, isMobile)
 end
 
 -- ============================================================================
@@ -200,127 +236,187 @@ end
 -- ============================================================================
 
 function handleScrollInput(vg, logW, logH, isMobile, mx, my, mousePress)
-    -- 鼠标滚轮（桌面端）
+    local halfW = logW * 0.5
+
+    -- 鼠标滚轮
     local wheel = input:GetMouseMoveWheel()
     if wheel ~= 0 then
-        scrollY_ = scrollY_ - wheel * 30
-        scrollVel_ = 0
+        if isMobile then
+            if mx < halfW then
+                scrollYClass_ = scrollYClass_ - wheel * 30; velClass_ = 0
+            else
+                scrollYSkin_ = scrollYSkin_ - wheel * 30; velSkin_ = 0
+            end
+        else
+            scrollY_ = scrollY_ - wheel * 30; scrollVel_ = 0
+        end
     end
 
-    -- 触摸拖拽（移动端 + 桌面端鼠标拖拽）
+    -- 触摸/鼠标拖拽
     local mouseDown = input:GetMouseButtonDown(MOUSEB_LEFT)
     if mousePress and not touchActive_ then
-        -- 按下：开始追踪，但还不算拖拽
         touchActive_ = true
         touchDragging_ = false
         touchStartY_ = my
         touchLastY_ = my
-        touchStartScrollY_ = scrollY_
-        scrollVel_ = 0
-    elseif touchActive_ and mouseDown then
-        -- 按住中：检查是否超过拖拽阈值
-        local totalDelta = math.abs(my - touchStartY_)
-        if totalDelta > DRAG_THRESHOLD then
-            touchDragging_ = true
+        if isMobile then
+            touchSide_ = (mx < halfW) and 1 or 2
+            touchStartScrollY_ = (touchSide_ == 1) and scrollYClass_ or scrollYSkin_
+        else
+            touchSide_ = 0
+            touchStartScrollY_ = scrollY_
         end
+        scrollVel_ = 0; velClass_ = 0; velSkin_ = 0
+    elseif touchActive_ and mouseDown then
+        local totalDelta = math.abs(my - touchStartY_)
+        if totalDelta > DRAG_THRESHOLD then touchDragging_ = true end
         if touchDragging_ then
             local deltaY = touchLastY_ - my
-            scrollVel_ = deltaY
             touchLastY_ = my
-            scrollY_ = touchStartScrollY_ + (touchStartY_ - my)
+            local newScroll = touchStartScrollY_ + (touchStartY_ - my)
+            if isMobile then
+                if touchSide_ == 1 then
+                    scrollYClass_ = newScroll; velClass_ = deltaY
+                else
+                    scrollYSkin_ = newScroll; velSkin_ = deltaY
+                end
+            else
+                scrollY_ = newScroll; scrollVel_ = deltaY
+            end
         end
     elseif touchActive_ and not mouseDown then
-        -- 松开
         touchActive_ = false
-        -- touchDragging_ 保持到下一帧，不在这里重置
     end
 
     -- 惯性滚动
-    if not touchActive_ and math.abs(scrollVel_) > 0.5 then
-        scrollY_ = scrollY_ + scrollVel_
-        scrollVel_ = scrollVel_ * 0.92  -- 摩擦减速
-    else
-        scrollVel_ = 0
+    if not touchActive_ then
+        if isMobile then
+            if math.abs(velClass_) > 0.5 then
+                scrollYClass_ = scrollYClass_ + velClass_; velClass_ = velClass_ * 0.92
+            else velClass_ = 0 end
+            if math.abs(velSkin_) > 0.5 then
+                scrollYSkin_ = scrollYSkin_ + velSkin_; velSkin_ = velSkin_ * 0.92
+            else velSkin_ = 0 end
+        else
+            if math.abs(scrollVel_) > 0.5 then
+                scrollY_ = scrollY_ + scrollVel_; scrollVel_ = scrollVel_ * 0.92
+            else scrollVel_ = 0 end
+        end
     end
 
     -- 限制范围
     scrollY_ = math.max(0, math.min(scrollY_, maxScrollY_))
+    scrollYClass_ = math.max(0, math.min(scrollYClass_, maxScrollClass_))
+    scrollYSkin_  = math.max(0, math.min(scrollYSkin_,  maxScrollSkin_))
 end
 
 -- ============================================================================
 -- 滚动条绘制
 -- ============================================================================
 
-function drawScrollbar(vg, logW, logH, contentTop)
+function drawScrollbar(vg, logW, logH, contentTop, isMobile)
     local viewH = logH - contentTop
-    local totalH = viewH + maxScrollY_
-    if totalH <= 0 then return end
-
-    local barTrackH = viewH - 8
-    local barH = math.max(20, (viewH / totalH) * barTrackH)
-    local barY = contentTop + 4 + (scrollY_ / maxScrollY_) * (barTrackH - barH)
-    local barX = logW - 5
-
-    nvgBeginPath(vg)
-    nvgRoundedRect(vg, barX, barY, 3, barH, 1.5)
-    nvgFillColor(vg, nvgRGBA(255, 255, 255, 40))
-    nvgFill(vg)
+    if isMobile then
+        -- 左面板滚动条（贴近分割线左侧）
+        if maxScrollClass_ > 0 then
+            local halfW = math.floor(logW * 0.5)
+            local tH = viewH + maxScrollClass_
+            local bH = math.max(16, (viewH / tH) * (viewH - 8))
+            local bY = contentTop + 4 + (scrollYClass_ / maxScrollClass_) * (viewH - 8 - bH)
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, halfW - 5, bY, 3, bH, 1.5)
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 40))
+            nvgFill(vg)
+        end
+        -- 右面板滚动条（贴右侧）
+        if maxScrollSkin_ > 0 then
+            local tH = viewH + maxScrollSkin_
+            local bH = math.max(16, (viewH / tH) * (viewH - 8))
+            local bY = contentTop + 4 + (scrollYSkin_ / maxScrollSkin_) * (viewH - 8 - bH)
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, logW - 5, bY, 3, bH, 1.5)
+            nvgFillColor(vg, nvgRGBA(255, 255, 255, 40))
+            nvgFill(vg)
+        end
+    else
+        if maxScrollY_ <= 0 then return end
+        local tH = viewH + maxScrollY_
+        local bH = math.max(20, (viewH / tH) * (viewH - 8))
+        local bY = contentTop + 4 + (scrollY_ / maxScrollY_) * (viewH - 8 - bH)
+        nvgBeginPath(vg)
+        nvgRoundedRect(vg, logW - 5, bY, 3, bH, 1.5)
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 40))
+        nvgFill(vg)
+    end
 end
 
 -- ============================================================================
--- 双列布局：手机端（左职业 / 右表情）
+-- 双面板布局：手机端（左职业2列/右表情2列，独立滚动）
 -- ============================================================================
 
 function drawTwoColumnMobile(vg, logW, logH, topY, classes, allSkins, selectedClassId, selectedSkinId, mousePress, mx, my)
-    local outerPad = 8          -- 左右外边距
-    local colGap   = 8          -- 两列之间间距
-    local colW     = math.floor((logW - outerPad * 2 - colGap) * 0.5)
-    local cardH    = 130        -- 卡片高度（非compact，适合半屏宽）
-    local cardGap  = 8          -- 卡片上下间距
-    local labelH   = 26         -- 列标题高度
+    -- 屏幕两侧留白（避免卡片贴边，最少12px，最多5%）
+    local screenPad = math.max(12, math.floor(logW * 0.05))
+    local usableW   = logW - screenPad * 2
+    local divW      = 2
+    local panelW    = math.floor((usableW - divW) * 0.5)
+    local leftX     = screenPad
+    local rightX    = screenPad + panelW + divW
 
-    local leftX  = outerPad
-    local rightX = outerPad + colW + colGap
+    -- 分割线
+    nvgBeginPath(vg)
+    nvgRect(vg, leftX + panelW, topY, divW, logH - topY)
+    nvgFillColor(vg, nvgRGBA(255, 255, 255, 22))
+    nvgFill(vg)
 
-    -- 左列：职业
-    local leftCurY = 4 + labelH  -- 顶部留出标题行
-    -- 右列：表情
-    local rightCurY = 4 + labelH
+    local outerPad = 8
+    local colGap   = 4
+    local labelH   = 24
+    local colW     = math.floor((panelW - outerPad * 2 - colGap) * 0.5)
+    -- 窄卡（colW < 100）用 128，宽卡用 160 以避免 stat 文字与按钮重叠
+    local cardH    = (colW < 100) and 128 or 160
+    local cardGap  = 5
+    local contentY = topY + labelH   -- 滚动内容从标题下方开始
 
-    -- 绘制列标题（固定在内容区顶部，随滚动偏移）
-    local leftLabelY  = topY + 4 - scrollY_
-    local rightLabelY = topY + 4 - scrollY_
-    if leftLabelY + labelH > topY - 4 and leftLabelY < logH + 4 then
-        nvgFontFace(vg, "bold")
-        nvgFontSize(vg, 13)
-        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
-        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
-        nvgText(vg, leftX  + colW * 0.5, leftLabelY  + labelH * 0.5, "— 职业 —")
-        nvgText(vg, rightX + colW * 0.5, rightLabelY + labelH * 0.5, "— 表情 —")
-    end
+    -- ─── 固定标题（不滚动，在裁剪区外绘制） ───
+    nvgFontFace(vg, "bold")
+    nvgFontSize(vg, 12)
+    nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+    nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 200)))
+    nvgText(vg, leftX  + panelW * 0.5, topY + labelH * 0.5, "— 职业 —")
+    nvgText(vg, rightX + panelW * 0.5, topY + labelH * 0.5, "— 表情 —")
 
-    -- 绘制职业（左列）
-    for _, cls in ipairs(classes) do
-        local cy = topY + leftCurY - scrollY_
-        if cy + cardH > topY - 10 and cy < logH + 10 then
-            drawClassCard(vg, leftX, cy, colW, cardH, cls, selectedClassId, mousePress, mx, my, false)
+    -- ─── 左面板：职业（2列，独立滚动） ───
+    nvgSave(vg)
+    nvgIntersectScissor(vg, leftX, contentY, panelW, logH - contentY)
+    for i, cls in ipairs(classes) do
+        local col = (i - 1) % 2
+        local row = math.floor((i - 1) / 2)
+        local cx  = leftX + outerPad + col * (colW + colGap)
+        local cy  = contentY + row * (cardH + cardGap) - scrollYClass_
+        if cy + cardH > contentY - 4 and cy < logH + 4 then
+            drawClassCard(vg, cx, cy, colW, cardH, cls, selectedClassId, mousePress, mx, my, false)
         end
-        leftCurY = leftCurY + cardH + cardGap
     end
+    local classRows = math.ceil(#classes / 2)
+    maxScrollClass_ = math.max(0, classRows * (cardH + cardGap) - cardGap - (logH - contentY) + 10)
+    nvgRestore(vg)
 
-    -- 绘制表情（右列）
-    for _, skin in ipairs(allSkins) do
-        local cy = topY + rightCurY - scrollY_
-        if cy + cardH > topY - 10 and cy < logH + 10 then
-            drawSkinCard(vg, rightX, cy, colW, cardH, skin, selectedSkinId, mousePress, mx, my, false)
+    -- ─── 右面板：表情（2列，独立滚动） ───
+    nvgSave(vg)
+    nvgIntersectScissor(vg, rightX, contentY, panelW, logH - contentY)
+    for i, skin in ipairs(allSkins) do
+        local col = (i - 1) % 2
+        local row = math.floor((i - 1) / 2)
+        local cx  = rightX + outerPad + col * (colW + colGap)
+        local cy  = contentY + row * (cardH + cardGap) - scrollYSkin_
+        if cy + cardH > contentY - 4 and cy < logH + 4 then
+            drawSkinCard(vg, cx, cy, colW, cardH, skin, selectedSkinId, mousePress, mx, my, false)
         end
-        rightCurY = rightCurY + cardH + cardGap
     end
-
-    -- 底部留空，以较高的列为准
-    local totalH = math.max(leftCurY, rightCurY) + 20
-    local viewH  = logH - topY
-    maxScrollY_  = math.max(0, totalH - viewH)
+    local skinRows = math.ceil(#allSkins / 2)
+    maxScrollSkin_ = math.max(0, skinRows * (cardH + cardGap) - cardGap - (logH - contentY) + 10)
+    nvgRestore(vg)
 end
 
 -- ============================================================================
@@ -477,12 +573,10 @@ function drawClassCard(vg, x, y, w, h, cls, selectedId, mousePress, mx, my, comp
 
     -- 卡片背景
     local cornerR = Theme.radiusMd
-    -- 阴影
     nvgBeginPath(vg)
     nvgRoundedRect(vg, x + 1, y + 2, w, h, cornerR)
     nvgFillColor(vg, nvgRGBA(0, 0, 0, 60))
     nvgFill(vg)
-    -- 主体
     nvgBeginPath(vg)
     nvgRoundedRect(vg, x, y, w, h, cornerR)
     if isSelected then
@@ -491,57 +585,51 @@ function drawClassCard(vg, x, y, w, h, cls, selectedId, mousePress, mx, my, comp
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.surface, hovered and 220 or 180)))
     end
     nvgFill(vg)
-
-    -- 选中边框高亮
     if isSelected then
-        nvgBeginPath(vg)
-        nvgRoundedRect(vg, x, y, w, h, cornerR)
+        nvgBeginPath(vg); nvgRoundedRect(vg, x, y, w, h, cornerR)
         nvgStrokeColor(vg, nvgRGBA(Theme.rgba(Theme.primary, 200)))
-        nvgStrokeWidth(vg, 2)
-        nvgStroke(vg)
+        nvgStrokeWidth(vg, 2); nvgStroke(vg)
     elseif hovered then
-        nvgBeginPath(vg)
-        nvgRoundedRect(vg, x, y, w, h, cornerR)
+        nvgBeginPath(vg); nvgRoundedRect(vg, x, y, w, h, cornerR)
         nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 40))
-        nvgStrokeWidth(vg, 1)
-        nvgStroke(vg)
+        nvgStrokeWidth(vg, 1); nvgStroke(vg)
     end
 
-    -- 职业角色形象
-    local blockSize = compact and 24 or 32
-    local blockX = x + (compact and (20 - blockSize * 0.5) or (w * 0.5 - blockSize * 0.5))
-    local blockY = compact and (y + h * 0.35 - blockSize * 0.5) or (y + 28 - blockSize * 0.5)
-    local cornerR2 = math.floor(blockSize * 0.18)
+    -- 是否窄卡（移动端4列布局）
+    local isNarrow = (not compact) and (w < 100)
 
-    -- 描边层
+    -- 角色形象参数
+    local blockSize = compact and 24 or (isNarrow and 26 or 32)
+    local blockX, blockY
+    if compact then
+        blockX = x + (20 - blockSize * 0.5)
+        blockY = y + h * 0.35 - blockSize * 0.5
+    elseif isNarrow then
+        blockX = x + math.floor(w * 0.5 - blockSize * 0.5)
+        blockY = y + 7
+    else
+        blockX = x + (w * 0.5 - blockSize * 0.5)
+        blockY = y + 28 - blockSize * 0.5
+    end
+    local cornerR2 = math.floor(blockSize * 0.18)
     local outPad = compact and 2 or 3
+
     nvgBeginPath(vg)
-    nvgRoundedRect(vg, blockX - outPad, blockY - outPad, blockSize + outPad * 2, blockSize + outPad * 2, cornerR2 + 1)
-    nvgFillColor(vg, nvgRGBA(
-        math.floor(cls.outlineColor.r * 255),
-        math.floor(cls.outlineColor.g * 255),
-        math.floor(cls.outlineColor.b * 255), 255))
+    nvgRoundedRect(vg, blockX - outPad, blockY - outPad, blockSize + outPad*2, blockSize + outPad*2, cornerR2+1)
+    nvgFillColor(vg, nvgRGBA(math.floor(cls.outlineColor.r*255), math.floor(cls.outlineColor.g*255), math.floor(cls.outlineColor.b*255), 255))
     nvgFill(vg)
-    -- 身体方块
     nvgBeginPath(vg)
     nvgRoundedRect(vg, blockX, blockY, blockSize, blockSize, cornerR2)
-    nvgFillColor(vg, nvgRGBA(
-        math.floor(cls.bodyColor.r * 255),
-        math.floor(cls.bodyColor.g * 255),
-        math.floor(cls.bodyColor.b * 255), 255))
+    nvgFillColor(vg, nvgRGBA(math.floor(cls.bodyColor.r*255), math.floor(cls.bodyColor.g*255), math.floor(cls.bodyColor.b*255), 255))
     nvgFill(vg)
-    -- 眼睛
-    local eyeR = compact and 3.5 or 4.5
-    local eyeGap = compact and 5 or 6.5
-    local eyeCX = blockX + blockSize * 0.5
-    local eyeCY = blockY + blockSize * 0.42
+    local eyeR   = compact and 3.5 or (isNarrow and 3.8 or 4.5)
+    local eyeGap = compact and 5   or (isNarrow and 5.5 or 6.5)
+    local eyeCX  = blockX + blockSize * 0.5
+    local eyeCY  = blockY + blockSize * 0.42
     nvgBeginPath(vg)
-    nvgEllipse(vg, eyeCX - eyeGap, eyeCY, eyeR, eyeR * 1.1)
-    nvgEllipse(vg, eyeCX + eyeGap, eyeCY, eyeR, eyeR * 1.1)
-    nvgFillColor(vg, nvgRGBA(
-        math.floor(cls.outlineColor.r * 255),
-        math.floor(cls.outlineColor.g * 255),
-        math.floor(cls.outlineColor.b * 255), 255))
+    nvgEllipse(vg, eyeCX - eyeGap, eyeCY, eyeR, eyeR*1.1)
+    nvgEllipse(vg, eyeCX + eyeGap, eyeCY, eyeR, eyeR*1.1)
+    nvgFillColor(vg, nvgRGBA(math.floor(cls.outlineColor.r*255), math.floor(cls.outlineColor.g*255), math.floor(cls.outlineColor.b*255), 255))
     nvgFill(vg)
 
     local dotR = blockSize * 0.5
@@ -549,50 +637,69 @@ function drawClassCard(vg, x, y, w, h, cls, selectedId, mousePress, mx, my, comp
     local dotY = blockY + blockSize * 0.5
 
     if compact then
+        -- 横向紧凑布局（宽卡列表）
         local textX = dotX + dotR + 10
         local nameY = y + 14
-
-        nvgFontFace(vg, "bold")
-        nvgFontSize(vg, 13)
+        nvgFontFace(vg, "bold"); nvgFontSize(vg, 13)
         nvgTextAlign(vg, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
         nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
         nvgText(vg, textX, nameY, cls.icon .. " " .. cls.name)
-
-        nvgFontFace(vg, "sans")
-        nvgFontSize(vg, 10)
+        nvgFontFace(vg, "sans"); nvgFontSize(vg, 10)
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.textSec, 170)))
         nvgText(vg, textX, nameY + 17, cls.desc)
-
-        local btnW = 52
+        local canAdUnlockCls = AD_UNLOCK_CLASSES[cls.id] and not isOwned and not isSelected
+        local btnW = canAdUnlockCls and 110 or 64
         local btnH = 22
         local btnX = x + w - btnW - 8
         local btnY = y + h * 0.5 - btnH * 0.5
         drawActionButton(vg, btnX, btnY, btnW, btnH, cls, isOwned, isSelected, mousePress, mx, my)
-    else
-        local nameY = dotY + dotR + 8
 
-        nvgFontFace(vg, "bold")
-        nvgFontSize(vg, 15)
+    elseif isNarrow then
+        -- 窄卡纵向布局（移动端4列）
+        local cx = x + w * 0.5
+        local nameY = blockY + blockSize + 6
+        nvgFontFace(vg, "bold"); nvgFontSize(vg, 12)
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
+        nvgText(vg, cx, nameY, cls.icon .. " " .. cls.name)
+
+        nvgFontFace(vg, "sans"); nvgFontSize(vg, 9)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.textSec, 160)))
+        nvgText(vg, cx, nameY + 15, cls.desc)
+
+        local statText = getStatHighlight(cls)
+        if statText then
+            nvgFontFace(vg, "sans"); nvgFontSize(vg, 9)
+            nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 220)))
+            nvgText(vg, cx, nameY + 28, statText)
+        end
+
+        -- 按钮区（始终底部对齐，广告+金币左右并排，统一高度）
+        local btnW = w - 8; local btnX = x + 4
+        local btnH = 22
+        local btnY = y + h - btnH - 5
+        drawActionButton(vg, btnX, btnY, btnW, btnH, cls, isOwned, isSelected, mousePress, mx, my)
+
+    else
+        -- 标准纵向宽卡
+        local nameY = dotY + dotR + 8
+        nvgFontFace(vg, "bold"); nvgFontSize(vg, 15)
         nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
         nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
         nvgText(vg, x + w * 0.5, nameY, cls.icon .. " " .. cls.name)
-
-        nvgFontFace(vg, "sans")
-        nvgFontSize(vg, 11)
+        nvgFontFace(vg, "sans"); nvgFontSize(vg, 11)
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.textSec, 170)))
         nvgText(vg, x + w * 0.5, nameY + 20, cls.desc)
-
         local statY = nameY + 36
         local statText = getStatHighlight(cls)
         if statText then
-            nvgFontFace(vg, "sans")
-            nvgFontSize(vg, 10)
+            nvgFontFace(vg, "sans"); nvgFontSize(vg, 10)
             nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.accent, 220)))
             nvgText(vg, x + w * 0.5, statY, statText)
             statY = statY + 14
         end
-
-        local btnW = 80
+        local canAdUnlockCls2 = AD_UNLOCK_CLASSES[cls.id] and not isOwned and not isSelected
+        local btnW = canAdUnlockCls2 and math.min(w - 16, 150) or math.min(w - 16, 90)
         local btnH = 26
         local btnX = x + (w - btnW) * 0.5
         local btnY = math.min(statY + 4, y + h - btnH - 8)
@@ -644,6 +751,9 @@ function drawSkinCard(vg, x, y, w, h, skin, selectedSkinId, mousePress, mx, my, 
     local previewBodyColor = Color(0.24, 0.60, 1.0, 1.0)
     local previewOutlineColor = Color(0.08, 0.20, 0.45, 1.0)
 
+    -- 是否窄卡（移动端4列布局）
+    local isNarrow = (not compact) and (w < 100)
+
     if compact then
         local blockSize = 28
         local prevCX = x + 22
@@ -664,11 +774,40 @@ function drawSkinCard(vg, x, y, w, h, skin, selectedSkinId, mousePress, mx, my, 
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.textSec, 170)))
         nvgText(vg, textX, nameY + 17, skin.desc)
 
-        local btnW = 52
+        local canAdUnlockSk = AD_UNLOCK_SKINS[skin.id] and not isOwned and not isSelected
+        local btnW = canAdUnlockSk and 110 or 64
         local btnH = 22
         local btnX = x + w - btnW - 8
         local btnY = y + h * 0.5 - btnH * 0.5
         drawSkinActionButton(vg, btnX, btnY, btnW, btnH, skin, isOwned, isSelected, mousePress, mx, my)
+
+    elseif isNarrow then
+        -- 窄卡纵向布局（移动端4列）
+        local blockSize = 28
+        local prevCX = x + w * 0.5
+        local prevCY = y + 10 + blockSize * 0.5
+        FaceSkin.DrawPreview(vg, prevCX, prevCY, blockSize, skin.id, previewBodyColor, previewOutlineColor)
+
+        local cx   = x + w * 0.5
+        local nameY = prevCY + blockSize * 0.5 + 6
+
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, 12)
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_TOP)
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
+        nvgText(vg, cx, nameY, skin.icon .. " " .. skin.name)
+
+        nvgFontFace(vg, "sans")
+        nvgFontSize(vg, 9)
+        nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.textSec, 160)))
+        nvgText(vg, cx, nameY + 15, skin.desc)
+
+        -- 按钮区（始终底部对齐，广告+金币左右并排，统一高度）
+        local btnW = w - 8; local btnX = x + 4
+        local btnH = 22
+        local btnY = y + h - btnH - 5
+        drawSkinActionButton(vg, btnX, btnY, btnW, btnH, skin, isOwned, isSelected, mousePress, mx, my)
+
     else
         local blockSize = 36
         local prevCX = x + w * 0.5
@@ -688,7 +827,8 @@ function drawSkinCard(vg, x, y, w, h, skin, selectedSkinId, mousePress, mx, my, 
         nvgFillColor(vg, nvgRGBA(Theme.rgba(Theme.textSec, 170)))
         nvgText(vg, x + w * 0.5, nameY + 18, skin.desc)
 
-        local btnW = 72
+        local canAdUnlockSk2 = AD_UNLOCK_SKINS[skin.id] and not isOwned and not isSelected
+        local btnW = canAdUnlockSk2 and math.min(w - 16, 150) or math.min(w - 16, 90)
         local btnH = 24
         local btnX = x + (w - btnW) * 0.5
         local btnY = math.min(nameY + 36, y + h - btnH - 6)
@@ -736,7 +876,81 @@ function drawActionButton(vg, x, y, w, h, cls, isOwned, isSelected, mousePress, 
             Economy.SelectClass(cls.id)
             buyResult_ = { text = "已选择 " .. cls.name .. "!", color = Theme.success, timer = 1.5 }
         end
+    elseif AD_UNLOCK_CLASSES[cls.id] then
+        -- 广告解锁：左右并排（广告在左，金币在右）
+        local gap   = 4
+        local adW   = math.floor((w - gap) * 0.46)
+        local coinW = w - gap - adW
+        local adX   = x
+        local coinX = x + adW + gap
+
+        -- 广告按钮（左）
+        local adHover = mx >= adX and mx <= adX + adW and my >= y and my <= y + h
+        local adColor = { 50, 180, 80 }
+        nvgBeginPath(vg)
+        nvgRoundedRect(vg, adX, y, adW, h, cornerR)
+        nvgFillColor(vg, nvgRGBA(adColor[1], adColor[2], adColor[3], adHover and 240 or 200))
+        nvgFill(vg)
+        if adHover then
+            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 50))
+            nvgStrokeWidth(vg, 1)
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, adX, y, adW, h, cornerR)
+            nvgStroke(vg)
+        end
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, math.max(8, math.floor(h * 0.50)))
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
+        nvgText(vg, adX + adW * 0.5, y + h * 0.5, "🎬广告")
+
+        if mousePress and adHover and not touchDragging_ then
+            pendingAdUnlock_ = { type = "class", item = cls }
+        end
+
+        -- 金币按钮（右）
+        local canAfford   = Economy.GetCoins() >= cls.price
+        local coinBtnColor = canAfford and Theme.primary or Theme.disabled
+        local textAlpha   = canAfford and 255 or 120
+        local coinHover   = mx >= coinX and mx <= coinX + coinW and my >= y and my <= y + h
+
+        nvgBeginPath(vg)
+        nvgRoundedRect(vg, coinX, y, coinW, h, cornerR)
+        nvgFillColor(vg, nvgRGBA(coinBtnColor[1], coinBtnColor[2], coinBtnColor[3], coinHover and 240 or 200))
+        nvgFill(vg)
+        if canAfford then
+            local dark = nvgLinearGradient(vg, coinX, y + h * 0.6, coinX, y + h,
+                nvgRGBA(0, 0, 0, 0), nvgRGBA(0, 0, 0, 50))
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, coinX, y, coinW, h, cornerR)
+            nvgFillPaint(vg, dark)
+            nvgFill(vg)
+        end
+        if coinHover and canAfford then
+            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 50))
+            nvgStrokeWidth(vg, 1)
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, coinX, y, coinW, h, cornerR)
+            nvgStroke(vg)
+        end
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, math.max(8, math.floor(h * 0.50)))
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(canAfford and 30 or 255, canAfford and 15 or 255, canAfford and 0 or 255, textAlpha))
+        nvgText(vg, coinX + coinW * 0.5, y + h * 0.5, "🪙" .. cls.price)
+
+        if mousePress and coinHover and canAfford and not touchDragging_ then
+            local ok, err = Economy.BuyClass(cls.id)
+            if ok then
+                buyResult_ = { text = "购买成功！已装备 " .. cls.name, color = Theme.success, timer = 2.0 }
+            else
+                if err == "not_enough_coins" then
+                    buyResult_ = { text = "金币不足！", color = Theme.error, timer = 1.5 }
+                end
+            end
+        end
     else
+        -- 仅金币购买
         local canAfford = Economy.GetCoins() >= cls.price
         local btnColor = canAfford and Theme.primary or Theme.disabled
         local textAlpha = canAfford and 255 or 120
@@ -824,7 +1038,81 @@ function drawSkinActionButton(vg, x, y, w, h, skin, isOwned, isSelected, mousePr
             Economy.SelectSkin(skin.id)
             buyResult_ = { text = "已选择 " .. skin.name .. "!", color = Theme.success, timer = 1.5 }
         end
+    elseif AD_UNLOCK_SKINS[skin.id] then
+        -- 广告解锁：左右并排（广告在左，金币在右）
+        local gap   = 4
+        local adW   = math.floor((w - gap) * 0.46)
+        local coinW = w - gap - adW
+        local adX   = x
+        local coinX = x + adW + gap
+
+        -- 广告按钮（左）
+        local adHover = mx >= adX and mx <= adX + adW and my >= y and my <= y + h
+        local adColor = { 50, 180, 80 }
+        nvgBeginPath(vg)
+        nvgRoundedRect(vg, adX, y, adW, h, cornerR)
+        nvgFillColor(vg, nvgRGBA(adColor[1], adColor[2], adColor[3], adHover and 240 or 200))
+        nvgFill(vg)
+        if adHover then
+            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 50))
+            nvgStrokeWidth(vg, 1)
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, adX, y, adW, h, cornerR)
+            nvgStroke(vg)
+        end
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, math.max(8, math.floor(h * 0.50)))
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(255, 255, 255, 240))
+        nvgText(vg, adX + adW * 0.5, y + h * 0.5, "🎬广告")
+
+        if mousePress and adHover and not touchDragging_ then
+            pendingAdUnlock_ = { type = "skin", item = skin }
+        end
+
+        -- 金币按钮（右）
+        local canAfford    = Economy.GetCoins() >= skin.price
+        local coinBtnColor = canAfford and Theme.primary or Theme.disabled
+        local textAlpha    = canAfford and 255 or 120
+        local coinHover    = mx >= coinX and mx <= coinX + coinW and my >= y and my <= y + h
+
+        nvgBeginPath(vg)
+        nvgRoundedRect(vg, coinX, y, coinW, h, cornerR)
+        nvgFillColor(vg, nvgRGBA(coinBtnColor[1], coinBtnColor[2], coinBtnColor[3], coinHover and 240 or 200))
+        nvgFill(vg)
+        if canAfford then
+            local dark = nvgLinearGradient(vg, coinX, y + h * 0.6, coinX, y + h,
+                nvgRGBA(0, 0, 0, 0), nvgRGBA(0, 0, 0, 50))
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, coinX, y, coinW, h, cornerR)
+            nvgFillPaint(vg, dark)
+            nvgFill(vg)
+        end
+        if coinHover and canAfford then
+            nvgStrokeColor(vg, nvgRGBA(255, 255, 255, 50))
+            nvgStrokeWidth(vg, 1)
+            nvgBeginPath(vg)
+            nvgRoundedRect(vg, coinX, y, coinW, h, cornerR)
+            nvgStroke(vg)
+        end
+        nvgFontFace(vg, "bold")
+        nvgFontSize(vg, math.max(8, math.floor(h * 0.50)))
+        nvgTextAlign(vg, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
+        nvgFillColor(vg, nvgRGBA(canAfford and 30 or 255, canAfford and 15 or 255, canAfford and 0 or 255, textAlpha))
+        nvgText(vg, coinX + coinW * 0.5, y + h * 0.5, "🪙" .. skin.price)
+
+        if mousePress and coinHover and canAfford and not touchDragging_ then
+            local ok, err = Economy.BuySkin(skin.id)
+            if ok then
+                buyResult_ = { text = "购买成功！已装备 " .. skin.name, color = Theme.success, timer = 2.0 }
+            else
+                if err == "not_enough_coins" then
+                    buyResult_ = { text = "金币不足！", color = Theme.error, timer = 1.5 }
+                end
+            end
+        end
     else
+        -- 仅金币购买
         local canAfford = Economy.GetCoins() >= skin.price
         local btnColor = canAfford and Theme.primary or Theme.disabled
         local textAlpha = canAfford and 255 or 120
@@ -879,7 +1167,7 @@ end
 function getStatHighlight(cls)
     if cls.id == 1 then return nil end
     if cls.maxJumps > 2 then return "★ 三段跳" end
-    if cls.energyChargeTime < 15 then return "★ 能量+20%" end
+    if cls.energyChargeTime < 15 then return "★ 能量回复+40%" end
     if cls.dashCount > 1 then return "★ 连冲两次" end
     if cls.slamStunDuration > 1.5 then return "★ 晕眩×2" end
     if cls.explosionChargeTime < 2.0 then return "★ 蓄力+50%" end

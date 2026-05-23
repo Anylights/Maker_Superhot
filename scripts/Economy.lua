@@ -395,4 +395,34 @@ function Economy.SetTutorialDone()
     print("[Economy] Tutorial marked as done")
 end
 
+--- 免费解锁职业（广告奖励，不扣金币）
+---@param id number
+---@return boolean success
+---@return string? errorMsg
+function Economy.UnlockClassFree(id)
+    if hasClass(id) then return false, "already_owned" end
+    local def = CharacterClass.GetById(id)
+    if not def then return false, "invalid_class" end
+    ownedIds_[#ownedIds_ + 1] = id
+    selectedId_ = id
+    Economy.Save()
+    print("[Economy] Ad-unlocked class " .. def.name)
+    return true, nil
+end
+
+--- 免费解锁皮肤（广告奖励，不扣金币）
+---@param id string
+---@return boolean success
+---@return string? errorMsg
+function Economy.UnlockSkinFree(id)
+    if hasSkin(id) then return false, "already_owned" end
+    local def = FaceSkin.GetById(id)
+    if not def then return false, "invalid_skin" end
+    ownedSkinIds_[#ownedSkinIds_ + 1] = id
+    selectedSkinId_ = id
+    Economy.Save()
+    print("[Economy] Ad-unlocked skin " .. def.name)
+    return true, nil
+end
+
 return Economy

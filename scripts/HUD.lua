@@ -95,6 +95,10 @@ function HUD.CacheInput()
         HUD.aiDebugVisible = not HUD.aiDebugVisible
         print("[HUD] AI debug visualization toggled: " .. tostring(HUD.aiDebugVisible))
     end
+    -- 处理商店中挂起的广告解锁请求（必须在 Update 阶段，不能在 NanoVGRender 回调中调用 sdk）
+    if shopOpen_ then
+        ShopUI.ProcessPendingAds()
+    end
 end
 
 -- AI 寻路调试可视化开关

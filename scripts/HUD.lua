@@ -1346,34 +1346,31 @@ function HUD.DrawHeightIndicator()
     local s = isMobileHUD_ and (uiScale_ * 1.8) or uiScale_
     local pw = math.floor(100 * s)   -- 宽度与得分面板一致
     local ph = math.floor(44 * s)
-    -- 得分面板底部位置（使用相同的 s）
-    local scorePanelBottom = math.floor(10 * s) + math.floor(50 * s)
-    local x = math.floor(10 * s)
-    local y = scorePanelBottom + math.floor(6 * s)
+    -- 与得分面板对齐：x/y 和得分面板保持一致
+    local x = isMobileHUD_ and math.floor(16 * s) or math.floor(10 * s)
+    local scorePanelY = isMobileHUD_ and math.floor(20 * s) or math.floor(10 * s)
+    local y = scorePanelY + math.floor(50 * s) + math.floor(6 * s)
 
     drawPanel(x, y, pw, ph, Theme.radiusMd, 180)
 
-    -- 上箭头图标
-    local arrX = x + math.floor(10 * s)
-    local arrY = y + math.floor(16 * s)
-    nvgBeginPath(vg_)
-    nvgMoveTo(vg_, arrX, arrY)
-    nvgLineTo(vg_, arrX + math.floor(5 * s), arrY - math.floor(7 * s))
-    nvgLineTo(vg_, arrX + math.floor(10 * s), arrY)
-    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.accent, 200)))
-    nvgStrokeWidth(vg_, math.max(1, 2 * s))
-    nvgStroke(vg_)
+    -- "高度" 标签（替代箭头符号）
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, math.max(9, math.floor(11 * s)))
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
+    fillTheme(Theme.accent, 200)
+    nvgText(vg_, x + math.floor(8 * s), y + math.floor(6 * s), "高度")
 
-    -- 当前高度
+    -- 当前高度数值
     nvgFontFace(vg_, "bold")
     nvgFontSize(vg_, math.max(12, math.floor(18 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.text, 240)
-    nvgText(vg_, arrX + math.floor(14 * s), y + math.floor(6 * s), tostring(heightBlocks))
+    nvgText(vg_, x + math.floor(34 * s), y + math.floor(4 * s), tostring(heightBlocks))
 
     -- "最高" 标签
     nvgFontFace(vg_, "sans")
     nvgFontSize(vg_, math.max(10, math.floor(12 * s)))
+    nvgTextAlign(vg_, NVG_ALIGN_LEFT + NVG_ALIGN_TOP)
     fillTheme(Theme.primary, 180)
     nvgText(vg_, x + math.floor(8 * s), y + math.floor(26 * s), "最高 " .. maxBlocks)
 end
@@ -2311,7 +2308,8 @@ function HUD.SubmitCloudScore(rankings)
     local score = p1Entry.score
     if score <= 0 then return end
 
-    local kills = p1Entry.killScore or 0
+    local kills = p1Entry.kills or 0
+    local slamHits = p1Entry.slamHits or 0
     local height = p1Entry.maxHeight or 0
     local dailyKey = getTodayKey()
 
@@ -2325,6 +2323,7 @@ function HUD.SubmitCloudScore(rankings)
                 batch:SetInt("high_score", score)
                 batch:SetInt("max_height", height)
                 batch:SetInt("max_kills", kills)
+                batch:SetInt("max_slam_hits", slamHits)
             end
             -- 今日最高
             if score > oldDaily then
@@ -2350,6 +2349,7 @@ function HUD.SubmitCloudScore(rankings)
                 :SetInt("high_score", score)
                 :SetInt("max_height", height)
                 :SetInt("max_kills", kills)
+                :SetInt("max_slam_hits", slamHits)
                 :SetInt(dailyKey, score)
                 :Add("play_count", 1)
                 :Save("game result", {
@@ -2384,6 +2384,8 @@ function HUD.LoadCloudLeaderboard()
                     userId = item.userId,
                     score = item.iscore.high_score or 0,
                     maxHeight = item.iscore.max_height or 0,
+                    kills = item.iscore.max_kills or 0,
+                    slamHits = item.iscore.max_slam_hits or 0,
                     playCount = item.iscore.play_count or 0,
                     isMe = item.userId == clientCloud.userId,
                 })
@@ -2423,7 +2425,7 @@ function HUD.LoadCloudLeaderboard()
             print("[HUD] Leaderboard load error: " .. tostring(reason))
             cloudLeaderboardLoading_ = false
         end
-    }, "max_height", "play_count")
+    }, "max_height", "max_kills", "max_slam_hits", "play_count")
 end
 
 --- 加载今日排行榜
@@ -3199,9 +3201,14 @@ function HUD.DrawFullMenuLeaderboard(mx, my)
     local safeBottom = isMobileHUD_ and math.floor(20 * s) or math.floor(10 * s)
 
     -- ── 面板尺寸 ─────────────────────────────────────────────────────────────
-    local panelW  = math.min(logW_ - math.floor(24 * s), math.max(240, math.floor(420 * s)))
+    -- 手机端使用屏幕宽度的 96%，PC 端最大 560px
+    local panelW  = isMobileHUD_ and math.floor(logW_ * 0.96)
+                    or math.min(logW_ - math.floor(24 * s), math.max(300, math.floor(560 * s)))
     local lineH   = math.max(18, math.floor(24 * s))
-    local headerH = math.max(22, math.floor(30 * s))
+    -- headerH 拆分为标题行 + 列表头行
+    local titleH  = math.max(22, math.floor(30 * s))
+    local colHeadH= math.max(18, math.floor(22 * s))
+    local headerH = titleH + colHeadH
     local footerH = math.max(40, math.floor(50 * s))
     local padX    = math.max(8,  math.floor(12 * s))
 
@@ -3214,9 +3221,10 @@ function HUD.DrawFullMenuLeaderboard(mx, my)
     local maxScroll = math.max(0, contentH - listAreaH)
     menuLeaderFullScrollY_ = math.max(0, math.min(menuLeaderFullScrollY_, maxScroll))
 
-    local panelX = cx - panelW * 0.5
-    local panelY = safeTop
-    local listY  = panelY + headerH
+    local panelX  = cx - panelW * 0.5
+    local panelY  = safeTop
+    local listY   = panelY + headerH
+    local colHeadY= panelY + titleH  -- 列表头行起始 Y
 
     -- ── 触摸/鼠标拖拽滚动 ────────────────────────────────────────────────────
     local inListArea = mx >= panelX and mx <= panelX + panelW
@@ -3256,35 +3264,62 @@ function HUD.DrawFullMenuLeaderboard(mx, my)
     nvgFontSize(vg_, math.max(12, math.floor(15 * s)))
     nvgTextAlign(vg_, NVG_ALIGN_CENTER + NVG_ALIGN_MIDDLE)
     fillTheme(Theme.primary, 240)
-    nvgText(vg_, cx, panelY + headerH * 0.5, tabLabel)
+    nvgText(vg_, cx, panelY + titleH * 0.5, tabLabel)
 
-    -- 标题下分割线
-    nvgBeginPath(vg_)
-    nvgMoveTo(vg_, panelX + padX, panelY + headerH)
-    nvgLineTo(vg_, panelX + panelW - padX, panelY + headerH)
-    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 40)))
-    nvgStrokeWidth(vg_, 1)
-    nvgStroke(vg_)
+    -- ── 列定义（7 列：# 昵称 分 高度 击杀 砸晕 场）───────────────────────────
+    -- 昵称列宽度：留出足够空间，手机端固定像素，PC 端按比例
+    local rankW = math.floor(20 * s)
+    local nameX = panelX + padX + rankW + math.floor(4 * s)
+    -- 右侧 5 列（分、高度、击杀、砸晕、场）均分剩余宽度
+    local rightStart = isMobileHUD_ and (nameX + math.floor(60 * s)) or (nameX + math.floor(80 * s))
+    local rightEnd   = panelX + panelW - padX
+    local rightW     = rightEnd - rightStart
+    local col5W      = rightW / 5
 
-    -- ── 列表（带裁剪）───────────────────────────────────────────────────────
     local lbCols
     if menuLeaderboardTab_ == "onelife" then
         lbCols = {
-            { x = panelX + padX,              label = "#",     align = NVG_ALIGN_LEFT },
-            { x = panelX + padX + math.floor(18 * s), label = "昵称",   align = NVG_ALIGN_LEFT },
-            { x = panelX + panelW * 0.55,     label = "最高分", align = NVG_ALIGN_CENTER },
-            { x = panelX + panelW * 0.75,     label = "最高层", align = NVG_ALIGN_CENTER },
-            { x = panelX + panelW * 0.92,     label = "场",    align = NVG_ALIGN_CENTER },
+            { x = panelX + padX,             label = "#",    align = NVG_ALIGN_LEFT },
+            { x = nameX,                      label = "昵称",  align = NVG_ALIGN_LEFT },
+            { x = rightStart + col5W * 0.5,   label = "最高分", align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 1.5,   label = "最高层", align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 2.5,   label = "击杀",  align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 3.5,   label = "砸晕",  align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 4.5,   label = "场",    align = NVG_ALIGN_CENTER },
         }
     else
         lbCols = {
-            { x = panelX + padX,              label = "#",     align = NVG_ALIGN_LEFT },
-            { x = panelX + padX + math.floor(18 * s), label = "昵称",   align = NVG_ALIGN_LEFT },
-            { x = panelX + panelW * 0.55,     label = "最高分", align = NVG_ALIGN_CENTER },
-            { x = panelX + panelW * 0.75,     label = "高度",  align = NVG_ALIGN_CENTER },
-            { x = panelX + panelW * 0.92,     label = "场",    align = NVG_ALIGN_CENTER },
+            { x = panelX + padX,             label = "#",    align = NVG_ALIGN_LEFT },
+            { x = nameX,                      label = "昵称",  align = NVG_ALIGN_LEFT },
+            { x = rightStart + col5W * 0.5,   label = "最高分", align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 1.5,   label = "高度",  align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 2.5,   label = "击杀",  align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 3.5,   label = "砸晕",  align = NVG_ALIGN_CENTER },
+            { x = rightStart + col5W * 4.5,   label = "场",    align = NVG_ALIGN_CENTER },
         }
     end
+
+    -- ── 列表头行背景 + 表头文字 ───────────────────────────────────────────────
+    nvgBeginPath(vg_)
+    nvgRect(vg_, panelX + 2, colHeadY, panelW - 4, colHeadH)
+    nvgFillColor(vg_, nvgRGBA(Theme.rgba(Theme.surface, 80)))
+    nvgFill(vg_)
+
+    nvgFontFace(vg_, "sans")
+    nvgFontSize(vg_, math.max(9, math.floor(11 * s)))
+    fillTheme(Theme.textSec, 200)
+    for _, col in ipairs(lbCols) do
+        nvgTextAlign(vg_, col.align + NVG_ALIGN_MIDDLE)
+        nvgText(vg_, col.x, colHeadY + colHeadH * 0.5, col.label)
+    end
+
+    -- 标题/表头下分割线（列表正上方）
+    nvgBeginPath(vg_)
+    nvgMoveTo(vg_, panelX + padX, listY)
+    nvgLineTo(vg_, panelX + panelW - padX, listY)
+    nvgStrokeColor(vg_, nvgRGBA(Theme.rgba(Theme.border, 60)))
+    nvgStrokeWidth(vg_, 1)
+    nvgStroke(vg_)
 
     if isLoading then
         nvgFontFace(vg_, "sans")
@@ -3324,9 +3359,23 @@ function HUD.DrawFullMenuLeaderboard(mx, my)
                 local values
                 if menuLeaderboardTab_ == "onelife" then
                     local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
-                    values = { prefix, nameDisplay, tostring(entry.score), tostring(floors) .. "层", tostring(entry.playCount) }
+                    values = {
+                        prefix, nameDisplay,
+                        tostring(entry.score),
+                        tostring(floors) .. "层",
+                        tostring(entry.kills or 0),
+                        tostring(entry.slamHits or 0),
+                        tostring(entry.playCount),
+                    }
                 else
-                    values = { prefix, nameDisplay, tostring(entry.score), tostring(entry.maxHeight), tostring(entry.playCount) }
+                    values = {
+                        prefix, nameDisplay,
+                        tostring(entry.score),
+                        tostring(entry.maxHeight),
+                        tostring(entry.kills or 0),
+                        tostring(entry.slamHits or 0),
+                        tostring(entry.playCount),
+                    }
                 end
 
                 local textAlpha

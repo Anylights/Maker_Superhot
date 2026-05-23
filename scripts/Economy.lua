@@ -129,7 +129,7 @@ function Economy.Load(onLoaded)
                 coins_ = iscores.coins or 0
                 -- 一次性数据重置（data_reset_v1 未设置时执行）
                 local needFixSave = false
-                if not values.data_reset_v1 then
+                if (iscores.data_reset_v1 or 0) == 0 then
                     print("[Economy] One-time data reset: clearing coins + scores")
                     coins_ = 0
                     needFixSave = true

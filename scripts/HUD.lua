@@ -2366,7 +2366,7 @@ function HUD.SubmitCloudScore(rankings)
     local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
 
     if isOnelife then
-        -- 一命通天模式：提交最高分数、高度和存活时间，同时更新普通排行榜字段
+        -- 一命通天模式：数据与限时挑战严格分离，只写 onelife_ 专属字段
         local score = p1Entry.score or 0
         local height = p1Entry.maxHeight or 0
         local kills = p1Entry.kills or 0
@@ -2377,33 +2377,35 @@ function HUD.SubmitCloudScore(rankings)
         clientCloud:Get("onelife_best_score", {
             ok = function(values, iscores)
                 local oldScore = iscores.onelife_best_score or 0
-                local oldNormalScore = iscores.high_score or 0
+                local oldHeight = iscores.onelife_best_height or 0
+                local oldKills = iscores.onelife_best_kills or 0
+                local oldSlam = iscores.onelife_best_slam_hits or 0
                 local batch = clientCloud:BatchSet()
-                -- 一命通天最高记录
+                -- 破分时更新分数+高度+时间
                 if score > oldScore then
                     batch:SetInt("onelife_best_score", score)
                     batch:SetInt("onelife_best_height", height)
                     batch:SetInt("onelife_best_time", elapsed)
                 end
-                -- 同时更新普通排行榜的最高层/击杀/砸晕（用于结算界面云端排行榜显示）
-                if score > oldNormalScore then
-                    batch:SetInt("high_score", score)
-                    batch:SetInt("max_height", height)
-                    batch:SetInt("max_kills", kills)
-                    batch:SetInt("max_slam_hits", slamHits)
+                -- 最高层/击杀/砸晕独立取最大值（不依赖是否破分）
+                if height > oldHeight then
+                    batch:SetInt("onelife_best_height", height)
+                end
+                if kills > oldKills then
+                    batch:SetInt("onelife_best_kills", kills)
+                end
+                if slamHits > oldSlam then
+                    batch:SetInt("onelife_best_slam_hits", slamHits)
                 end
                 batch:Add("onelife_play_count", 1)
-                batch:Add("play_count", 1)
                 batch:Save("onelife result", {
                     ok = function()
-                        print("[HUD] Onelife score submitted: score=" .. score .. " height=" .. height .. " time=" .. elapsed)
+                        print("[HUD] Onelife score submitted: score=" .. score .. " height=" .. height .. " kills=" .. kills .. " slam=" .. slamHits)
                         HUD.LoadOnelifeLeaderboard()
-                        HUD.LoadCloudLeaderboard()
                     end,
                     error = function(code, reason)
                         print("[HUD] Onelife submit error: " .. tostring(reason))
                         HUD.LoadOnelifeLeaderboard()
-                        HUD.LoadCloudLeaderboard()
                     end
                 })
             end,
@@ -2413,21 +2415,12 @@ function HUD.SubmitCloudScore(rankings)
                     :SetInt("onelife_best_score", score)
                     :SetInt("onelife_best_height", height)
                     :SetInt("onelife_best_time", elapsed)
-                    :SetInt("high_score", score)
-                    :SetInt("max_height", height)
-                    :SetInt("max_kills", kills)
-                    :SetInt("max_slam_hits", slamHits)
+                    :SetInt("onelife_best_kills", kills)
+                    :SetInt("onelife_best_slam_hits", slamHits)
                     :Add("onelife_play_count", 1)
-                    :Add("play_count", 1)
                     :Save("onelife result", {
-                        ok = function()
-                            HUD.LoadOnelifeLeaderboard()
-                            HUD.LoadCloudLeaderboard()
-                        end,
-                        error = function()
-                            HUD.LoadOnelifeLeaderboard()
-                            HUD.LoadCloudLeaderboard()
-                        end
+                        ok = function() HUD.LoadOnelifeLeaderboard() end,
+                        error = function() HUD.LoadOnelifeLeaderboard() end
                     })
             end
         })
@@ -2446,13 +2439,23 @@ function HUD.SubmitCloudScore(rankings)
     clientCloud:Get("high_score", {
         ok = function(values, iscores)
             local oldScore = iscores.high_score or 0
+            local oldHeight = iscores.max_height or 0
+            local oldKills = iscores.max_kills or 0
+            local oldSlam = iscores.max_slam_hits or 0
             local oldDaily = iscores[dailyKey] or 0
             local batch = clientCloud:BatchSet()
-            -- 历史最高
+            -- 破分时更新分数
             if score > oldScore then
                 batch:SetInt("high_score", score)
+            end
+            -- 最高层/击杀/砸晕独立取最大值（不依赖是否破分）
+            if height > oldHeight then
                 batch:SetInt("max_height", height)
+            end
+            if kills > oldKills then
                 batch:SetInt("max_kills", kills)
+            end
+            if slamHits > oldSlam then
                 batch:SetInt("max_slam_hits", slamHits)
             end
             -- 今日最高
@@ -2462,7 +2465,7 @@ function HUD.SubmitCloudScore(rankings)
             batch:Add("play_count", 1)
             batch:Save("game result", {
                 ok = function()
-                    print("[HUD] Cloud score submitted: " .. score .. " kills: " .. kills)
+                    print("[HUD] Cloud score submitted: " .. score .. " height=" .. height .. " kills=" .. kills .. " slam=" .. slamHits)
                     HUD.LoadCloudLeaderboard()
                     HUD.LoadDailyLeaderboard()
                 end,
@@ -2642,6 +2645,8 @@ function HUD.LoadOnelifeLeaderboard()
                         userId = item.userId,
                         score = bestScore,
                         maxHeight = item.iscore.onelife_best_height or 0,
+                        kills = item.iscore.onelife_best_kills or 0,
+                        slamHits = item.iscore.onelife_best_slam_hits or 0,
                         bestTime = item.iscore.onelife_best_time or 0,
                         playCount = item.iscore.onelife_play_count or 0,
                         isMe = item.userId == clientCloud.userId,
@@ -2683,7 +2688,7 @@ function HUD.LoadOnelifeLeaderboard()
             print("[HUD] Onelife leaderboard load error: " .. tostring(reason))
             onelifeLeaderboardLoading_ = false
         end
-    }, "onelife_best_height", "onelife_best_time", "onelife_play_count")
+    }, "onelife_best_height", "onelife_best_kills", "onelife_best_slam_hits", "onelife_best_time", "onelife_play_count")
 end
 
 --- 绘制云端排行榜（在结算画面中）
@@ -3257,7 +3262,7 @@ function HUD.DrawMenu_Mobile(t, mx, my)
 
             local values
             if menuLeaderboardTab_ == "onelife" then
-                local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
+                local floors = math.floor((entry.maxHeight or 0) / Config.BlockSize)
                 values = {
                     tostring(entry.rank),
                     nameDisplay,
@@ -3488,7 +3493,7 @@ function HUD.DrawFullMenuLeaderboard(mx, my)
 
                 local values
                 if menuLeaderboardTab_ == "onelife" then
-                    local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
+                    local floors = math.floor((entry.maxHeight or 0) / Config.BlockSize)
                     values = {
                         prefix, nameDisplay,
                         tostring(entry.score),
@@ -3869,7 +3874,7 @@ function HUD.DrawMenu_Desktop(t, mx, my)
 
             local values
             if menuLeaderboardTab_ == "onelife" then
-                local floors = math.floor((entry.maxHeight or 0) / Config.HeightScoreUnit)
+                local floors = math.floor((entry.maxHeight or 0) / Config.BlockSize)
                 values = {
                     tostring(entry.rank),
                     nameDisplay,

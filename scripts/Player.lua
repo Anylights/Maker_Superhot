@@ -1578,8 +1578,9 @@ function Player.UpdateVisualEffects(p, dt)
         local vel = p.body and p.body.linearVelocity or Vector3.ZERO
         local speedH = math.abs(vel.x)
         local speedV = vel.y
-        -- 水平移动速度 > 1.5 或下落速度 > 3.0 时开启拖尾
-        local shouldTrail = p.alive and (speedH > 1.5 or speedV < -3.0)
+        -- 超级变小时不显示拖尾；水平移动速度 > 1.5 或下落速度 > 3.0 时开启拖尾
+        local isSuper_small = PowerUp.HasEffect(p.index, PowerUp.SUPER_SMALL)
+        local shouldTrail = p.alive and not isSuper_small and (speedH > 1.5 or speedV < -3.0)
         p.trailEmitter.emitting = shouldTrail
     end
 

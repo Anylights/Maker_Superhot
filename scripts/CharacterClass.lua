@@ -76,15 +76,15 @@ local classes = {
         emissiveColor = Color(0.03, 0.15, 0.10),
     },
 
-    -- 3. 能量积累快 20%
+    -- 3. 能量积累快 40%
     {
         id    = 3,
         name  = "能量达人",
-        desc  = "能量回复速度+20%",
+        desc  = "能量回复速度+40%",
         price = 500,
         icon  = "⚡",
         maxJumps           = Config.MaxJumps,
-        energyChargeTime   = Config.EnergyChargeTime * 0.8, -- ★ 核心：充能快 20%
+        energyChargeTime   = Config.EnergyChargeTime * 0.6, -- ★ 核心：充能快 40%
         dashCooldown       = Config.DashCooldown,
         dashSpeed          = Config.DashSpeed,
         dashDuration       = Config.DashDuration,
@@ -146,7 +146,7 @@ local classes = {
     {
         id    = 6,
         name  = "爆破专家",
-        desc  = "蓄力速度+40%，更快满爆！",
+        desc  = "蓄力速度+50%，更快满爆！",
         price = 700,
         icon  = "💥",
         maxJumps           = Config.MaxJumps,

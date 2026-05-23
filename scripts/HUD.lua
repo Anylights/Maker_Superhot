@@ -2279,12 +2279,14 @@ function HUD.DrawResultScreen()
         nvgText(vg_, cx, commentY, "「" .. comment .. "」")
     end
 
-    -- 排行榜（仅云端）
+    -- 排行榜（根据游戏模式选择数据源）
     local tableW = math.min(logW_ * 0.85, math.floor(500 * uiScale_))
     local tableX = cx - tableW * 0.5
     -- 排行榜起始 Y 基于分数区域高度动态计算
     local cloudY = scoreLabelY + math.floor(210 * uiScale_)
-    HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX)
+    local GameManager = require("GameManager")
+    local resultLbData = (GameManager.gameMode == Config.GAMEMODE_ONELIFE) and onelifeLeaderboard_ or cloudLeaderboard_
+    HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX, resultLbData)
 
     -- 底部按钮
     local mx = input.mousePosition.x / dpr_
@@ -2374,22 +2376,27 @@ function HUD.SubmitCloudScore(rankings)
         local elapsed = math.floor(p1Entry.elapsedTime or 0)
         if score <= 0 then return end
 
-        clientCloud:Get("onelife_best_score", {
+        -- BatchGet 一次读取所有历史最高字段，避免 Get 只返回单字段导致历史值丢失
+        clientCloud:BatchGet()
+            :Key("onelife_best_score")
+            :Key("onelife_best_height")
+            :Key("onelife_best_kills")
+            :Key("onelife_best_slam_hits")
+            :Fetch({
             ok = function(values, iscores)
                 local oldScore = iscores.onelife_best_score or 0
                 local oldHeight = iscores.onelife_best_height or 0
                 local oldKills = iscores.onelife_best_kills or 0
                 local oldSlam = iscores.onelife_best_slam_hits or 0
                 local batch = clientCloud:BatchSet()
-                -- 破分时更新分数+高度+时间
+                -- 破分时更新分数+时间
                 if score > oldScore then
                     batch:SetInt("onelife_best_score", score)
-                    batch:SetInt("onelife_best_height", height)
                     batch:SetInt("onelife_best_time", elapsed)
                 end
                 -- 最高层/击杀/砸晕独立取最大值（不依赖是否破分）
                 if height > oldHeight then
-                    batch:SetInt("onelife_best_height", height)
+                    batch:SetInt("onelife_best_height", math.floor(height))
                 end
                 if kills > oldKills then
                     batch:SetInt("onelife_best_kills", kills)
@@ -2413,7 +2420,7 @@ function HUD.SubmitCloudScore(rankings)
                 print("[HUD] Onelife get error: " .. tostring(reason))
                 clientCloud:BatchSet()
                     :SetInt("onelife_best_score", score)
-                    :SetInt("onelife_best_height", height)
+                    :SetInt("onelife_best_height", math.floor(height))
                     :SetInt("onelife_best_time", elapsed)
                     :SetInt("onelife_best_kills", kills)
                     :SetInt("onelife_best_slam_hits", slamHits)
@@ -2436,7 +2443,14 @@ function HUD.SubmitCloudScore(rankings)
     local height = p1Entry.maxHeight or 0
     local dailyKey = getTodayKey()
 
-    clientCloud:Get("high_score", {
+    -- BatchGet 一次读取所有历史最高字段
+    clientCloud:BatchGet()
+        :Key("high_score")
+        :Key("max_height")
+        :Key("max_kills")
+        :Key("max_slam_hits")
+        :Key(dailyKey)
+        :Fetch({
         ok = function(values, iscores)
             local oldScore = iscores.high_score or 0
             local oldHeight = iscores.max_height or 0
@@ -2450,7 +2464,7 @@ function HUD.SubmitCloudScore(rankings)
             end
             -- 最高层/击杀/砸晕独立取最大值（不依赖是否破分）
             if height > oldHeight then
-                batch:SetInt("max_height", height)
+                batch:SetInt("max_height", math.floor(height))
             end
             if kills > oldKills then
                 batch:SetInt("max_kills", kills)
@@ -2480,7 +2494,7 @@ function HUD.SubmitCloudScore(rankings)
             print("[HUD] Cloud get error: " .. tostring(reason))
             clientCloud:BatchSet()
                 :SetInt("high_score", score)
-                :SetInt("max_height", height)
+                :SetInt("max_height", math.floor(height))
                 :SetInt("max_kills", kills)
                 :SetInt("max_slam_hits", slamHits)
                 :SetInt(dailyKey, score)
@@ -2692,7 +2706,7 @@ function HUD.LoadOnelifeLeaderboard()
 end
 
 --- 绘制云端排行榜（在结算画面中）
-function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
+function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX, leaderboardData)
     local s = uiScale_
     -- 标题（金色）
     nvgFontFace(vg_, "bold")
@@ -2742,7 +2756,8 @@ function HUD.DrawCloudLeaderboard(cx, startY, tableW, tableX)
 
     local rowH = math.floor(20 * s)
     local maxCloudEntries = isMobileHUD_ and 5 or 10
-    for i, entry in ipairs(cloudLeaderboard_) do
+    local dataSource = leaderboardData or cloudLeaderboard_
+    for i, entry in ipairs(dataSource) do
         if i > maxCloudEntries then break end
         local y = contentY + math.floor(16 * s) + (i - 1) * rowH
 

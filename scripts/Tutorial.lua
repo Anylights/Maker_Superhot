@@ -6,6 +6,7 @@
 local Config = require("Config")
 local Theme = require("Theme")
 local Economy = require("Economy")
+local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local Tutorial = {}
 
@@ -102,16 +103,16 @@ local STEPS = {
     {
         id = "dash",
         title = "闪电冲刺",
-        desc_pc = "按 Shift 或 鼠标右键 瞬间冲刺！\n撞到敌人会把他们击飞！有冷却时间哦。\n来，冲一个！",
-        desc_mobile = "点 [冲] 按钮瞬间冲刺！\n撞到敌人会把他们击飞！有冷却时间哦。\n来，冲一个！",
+        desc_pc = "按 Shift 或 鼠标右键 瞬间冲刺！\n撞到敌人会把他们击飞！冲刺中可以无视尖刺安全通过！\n来，冲一个！",
+        desc_mobile = "点 [冲] 按钮瞬间冲刺！\n撞到敌人会把他们击飞！冲刺中可以无视尖刺安全通过！\n来，冲一个！",
         check = function() return dashDone_ end,
     },
     -- 步骤6：能量 & 爆炸
     {
         id = "energy",
         title = "蓄力爆炸",
-        desc_pc = "能量条满了之后，按住鼠标左键蓄力，松开释放爆炸！\n爆炸会炸掉周围的方块，让敌人掉下去！\n你的能量已经满了，试试吧！",
-        desc_mobile = "能量条满了之后，按住 [爆] 按钮蓄力，松开释放爆炸！\n爆炸会炸掉周围的方块，让敌人掉下去！\n你的能量已经满了，试试吧！",
+        desc_pc = "能量条满了之后，点击鼠标左键开始蓄力，再点击一次爆炸！\n蓄力越久，爆炸范围越大。随时可以提前引爆！\n你的能量已经满了，试试吧！",
+        desc_mobile = "能量条满了之后，点击 [爆] 按钮开始蓄力，再点击一次爆炸！\n蓄力越久，爆炸范围越大。随时可以提前引爆！\n你的能量已经满了，试试吧！",
         check = function() return explodeDone_ end,
     },
     -- 步骤7：下砸眩晕（提示）
@@ -152,10 +153,10 @@ function Tutorial.Init(playerRef, gmRef, mapRef)
     gameManager_ = gmRef
     mapModule_ = mapRef
 
-    -- 平台检测
+    -- 平台检测：Android/iOS/HarmonyOS（含平板）统一视为移动端，兜底用屏幕高度
     local dpr = graphics:GetDPR()
     local logH = graphics:GetHeight() / dpr
-    isMobile_ = (logH < 500)
+    isMobile_ = PlatformUtils.IsMobilePlatform() or (logH < 500)
 
     print("[Tutorial] Initialized, isMobile=" .. tostring(isMobile_))
 end

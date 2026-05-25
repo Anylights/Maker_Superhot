@@ -17,6 +17,7 @@ local ControlLayout = require("ControlLayout")
 local PowerUp = require("PowerUp")
 local Tutorial = require("Tutorial")
 local GameManager = require("GameManager")
+local PlatformUtils = require("urhox-libs.Platform.PlatformUtils")
 
 local HUD = {}
 
@@ -502,7 +503,8 @@ function HUD.RefreshResolution()
     logW_ = physW_ / dpr_
     logH_ = physH_ / dpr_
     uiScale_ = math.min(1.0, logH_ / 720)   -- 手机横屏 logH≈360 → 0.5
-    isMobileHUD_ = (logH_ < 500)
+    -- 优先用平台 API：Android/iOS/HarmonyOS（含平板）统一视为移动端
+    isMobileHUD_ = PlatformUtils.IsMobilePlatform() or (logH_ < 500)
 end
 
 -- ============================================================================
@@ -1291,7 +1293,6 @@ end
 function HUD.DrawGameTimer()
     if gameManager_ == nil then return end
 
-    local GameManager = require("GameManager")
     local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
 
     local timeStr
@@ -1914,8 +1915,6 @@ end
 
 --- 绘制复活选择界面
 function HUD.DrawReviveScreen()
-    local GameManager = require("GameManager")
-
     -- 半透明深色遮罩
     nvgBeginPath(vg_)
     nvgRect(vg_, 0, 0, logW_, logH_)
@@ -2095,7 +2094,6 @@ function HUD.DrawResultScreen()
     end
     local p1Score = p1Entry and p1Entry.score or 0
 
-    local GameManager = require("GameManager")
     local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
 
     if isOnelife then
@@ -2304,7 +2302,6 @@ function HUD.DrawResultScreen()
     local tableX = cx - tableW * 0.5
     -- 排行榜起始 Y 基于分数区域高度动态计算
     local cloudY = scoreLabelY + math.floor(210 * uiScale_)
-    local GameManager = require("GameManager")
     local resultLbData = (GameManager.gameMode == Config.GAMEMODE_ONELIFE) and onelifeLeaderboard_ or cloudLeaderboard_
     HUD.DrawCloudLeaderboard(cx, cloudY, tableW, tableX, resultLbData)
 
@@ -2384,7 +2381,6 @@ function HUD.SubmitCloudScore(rankings)
         return
     end
 
-    local GameManager = require("GameManager")
     local isOnelife = GameManager.gameMode == Config.GAMEMODE_ONELIFE
 
     if isOnelife then

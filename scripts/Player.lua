@@ -354,13 +354,17 @@ function Player.Create(index, isHuman)
         inputMoveX = 0,
         inputJump = false,
         inputDash = false,
-        inputCharging = false,       -- 右键按住中
-        inputExplodeRelease = false, -- 右键松开（触发爆炸）
+        inputCharging = false,       -- 旧字段保留（AI/兼容用）
+        inputExplodeRelease = false, -- 旧字段保留（AI/兼容用）
+        inputChargeTap = false,      -- 单击触发（开始蓄力 或 立即爆炸）
         inputSlam = false,           -- 下砸输入
-        wasChargingInput = false,    -- 上帧右键状态（用于松开检测）
+        wasChargingInput = false,    -- 上帧按钮状态（用于边沿检测）
 
         -- 下砸
         slamming = false,            -- 是否正在下砸中
+
+        -- 卡在平台中检测（势如破竹 / 平台重生）
+        stuckPushCooldown = 0,       -- 防止连续触发的冷却计时（> 0 时跳过检测）
 
         -- 眩晕（被下砸击中后）
         stunTimer = 0,               -- 眩晕剩余时间（> 0 表示正在眩晕中）
@@ -914,6 +918,7 @@ function Player.UpdateOne(p, dt)
         p.inputSlam = false
         p.inputCharging = false
         p.inputExplodeRelease = false
+        p.inputChargeTap = false
         -- 应用重力（不调用完整 UpdateMovement 以避免输入干扰）
         if p.body then
             local vel = p.body.linearVelocity
@@ -940,6 +945,7 @@ function Player.UpdateOne(p, dt)
         p.inputSlam = false
         p.inputCharging = false
         p.inputExplodeRelease = false
+        p.inputChargeTap = false
         -- 打断蓄力
         if p.charging then
             p.charging = false
@@ -964,24 +970,21 @@ function Player.UpdateOne(p, dt)
 
     -- 蓄力中（允许水平移动，禁止跳跃/冲刺）
     if p.charging then
-        -- 持续蓄力：计时递增
+        -- 持续蓄力：计时递增，到达上限后持续保持满蓄力状态
         p.chargeTimer = math.min(p.chargeTimer + dt, p.explosionChargeTime)
         p.chargeProgress = p.chargeTimer / p.explosionChargeTime
         -- 视觉效果
         Player.UpdateExplodeVisual(p)
-        -- 松开右键 → 触发爆炸
-        if p.inputExplodeRelease then
+        -- 再次单击 → 立即触发爆炸（无论蓄力是否满）
+        if p.inputChargeTap then
             Player.DoExplode(p, p.chargeProgress)
-            p.inputExplodeRelease = false
-            p.inputCharging = false
         end
+        p.inputChargeTap = false
         p.inputCharging = false
         p.inputExplodeRelease = false
 
-        -- 蓄力期间仍允许水平移动和重力（但禁止跳跃/冲刺）
+        -- 蓄力期间仍允许水平移动、重力和冲刺（但禁止跳跃）
         p.inputJump = false
-        p.inputDash = false
-        p.dashCooldown = p.dashCooldown  -- 保持冷却
 
         -- 冲刺冷却递减
         if p.dashCooldown > 0 then
@@ -1008,12 +1011,13 @@ function Player.UpdateOne(p, dt)
     -- 能量自动充能
     Player.UpdateEnergy(p, dt)
 
-    -- 处理蓄力输入（右键按住开始蓄力）
-    if p.inputCharging and not p.charging then
+    -- 处理蓄力输入：单击且能量满 → 开始蓄力
+    if p.inputChargeTap and not p.charging then
         if p.energy >= 1.0 then
             Player.StartCharging(p)
         end
     end
+    p.inputChargeTap = false
     p.inputCharging = false
     p.inputExplodeRelease = false
 
@@ -1042,14 +1046,38 @@ function Player.UpdateOne(p, dt)
         end
     end
 
-    -- 尖刺检测：站在尖刺方块上 → 立即死亡（冲刺也不免疫，无敌由 Kill 内部判断）
-    if p.node and p.alive and p.onGround then
+    -- 尖刺检测：站在尖刺方块上 → 立即死亡（冲刺中免疫）
+    if p.node and p.alive and p.onGround and p.dashTimer <= 0 then
         local pos = p.node.position
         local bs = Config.BlockSize
         local gx = math.floor(pos.x / bs) + 1
         local gy = math.floor((pos.y - bs * 0.6) / bs) + 1
         if MapData.HasSpike(gx, gy) then
             Player.Kill(p, "spike")
+        end
+    end
+
+    -- 卡在平台中检测：平台重生或势如破竹后玩家陷入方块 → 向上弹出
+    if p.node and p.alive and mapModule_ then
+        if p.stuckPushCooldown > 0 then
+            p.stuckPushCooldown = p.stuckPushCooldown - dt
+        else
+            local pos = p.node.position
+            local bs = Config.BlockSize
+            -- 检测玩家中心点所在格子是否有实心方块
+            local cgx, cgy = mapModule_.WorldToGrid(pos.x, pos.y)
+            local centerBlock = mapModule_.GetBlock(cgx, cgy)
+            -- 同时检测脚底偏上一点（中心往下0.3格）防止漏检
+            local fgx, fgy = mapModule_.WorldToGrid(pos.x, pos.y - bs * 0.3)
+            local footBlock = mapModule_.GetBlock(fgx, fgy)
+            if centerBlock ~= Config.BLOCK_EMPTY or footBlock ~= Config.BLOCK_EMPTY then
+                -- 卡住：向上弹出，速度与跳跃相当
+                if p.body then
+                    local vel = p.body.linearVelocity
+                    p.body.linearVelocity = Vector3(vel.x, Config.JumpSpeed, vel.z)
+                end
+                p.stuckPushCooldown = 0.5  -- 0.5 秒冷却，防止连续触发
+            end
         end
     end
 

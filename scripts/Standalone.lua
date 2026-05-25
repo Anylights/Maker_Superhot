@@ -43,9 +43,10 @@ local dashButton_ = nil
 local slamButton_ = nil
 local chargeButton_ = nil
 local isMobile_ = false
-local jumpPressed_ = false   -- 跳跃按钮本帧被按下
-local dashPressed_ = false   -- 冲刺按钮本帧被按下
-local slamPressed_ = false   -- 下砸按钮本帧被按下
+local jumpPressed_ = false    -- 跳跃按钮本帧被按下
+local dashPressed_ = false    -- 冲刺按钮本帧被按下
+local slamPressed_ = false    -- 下砸按钮本帧被按下
+local chargePressed_ = false  -- 蓄力/爆炸按钮本帧被按下（单击边沿）
 local coinRewarded_ = false  -- 本局金币已发放
 
 -- ============================================================================
@@ -65,9 +66,11 @@ function Standalone.Start()
     if ok2 then ExplosionTuningPanel = mod2 else print("[Standalone] ExplosionTuningPanel load skipped: " .. tostring(mod2)) end
 
     -- 移动端检测（必须在 CreateScene 之前，因为场景光照依赖此判断）
+    -- 优先用平台 API：Android/iOS/HarmonyOS（含平板）统一视为移动端
+    -- 兜底用屏幕高度：Web/未知平台下 logH < 500 视为移动端
     local dpr = graphics:GetDPR()
     local logH = graphics:GetHeight() / dpr
-    isMobileDevice_ = (logH < 500)
+    isMobileDevice_ = PlatformUtils.IsMobilePlatform() or (logH < 500)
 
     -- 移动端关闭 HDR（用手动光照，不需要 tone mapping）；PC 端开启 HDR（LightGroup 物理单位）
     if isMobileDevice_ then
@@ -148,11 +151,11 @@ end
 -- ============================================================================
 
 function Standalone.InitMobileControls()
-    -- 使用屏幕尺寸检测（与 HUD 的 isMobileHUD_ 一致）
-    -- IsTouchSupported() 在 WASM 平台返回 false，不可靠
+    -- 优先用平台 API：Android/iOS/HarmonyOS（含平板）统一视为移动端
+    -- 兜底用屏幕高度：Web/未知平台下 logH < 500 视为移动端（IsTouchSupported 在 WASM 不可靠）
     local dpr = graphics:GetDPR()
     local logH = graphics:GetHeight() / dpr
-    isMobile_ = (logH < 500)
+    isMobile_ = PlatformUtils.IsMobilePlatform() or (logH < 500)
     print("[Standalone] isMobile=" .. tostring(isMobile_) .. " (logH=" .. math.floor(logH) .. ")")
 
     -- 初始化虚拟控件系统（横屏 1920x1080 设计分辨率）
@@ -236,7 +239,7 @@ function Standalone.InitMobileControls()
     })
 
     -- 蓄力/爆炸（跳跃按钮的正上方）
-    -- 注意：不设 mouseBinding，触摸只在按钮半径内生效；PC 鼠标左键在 HandlePlayerInput 中单独处理
+    -- 单击触发：on_press 回调置标志位，HandlePlayerInput 消费后清零
     chargeButton_ = VirtualControls.CreateButton({
         position = Vector2(-jumpRight + 34, -jumpBottom - 192),
         alignment = {HA_RIGHT, VA_BOTTOM},
@@ -246,6 +249,9 @@ function Standalone.InitMobileControls()
         pressedColor = {255, 240, 100},
         opacity = 0.35,
         activeOpacity = 0.8,
+        on_press = function()
+            chargePressed_ = true
+        end,
     })
 
     print("[Standalone] Mobile controls initialized (landscape), isMobile=" .. tostring(isMobile_))
@@ -968,19 +974,20 @@ function Standalone.HandlePlayerInput()
                 slamPressed_ = false
             end
 
-            -- 蓄力/爆炸：按钮按住 = 蓄力，松开 = 爆炸
-            -- 触摸：仅爆炸按钮区域内触摸生效（VirtualControls 自带半径检测）
-            -- PC：鼠标左键全局检测（非移动端才启用）
-            local charging = false
-            if chargeButton_ then
-                charging = chargeButton_.isPressed
+            -- 蓄力/爆炸：单击触发（能量满时开始蓄力，蓄力中再单击爆炸）
+            -- 手机端：on_press 回调（chargePressed_），仅按钮半径内生效
+            -- PC端：鼠标左键按下瞬间（GetMouseButtonPress），全局检测
+            --   但教程激活时，仅在爆炸教学步骤（"energy"）才允许左键触发蓄力，
+            --   避免"点击继续"的左键误触发蓄力
+            local chargeTap = chargePressed_
+            chargePressed_ = false
+            if not isMobile_ and input.numTouches == 0 and input:GetMouseButtonPress(MOUSEB_LEFT) then
+                local tutorialBlocking = Tutorial.IsActive() and Tutorial.GetCurrentStepId() ~= "energy"
+                if not tutorialBlocking then
+                    chargeTap = true
+                end
             end
-            if not isMobile_ and input.numTouches == 0 and input:GetMouseButtonDown(MOUSEB_LEFT) then
-                charging = true
-            end
-            if charging then p.inputCharging = true end
-            if p.wasChargingInput and not charging then p.inputExplodeRelease = true end
-            p.wasChargingInput = charging
+            if chargeTap then p.inputChargeTap = true end
         end
     end
 end

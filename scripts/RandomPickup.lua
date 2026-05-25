@@ -6,6 +6,7 @@
 
 local Config = require("Config")
 local PowerUp = require("PowerUp")
+local MapData = require("MapData")
 
 local RandomPickup = {}
 
@@ -83,12 +84,13 @@ function RandomPickup.RefreshValidPositions()
             local cell = grid[y] and grid[y][x] or 0
             local below = grid[y - 1] and grid[y - 1][x] or 0
 
-            -- 空格子且下方是实心方块（普通/安全/出生点/检查点等）
+            -- 空格子且下方是实心方块（普通/安全/出生点/检查点等），且下方无尖刺
             if cell == Config.BLOCK_EMPTY and
                (below == Config.BLOCK_NORMAL or below == Config.BLOCK_SAFE or
                 below == Config.BLOCK_SPAWN or below == Config.BLOCK_FINISH or
                 below == Config.BLOCK_CHECKPOINT or
-                Config.IsSpawnBlock(below)) then
+                Config.IsSpawnBlock(below)) and
+               not MapData.HasSpike(x, y - 1) then
                 local wx = (x - 1) * Config.BlockSize + Config.BlockSize * 0.5
                 local wy = (y - 1) * Config.BlockSize + Config.BlockSize * 0.5
                 table.insert(validPositions_, { x = wx, y = wy, gx = x, gy = y })

@@ -69,6 +69,7 @@ function ShopUI.ProcessPendingAds()
     if not pendingAdUnlock_ then return end
     local pending = pendingAdUnlock_
     pendingAdUnlock_ = nil
+    ---@diagnostic disable-next-line: undefined-global
     sdk:ShowRewardVideoAd(function(result)
         if result.success then
             if pending.type == "class" then

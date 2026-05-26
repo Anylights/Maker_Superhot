@@ -702,7 +702,7 @@ function HUD.DrawWorldIndicators()
     for _, p in ipairs(playerModule_.list) do
         if p.alive and p.node then
             local pos = p.node.position
-            local pc = Config.GetPlayerColor(p.index)
+            local pc = p.bodyColor or Config.GetPlayerColor(p.index)
             local pr = math.floor(pc.r * 255)
             local pg = math.floor(pc.g * 255)
             local pb = math.floor(pc.b * 255)
@@ -1163,7 +1163,7 @@ function HUD.DrawEnergyBars()
         if not p.alive or not p.node then goto continueBar end
 
         local pos = p.node.position
-        local color = Config.GetPlayerColor(p.index)
+        local color = p.bodyColor or Config.GetPlayerColor(p.index)
         local r = math.floor(color.r * 255)
         local g = math.floor(color.g * 255)
         local b = math.floor(color.b * 255)

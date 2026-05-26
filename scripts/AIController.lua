@@ -525,6 +525,7 @@ function AIController.Register(playerData)
         chargeTimer    = 0,         -- 已蓄力时间（仅 AI 内部估算）
         bombRecheck    = 0,         -- 蓄力期间下次重评估倒计时
         bombTargetIdx  = nil,       -- 当前炸弹目标的玩家索引
+        prevWantCharging = false,   -- 上帧 wantCharging（边沿检测用）
 
         -- 战术：道具
         pickupTarget   = nil,       -- { x, y } 当前正在追的道具
@@ -594,14 +595,17 @@ function AIController.UpdateOne(p, dt)
         p.inputSlam = true
         state.wantSlam = false
     end
-    -- 炸弹输入（持续 / 一次性）
-    if state.wantCharging then
-        p.inputCharging = true
+    -- 炸弹输入：新机制用 inputChargeTap（点击开始蓄力 / 再点击爆炸）
+    -- wantCharging 上升沿（false→true）= 开始蓄力，发送一次 tap
+    if state.wantCharging and not state.prevWantCharging then
+        p.inputChargeTap = true
     end
+    -- wantExplodeRelease = 触发爆炸，发送一次 tap
     if state.wantExplodeRelease then
-        p.inputExplodeRelease = true
+        p.inputChargeTap = true
         state.wantExplodeRelease = false
     end
+    state.prevWantCharging = state.wantCharging
 end
 
 -- ============================================================================

@@ -1063,14 +1063,11 @@ function Player.UpdateOne(p, dt)
             p.stuckPushCooldown = p.stuckPushCooldown - dt
         else
             local pos = p.node.position
-            local bs = Config.BlockSize
-            -- 检测玩家中心点所在格子是否有实心方块
+            -- 只检测中心点：node.y 正好在格子边界上，任何脚部偏移都会误命中地面格
+            -- 中心陷入实心格 = 真正卡住（正常站立时中心在格子顶部边界之上，不会被判中）
             local cgx, cgy = mapModule_.WorldToGrid(pos.x, pos.y)
             local centerBlock = mapModule_.GetBlock(cgx, cgy)
-            -- 同时检测脚底偏上一点（中心往下0.3格）防止漏检
-            local fgx, fgy = mapModule_.WorldToGrid(pos.x, pos.y - bs * 0.3)
-            local footBlock = mapModule_.GetBlock(fgx, fgy)
-            if centerBlock ~= Config.BLOCK_EMPTY or footBlock ~= Config.BLOCK_EMPTY then
+            if centerBlock ~= Config.BLOCK_EMPTY then
                 -- 卡住：向上弹出，速度与跳跃相当
                 if p.body then
                     local vel = p.body.linearVelocity

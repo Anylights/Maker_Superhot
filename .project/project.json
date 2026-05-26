@@ -5,15 +5,15 @@
     "id": "540864398"
   },
   "entry": "main.lua",
-  "version": "1.0.116",
+  "version": "1.0.130",
   "taptap_publish": {
     "title": "超级红温",
     "description": "你红温了吗？超Q弹的竞技爬塔对战游戏！使用冲刺、下砸、蓄力爆炸等技能击飞对手，攀登到最高点！丰富的视觉效果、超多道具与随机事件，在无尽的刺激中冲击更高分吧！",
     "category": "action",
     "screen_orientation": "landscape",
     "collection_type": "sce",
-    "trial_note": "感谢大家来玩！这是一款开发颇为曲折的游戏，一开始的灵感来源于《超级鸡马》这种派对平台跳跃游戏。为了将跳跃的手感、游戏的体验打磨到满意，我花了非常多的时间调试细节。希望大家喜欢！如果有任何问题反馈请留言～",
-    "gameplay_demo_video_source": "https://tapcode-sce.spark.xd.com/videos/bcd41d25-62b0-4f7f-917e-216275c8f936/1779546975075-uploaded_1dd906b3.mp4",
+    "trial_note": "---0526更新---\n- 修复了局内其他角色不会使用爆炸的Bug\n- 修复了因为卡墙修复导致的有概率出现自动弹跳的Bug\n- 修复了局内角色爆炸范围圈与角色颜色不一致的问题\n\n---0525更新---\n- 修改了爆炸的触发方式：现在点击一次爆炸按钮会自动蓄力，可随时再次点击引爆。具体可前往新手教程查看\n- 修复了角色卡墙的Bug\n- 冲刺现在可以无视尖刺安全通过，增加更多操作性\n- 修复尖刺上会生成道具的Bug\n- 修复平板端被识别成pc端是Bug\n\n感谢大家来玩！这是一款花了很多时间开发的游戏，一开始的灵感来源于《超级鸡马》这种派对平台跳跃游戏。为了将跳跃的手感、游戏的体验打磨到满意，我花了非常多的时间调试细节。希望大家喜欢！如果有任何问题反馈请留言～",
+    "gameplay_demo_video_source": "https://tapcode-sce.spark.xd.com/videos/bcd41d25-62b0-4f7f-917e-216275c8f936/1779689096029-uploaded_217c06f9.mp4",
     "app_platforms": "1,2",
     "developer_id": 322883,
     "app_id": 856458,
@@ -26,24 +26,25 @@
       "./game_material/screenshot_2.png",
       "./game_material/screenshot_3.png"
     ],
-    "promotional_image": "./game_material/PROMO_2026-05-14T11-52-11_01.jpg",
+    "promotional_image": "./game_material/promotional.png",
     "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_agbd/icon.png",
     "screenshot_urls": [
       "https://tapcode-sce.spark.xd.com/assets/game_material/p_agbd/screenshot_1.png",
       "https://tapcode-sce.spark.xd.com/assets/game_material/p_agbd/screenshot_2.png",
       "https://tapcode-sce.spark.xd.com/assets/game_material/p_agbd/screenshot_3.png"
     ],
-    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/PROMO_2026-05-14T11-52-11_01.jpg",
-    "cover_horizontal": "./game_material/COVER_HORIZONTAL_2026-05-14T11-55-23_01.png",
-    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_HORIZONTAL_2026-05-14T11-55-23_01.png",
-    "cover_vertical": "./game_material/COVER_VERTICAL_2026-05-14T11-55-23_01.png",
-    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_VERTICAL_2026-05-14T11-55-23_01.png"
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/p_agbd/promotional.png",
+    "cover_horizontal": "./.project/game_material/COVER_HORIZONTAL_2026-05-25T06-11-08_01.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_HORIZONTAL_2026-05-25T06-11-08_01.png",
+    "cover_vertical": "./.project/game_material/COVER_VERTICAL_2026-05-25T06-11-08_01.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/超级红温/COVER_VERTICAL_2026-05-25T06-11-08_01.png"
   },
   "test_qrcode": {
-    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_agbd_1779555428174.png",
-    "generated_at": "2026-05-23T16:57:08.273Z"
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_agbd_1779775716116.png",
+    "generated_at": "2026-05-26T06:08:36.213Z"
   },
   "metadata": {
-    "updated_at": "2026-05-23T16:57:08.273Z"
+    "updated_at": "2026-05-26T06:08:36.213Z",
+    "promo_dependent_hash": "370e5461843cd3ee167275bfc2f8aa2f"
   }
 }
